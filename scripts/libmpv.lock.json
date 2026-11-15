@@ -2,22 +2,22 @@
   "comment": "Pinned libmpv artifacts vendored by scripts/fetch-libmpv.mjs. `url` is always one of OUR releases (a build release of outcast1000/viboplr-libmpv, or this repo's 'vendor-libmpv' prerelease for builds published before that repo existed) — never an upstream link (shinchiro/mpv-winbuild-cmake deletes builds after ~30 days, which broke the v1.0.94 Windows build when the pinned one vanished). Both platforms pin OUR OWN trimmed, self-contained build: outcast1000/viboplr-libmpv builds it from pinned sources in its manual build-libmpv workflow, which runs THIS repo's real-libmpv engine tests on both platforms and publishes the archive plus its build-info JSON (`upstream`) as a release named after the build (`build`; the engine-component packager uses it for its zip name). Don't edit entries by hand: `npm run libmpv:adopt [-- <tag>]` re-pins every field from the release, vendors it and republishes the engine component; then re-test playback on both platforms before committing. `source` is a description — a line written by hand survives an adopt of the same bytes.",
   "platforms": {
     "macos-aarch64": {
-      "source": "self-built: outcast1000/viboplr-libmpv (mpv 8bc468896e, recipe 6f700a80, trimmed, FFmpeg 9.0.2 static, LuaJIT, GPL)",
+      "source": "self-built: outcast1000/viboplr-libmpv (mpv bb4823e5f0, recipe 9e60144f, trimmed, FFmpeg 9.0.2 static, LuaJIT, GPL)",
       "selfBuilt": true,
-      "build": "vibo-git-8bc468896e-6f700a80",
-      "url": "https://github.com/outcast1000/viboplr-libmpv/releases/download/vibo-git-8bc468896e-6f700a80/libmpv-vibo-git-8bc468896e-6f700a80-macos-aarch64.zip",
-      "upstream": "https://github.com/outcast1000/viboplr-libmpv/releases/download/vibo-git-8bc468896e-6f700a80/libmpv-vibo-git-8bc468896e-6f700a80-macos-aarch64.json",
-      "sha256": "6f5cd3c2bf795afa8a2952380e96624970ba678fd3d9a0c670e0aafbd7a3e0cc",
-      "mpvGitHash": "8bc468896e"
+      "build": "vibo-git-bb4823e5f0-9e60144f",
+      "url": "https://github.com/outcast1000/viboplr-libmpv/releases/download/vibo-git-bb4823e5f0-9e60144f/libmpv-vibo-git-bb4823e5f0-9e60144f-macos-aarch64.zip",
+      "upstream": "https://github.com/outcast1000/viboplr-libmpv/releases/download/vibo-git-bb4823e5f0-9e60144f/libmpv-vibo-git-bb4823e5f0-9e60144f-macos-aarch64.json",
+      "sha256": "ca995c3d2768d116696a9048870fda89d8ec3b3b3e61cae5ae2e2ac2e2b8f11e",
+      "mpvGitHash": "bb4823e5f0"
     },
     "windows-x86_64": {
-      "source": "self-built: outcast1000/viboplr-libmpv (mpv 8bc468896e, recipe 6f700a80, trimmed, FFmpeg 9.0.2 static, LuaJIT, GPL)",
+      "source": "self-built: outcast1000/viboplr-libmpv (mpv bb4823e5f0, recipe 9e60144f, trimmed, FFmpeg 9.0.2 static, LuaJIT, GPL)",
       "selfBuilt": true,
-      "build": "vibo-git-8bc468896e-6f700a80",
-      "url": "https://github.com/outcast1000/viboplr-libmpv/releases/download/vibo-git-8bc468896e-6f700a80/libmpv-vibo-git-8bc468896e-6f700a80-windows-x86_64.zip",
-      "upstream": "https://github.com/outcast1000/viboplr-libmpv/releases/download/vibo-git-8bc468896e-6f700a80/libmpv-vibo-git-8bc468896e-6f700a80-windows-x86_64.json",
-      "sha256": "a22063047eaf33424377894146daf7cf8b672ebe05ed7b0a81e4dd00987c5a1a",
-      "mpvGitHash": "8bc468896e"
+      "build": "vibo-git-bb4823e5f0-9e60144f",
+      "url": "https://github.com/outcast1000/viboplr-libmpv/releases/download/vibo-git-bb4823e5f0-9e60144f/libmpv-vibo-git-bb4823e5f0-9e60144f-windows-x86_64.zip",
+      "upstream": "https://github.com/outcast1000/viboplr-libmpv/releases/download/vibo-git-bb4823e5f0-9e60144f/libmpv-vibo-git-bb4823e5f0-9e60144f-windows-x86_64.json",
+      "sha256": "2c902930a98a1472e5316a06522a32cf2fcfc13cb30ffbcbe031bfb7c64fc31e",
+      "mpvGitHash": "bb4823e5f0"
     }
   }
 }
