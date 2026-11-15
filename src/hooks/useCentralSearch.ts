@@ -47,6 +47,11 @@ interface UseCentralSearchOptions {
   /** Canonical like handlers (`useLikeActions`). Optional so the hook can
    *  mount without them; the dropdown then renders no hearts. */
   likeActions?: SearchLikeDeps;
+  /** Called when the user is done with the search — a result acted on, the
+   *  search committed, or Escape. The host releases focus from the input here:
+   *  left focused, it counts as typing and parks Space / the arrow keys, so a
+   *  track picked from Cmd+K couldn't be paused, seeked or turned down. */
+  onDone?: () => void;
 }
 
 const EMPTY_RESULTS: SearchAllResults = { artists: [], albums: [], tracks: [] };
@@ -77,7 +82,10 @@ export function useCentralSearch({
   onOpenPluginAlbum,
   onOpenPluginArtist,
   likeActions,
+  onDone,
 }: UseCentralSearchOptions) {
+  const onDoneRef = useRef(onDone);
+  useAssignRef(onDoneRef, onDone);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchAllResults>(EMPTY_RESULTS);
   const [isOpen, setIsOpen] = useState(false);
@@ -261,8 +269,21 @@ export function useCentralSearch({
    *  the user asked for and they render in place. Everything else closes. */
   const keepsDropdownOpen = (item: SearchResultItem) => item.kind === "plugin-run";
 
+  /** Close and hand the keyboard back to the app. */
+  const finish = useCallback(() => {
+    close();
+    onDoneRef.current?.();
+  }, [close]);
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      // Escape leaves the search even with nothing typed, so the transport
+      // keys work again without reaching for the mouse.
+      if (e.key === "Escape") {
+        e.preventDefault();
+        finish();
+        return;
+      }
       if (!isOpen && !query.trim()) return;
 
       switch (e.key) {
@@ -281,27 +302,23 @@ export function useCentralSearch({
           if (highlightedIndex >= 0 && highlightedIndex < items.length) {
             const item = items[highlightedIndex];
             actOnItem(item, e.metaKey || e.ctrlKey);
-            if (!keepsDropdownOpen(item)) close();
+            if (!keepsDropdownOpen(item)) finish();
           } else if (query.trim()) {
             onCommitSearch(query.trim());
-            close();
+            finish();
           }
-          break;
-        case "Escape":
-          e.preventDefault();
-          close();
           break;
       }
     },
-    [isOpen, query, items, highlightedIndex, actOnItem, onCommitSearch, close],
+    [isOpen, query, items, highlightedIndex, actOnItem, onCommitSearch, finish],
   );
 
   const handleResultClick = useCallback(
     (item: SearchResultItem) => {
       actOnItem(item, false);
-      if (!keepsDropdownOpen(item)) close();
+      if (!keepsDropdownOpen(item)) finish();
     },
-    [actOnItem, close],
+    [actOnItem, finish],
   );
 
   return {

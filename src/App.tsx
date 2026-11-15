@@ -1616,6 +1616,7 @@ function App() {
   );
 
   const centralSearch = useCentralSearch({
+    onDone: () => searchInputRef.current?.blur(),
     onPlayTrack: (track) => {
       playRow([track]);
     },
