@@ -181,6 +181,9 @@ interface NowPlayingBarProps {
   onDownloadTrack?: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
   nowPlayingInfo: NowPlayingInfoResolved[];
+  /** Full bar: show the cycling info line in place of the static Artist · Album
+   *  line (Settings → Playback → Now playing info → Show in player bar). */
+  nowPlayingInfoInBar?: boolean;
   miniSearch?: {
     isOpen: boolean;
     query: string;
@@ -233,6 +236,7 @@ export const NowPlayingBar = memo(function NowPlayingBar({
   onDownloadTrack,
   onContextMenu,
   nowPlayingInfo,
+  nowPlayingInfoInBar,
   miniSearch,
   getAlbumImage,
   getArtistImage,
@@ -263,11 +267,11 @@ export const NowPlayingBar = memo(function NowPlayingBar({
   // like buttons, so the two can't disagree.
   const currentLiked = useTrackLike(currentTrack);
   const [showMiniVolume, setShowMiniVolume] = useState(false);
-  // Cycle phase for the mini info line, shared by the compact (ultra) and
-  // expanded rows — each renders its own cycler instance, so the phase must
-  // live here or hover-expanding would remount the cycler and replay the
-  // preview pass on every mouse-over.
-  const [miniCycleState, setMiniCycleState] = useState(initialCycleState);
+  // Cycle phase for the info line, shared by every cycler instance — the mini
+  // player's compact (ultra) and expanded rows and the full bar. Each renders
+  // its own instance, so the phase must live here or hover-expanding (or
+  // toggling mini mode) would remount the cycler and replay the preview pass.
+  const [infoCycleState, setInfoCycleState] = useState(initialCycleState);
 
   // Compact (ultra) row: when a preempting on-request item (a sung lyric line)
   // is too wide to share the line with the track title, the title yields.
@@ -417,8 +421,8 @@ export const NowPlayingBar = memo(function NowPlayingBar({
                         sep=" · "
                         fallbackText={currentTrack.artist_name || "Unknown"}
                         cycleResetKey={currentTrack.key}
-                        cycleState={miniCycleState}
-                        onCycleState={setMiniCycleState}
+                        cycleState={infoCycleState}
+                        onCycleState={setInfoCycleState}
                         onNavigateToArtistByName={onNavigateToArtistByName}
                         onNavigateToAlbumByName={onNavigateToAlbumByName}
                       />
@@ -466,7 +470,7 @@ export const NowPlayingBar = memo(function NowPlayingBar({
                     <span className="mini-ultra-sep">—</span>
                   </span>
                 </span>
-                <NowPlayingInfoCycler plain className="mini-ultra-artist" items={nowPlayingInfo} sep=" · " fallbackText={currentTrack.artist_name || "Unknown"} cycleResetKey={currentTrack.key} cycleState={miniCycleState} onCycleState={setMiniCycleState} onDisplay={handleUltraDisplay} />
+                <NowPlayingInfoCycler plain className="mini-ultra-artist" items={nowPlayingInfo} sep=" · " fallbackText={currentTrack.artist_name || "Unknown"} cycleResetKey={currentTrack.key} cycleState={infoCycleState} onCycleState={setInfoCycleState} onDisplay={handleUltraDisplay} />
               </MarqueeText>
             ) : loadingTrack ? (
               <span className="mini-ultra-title">{`Loading ${loadingTrack.title}…`}</span>
@@ -662,15 +666,30 @@ export const NowPlayingBar = memo(function NowPlayingBar({
                 ) : (
                 <span className="now-subtitle">
                   <SourceIndicator track={currentTrack} resolvedSource={resolvedSource ?? null} />
-                  {/* Static artist · album. The cycling Now Playing info section
-                      (Quality, Source, Plays, Tags, …) lives only in the mini
-                      player now — the full bar keeps a plain, always-visible line.
-                      For live radio streams the ICY "now streaming" title takes
-                      this slot instead (stations have no artist/album). */}
+                  {/* The cycling Now Playing info line (the same items as the mini
+                      player), or — with "Show in player bar" off, or nothing
+                      enabled resolving for this track — a static, clickable
+                      Artist · Album line. For live radio streams the ICY "now
+                      streaming" title takes this slot instead (stations have no
+                      artist/album). */}
                   {icyTitle ? (
                     <span className="now-artist-album" title={icyTitle}>
                       <span className="slide-text-enter" key={icyTitle}>{icyTitle}</span>
                     </span>
+                  ) : nowPlayingInfoInBar && nowPlayingInfo.length > 0 ? (
+                    <NowPlayingInfoCycler
+                      plain
+                      marquee={titleScroll}
+                      className="now-artist-album"
+                      items={nowPlayingInfo}
+                      sep=" · "
+                      fallbackText={currentTrack.artist_name || "Unknown"}
+                      cycleResetKey={currentTrack.key}
+                      cycleState={infoCycleState}
+                      onCycleState={setInfoCycleState}
+                      onNavigateToArtistByName={onNavigateToArtistByName}
+                      onNavigateToAlbumByName={onNavigateToAlbumByName}
+                    />
                   ) : (
                   <span className="now-artist-album">
                     {currentTrack.artist_name ? (

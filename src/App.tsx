@@ -564,6 +564,9 @@ function App() {
   // User priority order (ordered item ids) for the same section. Empty default →
   // registration order (built-ins as declared, then plugin items).
   const [nowPlayingInfoOrder, setNowPlayingInfoOrder] = usePersistedSetting<string[]>("nowPlayingInfoOrder", [], restoredRef, { restore: restoreStringList });
+  // Whether the full player bar shows the same cycling line under the title
+  // (replacing its static Artist · Album line). The mini player always does.
+  const [nowPlayingInfoInBar, setNowPlayingInfoInBar] = usePersistedSetting<boolean>("nowPlayingInfoInBar", true, restoredRef);
   // One-shot deep link into a Settings section (element id), consumed by
   // SettingsPanel on mount and cleared once it has scrolled.
   const [settingsScrollTarget, setSettingsScrollTarget] = useState<string | null>(null);
@@ -1105,8 +1108,11 @@ function App() {
     pluginsLoaded: plugins.pluginsLoaded,
     invokeInfoFetch: plugins.invokeInfoFetch,
     pluginNames: plugins.pluginNames,
-    // The cycler renders only in the mini player — see the hook's doc.
-    cyclerVisible: mini.miniMode,
+    // The cycler renders in the mini player, and in the full bar when the
+    // user has it there — but not while a fullscreen covers the bar or a
+    // radio stream's ICY title takes its slot. See the hook's doc.
+    cyclerVisible: mini.miniMode
+      || (nowPlayingInfoInBar && !audioFullscreen && !playback.nativeFullscreen && !playback.icyTitle),
     lyricsOffsetSecs,
   });
   // The single per-item control in Settings: a time-of-persistence multiplier
@@ -1134,7 +1140,9 @@ function App() {
     onSetDwell: setNowPlayingInfoDwell,
     onReorder: setNowPlayingInfoOrder,
     onReset: resetNowPlayingInfo,
-  }), [nowPlayingInfoAvailable, nowPlayingInfoSelection, nowPlayingInfoPersistence, setNowPlayingInfoDwell, resetNowPlayingInfo]);
+    inBar: nowPlayingInfoInBar,
+    onInBarChange: setNowPlayingInfoInBar,
+  }), [nowPlayingInfoAvailable, nowPlayingInfoSelection, nowPlayingInfoPersistence, setNowPlayingInfoDwell, resetNowPlayingInfo, nowPlayingInfoInBar, setNowPlayingInfoInBar]);
   if (import.meta.env.DEV) (window as unknown as { __dependencies?: typeof dependencies }).__dependencies = dependencies;
 
   // Host-owned "missing required dependency" indicator: cross-reference each
@@ -7120,6 +7128,7 @@ function App() {
         onSkipError={npBar.onSkipError}
         onContextMenu={npBar.onContextMenu}
         nowPlayingInfo={nowPlayingInfoResolved}
+        nowPlayingInfoInBar={nowPlayingInfoInBar}
         miniSearch={npBarMiniSearch}
         getAlbumImage={albumImageCache.getImage}
         getArtistImage={artistImageCache.getImage}

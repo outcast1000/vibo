@@ -2368,7 +2368,8 @@ export function SettingsPanel({
                         <div className="settings-row-info">
                           <span className="settings-label">Now playing info<HelpLink anchor="now-playing-info" topic="the now playing info line" /></span>
                           <span className="settings-description">
-                            The cycling line under the title in the mini player. Drag to set the order items appear in;
+                            The cycling line under the title in the mini player — and in the player bar,
+                            in place of Artist · Album, unless you switch that off. Drag to set the order items appear in;
                             each one can be off, shown once per track (preview only), shown the moment its content
                             changes (on request — how synced lyrics follow the song), or dwell 1–10× the ~5s base interval.
                           </span>

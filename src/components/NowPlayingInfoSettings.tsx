@@ -7,6 +7,7 @@ import {
   type NowPlayingInfoDescriptor,
 } from "../hooks/useNowPlayingInfo";
 import { startRowDrag, reorderList } from "../utils/rowDrag";
+import { ToggleSwitch } from "./ToggleSwitch";
 
 /** The single per-item control: "Off", the two out-of-rotation modes ("Preview
  *  only", "On request"), then the time-of-persistence presets. Picking any
@@ -43,11 +44,15 @@ export interface NowPlayingInfoSettingsProps {
   onReorder: (orderedIds: string[]) => void;
   /** Clear every customization (selection + dwell + order) back to defaults. */
   onReset: () => void;
+  /** Whether the full player bar shows the line too (the mini player always does). */
+  inBar: boolean;
+  onInBarChange: (on: boolean) => void;
 }
 
 /**
  * Settings > Playback control for the cycling Now Playing info line (mini
- * player). One row per registered item: priority (drag handle + rank) and a
+ * player, and the full bar when "Show in player bar" is on — one shared list
+ * drives both). One row per registered item: priority (drag handle + rank) and a
  * single dwell select that doubles as the on/off control ("Off" is just the
  * first option, so there's no separate switch).
  *
@@ -61,6 +66,8 @@ export function NowPlayingInfoSettings({
   onSetDwell,
   onReorder,
   onReset,
+  inBar,
+  onInBarChange,
 }: NowPlayingInfoSettingsProps) {
   const enabledCount = items.filter((d) => isNowPlayingItemSelected(d.id, selection, items)).length;
 
@@ -70,6 +77,10 @@ export function NowPlayingInfoSettings({
 
   return (
     <div className="npi-settings">
+      <div className="npi-settings-inbar">
+        <span className="settings-label">Show in player bar</span>
+        <ToggleSwitch checked={inBar} onChange={onInBarChange} label="Show in player bar" />
+      </div>
       <div className="provider-vlist" data-vlist>
         {items.map((d, i) => {
           const enabled = isNowPlayingItemSelected(d.id, selection, items);

@@ -437,7 +437,7 @@ When a plugin is deactivated or reloaded, `usePlugins` automatically drops all o
 
 ### api.nowPlayingInfo
 
-Contributes items to the cycling **Now Playing info** section (the line that shows under the title in the **mini player** — the full now-playing bar shows a static Artist · Album line instead; see `ui.md` "Now Playing Bar"). The host cycles through the *enabled* items; the user picks which via the mini player's native context menu. Mirrors the `api.home` register/onFetch pattern.
+Contributes items to the cycling **Now Playing info** section (the line under the title in the **mini player**, and in the full now-playing bar unless the user switched off **Show in player bar**; see `ui.md` "Now Playing Bar"). The host cycles through the *enabled* items; the user picks which, and in what order, in Settings → Playback → Now playing info. Mirrors the `api.home` register/onFetch pattern.
 
 - `registerItem({ id, label, priority? })` — add an item at runtime. `label` is the checkbox text in the context menu; `priority` orders it among plugin items (lower first; built-ins always precede plugin items). Returns an unsubscriber.
 - `unregisterItem(id)` — drop a registered item.

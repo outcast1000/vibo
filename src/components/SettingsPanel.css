@@ -671,6 +671,7 @@
   opacity: 0.45;
 }
 
+.npi-settings-inbar,
 .npi-settings-footer {
   display: flex;
   align-items: center;

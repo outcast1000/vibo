@@ -499,10 +499,11 @@ interface UseNowPlayingInfoArgs {
   // plugin hasn't activated yet, the provider call returns "error", which gets
   // cached for an hour and suppresses lyrics for the track playing at launch.
   pluginsLoaded: boolean;
-  // True while the NowPlayingInfoCycler is actually on screen (mini mode).
-  // Gates the synced-lyrics position subscription: it re-renders the HOST —
-  // App — every time the sung line changes (~every 2-5s for the whole track),
-  // which is pure waste in full mode, where the cycler doesn't render at all.
+  // True while a NowPlayingInfoCycler is actually on screen (mini mode, or the
+  // full bar with "Show in player bar" on). Gates the synced-lyrics position
+  // subscription: it re-renders the HOST — App — every time the sung line
+  // changes (~every 2-5s for the whole track), which is pure waste when no
+  // cycler renders.
   cyclerVisible: boolean;
   /** Per-track lyrics timing offset; positive delays. The mini player's synced
    *  line has to honour it too, or the same track reads one line here and a
