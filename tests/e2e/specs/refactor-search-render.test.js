@@ -64,3 +64,13 @@ test('switching tabs swaps the rendered entity component without errors', async 
 
   expect(errors, `page errors: ${errors.join('; ')}`).toHaveLength(0);
 });
+
+test('the Tracks tab Play queues the results under the search name', async ({ page }) => {
+  const firstTitle = (await page.locator('.search-view .entity-list-item .entity-list-name').first().textContent()).trim();
+  await page.locator('.search-view .play-all-btn').click();
+  await expect(page.locator('.queue-context-name')).toHaveText('Library');
+  await expect(page.locator('.queue-item').first()).toContainText(firstTitle);
+  // Only on the Tracks tab.
+  await page.locator('.search-view .ds-tab', { hasText: 'Albums' }).click();
+  await expect(page.locator('.search-view .play-all-btn')).toHaveCount(0);
+});

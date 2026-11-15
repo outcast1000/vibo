@@ -718,6 +718,12 @@
   opacity: 1;
 }
 
+/* A track tab's Play, in the tab bar before the sort-bar toggle. */
+.play-all-btn {
+  flex-shrink: 0;
+  margin-right: 8px;
+}
+
 
 /* View mode toggle */
 .view-mode-toggle {

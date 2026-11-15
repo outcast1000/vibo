@@ -1614,6 +1614,13 @@ function App() {
       queuePlayTracks(tracks, startIndex, context, ROW_PLAY),
     [queuePlayTracks],
   );
+  /** A view's "Play" over a whole list (Library / History results): an
+   *  ordinary play, so a track whose own source fails may fall back. */
+  const playList = useCallback(
+    (tracks: Array<Track | QueueTrack>, context: PlaylistContext | null) =>
+      queuePlayTracks(tracks, 0, context),
+    [queuePlayTracks],
+  );
 
   const centralSearch = useCentralSearch({
     onDone: () => searchInputRef.current?.blur(),
@@ -5790,6 +5797,7 @@ function App() {
             getAlbumImage={albumImageCache.getImage}
             getTagImage={tagImageCache.getImage}
             onPlayTracks={playRow}
+            onPlayAll={playList}
             onEnqueueTrack={(t) => queueHook.enqueueTracks([t])}
             onStartRadio={(t) => contextMenuActions.startRadio({ title: t.title, artistName: t.artist_name, coverPath: t.image_url ?? null })}
             onLocateTrack={(t) => { const sel = trackSelection(t); if (sel) library.handleTrackClick(sel); }}
@@ -5871,6 +5879,7 @@ function App() {
                 onQueryChange={(q) => viewSearch.setQuery("history", q)}
                 currentTrack={playback.currentTrack}
                 onPlayTracks={playRow}
+                onPlayAll={playList}
                 onEnqueueTracks={queueHook.enqueueTracks}
                 onLocateTrackId={(id) => { const sel = trackSelection({ id }); if (sel) library.handleTrackClick(sel); }}
                 onLocateTrackByName={(title, artistName, albumTitle) => { library.navigateToTrackByName(title, artistName, albumTitle).catch(console.error); }}

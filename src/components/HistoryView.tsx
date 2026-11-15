@@ -17,6 +17,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Artist, QueueTrack, HistoryEntry, HistoryMostPlayed, HistoryArtistStats, HistoryPage, ViewMode } from "../types";
 import type { ContextMenuTarget } from "../types/contextMenu";
 import type { Notify } from "../hooks/useToasts";
+import type { PlaylistContext } from "../hooks/useQueue";
 import { isLocalTrack } from "../queueEntry";
 import { formatDuration, formatRelativeTime, formatDateTime } from "../utils";
 import { resolveImageUrl } from "../utils/resolveImageUrl";
@@ -39,7 +40,7 @@ import { RowHoverActions } from "./RowHoverActions";
 import { LikeDislikeButtons } from "./LikeDislikeButtons";
 import { EntityArtFallback } from "./EntityArtFallback";
 import { ViewModeToggle } from "./ViewModeToggle";
-import { SortButton, LoadMoreSentinel } from "./search/searchShared";
+import { SortButton, LoadMoreSentinel, PlayAllButton } from "./search/searchShared";
 import "./TrackList.css";
 import "./HistoryView.css";
 
@@ -49,6 +50,8 @@ interface HistoryViewProps {
   onQueryChange: (q: string) => void;
   currentTrack: QueueTrack | null;
   onPlayTracks: (tracks: QueueTrack[], index: number) => void;
+  /** The Plays / Tracks tabs' Play button: the whole list, not one row's own source. */
+  onPlayAll: (tracks: QueueTrack[], context: PlaylistContext | null) => void;
   onEnqueueTracks: (tracks: QueueTrack[]) => void;
   /** Open the track page of a library row (the copy the history row plays). */
   onLocateTrackId: (trackId: number) => void;
@@ -116,7 +119,7 @@ function rowKey(tab: HistoryTab, r: AnyRow): string {
 
 export function HistoryView({
   query, onQueryChange, currentTrack,
-  onPlayTracks, onEnqueueTracks, onLocateTrackId, onLocateTrackByName,
+  onPlayTracks, onPlayAll, onEnqueueTracks, onLocateTrackId, onLocateTrackByName,
   onArtistClick, onAlbumClick, onPlayArtist, onEnqueueArtist, onStartRadio,
   onShowContextMenu, onToggleLike, onToggleDislike, onTrackDragStart, onNotify,
 }: HistoryViewProps) {
@@ -346,6 +349,40 @@ export function HistoryView({
     onPlayTracks(rows.map(historyQueueTrack), index);
   };
   const playOne = (t: TrackLikeRow) => playRows([t], 0);
+
+  // The Plays / Tracks tab's Play: the selection if there is one, else every
+  // loaded row, in the order shown. The play log names a song once per play,
+  // so a song is queued once (its first row) - a queue of the same song three
+  // times in a row is never what "play these" means. The button counts what
+  // it will queue, so the de-dupe happens here, memoised on the rows and the
+  // selection rather than redone on every render.
+  const playAllRows = useMemo(() => {
+    const unique = (rows: TrackLikeRow[]) => {
+      const seen = new Set<string>();
+      return rows.filter(r => {
+        const k = trackLikeKey(r.display_title, r.display_artist);
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+    };
+    // From `current.rows` (state, stable) rather than `trackRows`, which is a
+    // fresh [] every render on the Artists tab and would defeat the memo.
+    if (activeTab === "artists") return { all: [], chosen: [] };
+    const rows = current.rows as TrackLikeRow[];
+    const all = unique(rows);
+    const chosen = selected.size > 0
+      ? unique(rows.filter(r => selected.has(rowKey(activeTab, r))))
+      : [];
+    return { all, chosen };
+  }, [current.rows, selected, activeTab]);
+  const handlePlayAll = () => {
+    const rows = playAllRows.chosen.length > 0 ? playAllRows.chosen : playAllRows.all;
+    if (rows.length === 0) return;
+    const base = `History \u00B7 ${TAB_LABELS[activeTab]}`;
+    setSelected(new Set());
+    onPlayAll(rows.map(historyQueueTrack), { name: debouncedQuery ? `${base}: \u201C${debouncedQuery}\u201D` : base });
+  };
   const enqueueOne = (t: TrackLikeRow) => onEnqueueTracks([historyQueueTrack(t)]);
   const radioFor = (t: TrackLikeRow) => onStartRadio
     ? () => onStartRadio({ title: t.display_title, artistName: t.display_artist ?? null, coverPath: trackCoverPath(t) })
@@ -849,6 +886,9 @@ export function HistoryView({
             >{r.label}</button>
           ))}
         </div>
+        {activeTab !== "artists" && (
+          <PlayAllButton count={playAllRows.all.length} selectedCount={playAllRows.chosen.length} onClick={handlePlayAll} />
+        )}
         <button className="sort-btn sort-bar-toggle" onClick={() => update(s => ({ ...s, sortBarCollapsed: !s.sortBarCollapsed }))} title={sortBarCollapsed ? "Show sort bar" : "Hide sort bar"}>{sortBarCollapsed ? "▼" : "▲"}</button>
         <ViewModeToggle mode={viewMode} onChange={setViewMode} />
       </div>

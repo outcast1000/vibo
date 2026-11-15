@@ -140,3 +140,30 @@ test('one range, in the tab bar, applies to every tab', async ({ page }) => {
     await expect.poll(() => lastSince(cmd)).toBeNull();
   }
 });
+
+// Mock tracks end after 0.25s, and auto-continue may append after the last
+// one, so these assert what the play started with, not the queue's length.
+test('Play queues the tab as shown, or only the selection', async ({ page }) => {
+  await setup(page);
+  // Not on the Artists tab: an artist row isn't a track.
+  await tab(page, 'Artists').click();
+  await expect(view(page).locator('.play-all-btn')).toHaveCount(0);
+
+  // The Plays tab counts songs, not plays: its three rows are three songs.
+  await tab(page, 'Plays').click();
+  await expect(view(page).locator('.play-all-btn')).toHaveAttribute('title', 'Play these 3 tracks');
+
+  await tab(page, 'Tracks').click();
+  await expect(view(page).locator('.play-all-btn')).toHaveText('Play');
+  await view(page).locator('.play-all-btn').click();
+  await expect(page.locator('.queue-context-name')).toHaveText('History · Tracks');
+  await expect(page.locator('.queue-item').nth(0)).toContainText('Jóga');
+  await expect(page.locator('.queue-item').nth(1)).toContainText('Teardrop');
+  await expect(page.locator('.queue-item').nth(2)).toContainText('Gone Song');
+
+  // With a selection it plays just that.
+  await view(page).locator('.entity-list-item', { hasText: 'Teardrop' }).click();
+  await expect(view(page).locator('.play-all-btn')).toHaveText('Play 1');
+  await view(page).locator('.play-all-btn').click();
+  await expect(page.locator('.queue-item').nth(0)).toContainText('Teardrop');
+});

@@ -12,7 +12,7 @@ import { TrackCard, type TrackCardArt } from "./TrackCard";
 import { ViewModeToggle } from "./ViewModeToggle";
 import { LikeDislikeButtons } from "./LikeDislikeButtons";
 import { toggleSortKey, chainDir, type SortKey, type SortDir } from "../sortChain";
-import { SortButton, LoadMoreSentinel } from "./search/searchShared";
+import { SortButton, LoadMoreSentinel, PlayAllButton } from "./search/searchShared";
 import { SearchTagResults, SearchAlbumResults, SearchArtistResults } from "./search/SearchEntityResults";
 import { subscribeTrackEvents } from "../trackEvents";
 import { applyLikedCopies } from "../utils/trackLikeStore";
@@ -89,6 +89,8 @@ interface SearchViewProps {
   getAlbumImage: (title: string, artistName?: string | null) => string | null;
   getTagImage: (name: string) => string | null;
   onPlayTracks: (tracks: Track[], index: number, context?: PlaylistContext | null) => void;
+  /** The Tracks tab's Play button: the whole list, not one row's own source. */
+  onPlayAll: (tracks: Track[], context: PlaylistContext | null) => void;
   onEnqueueTrack: (track: Track) => void;
   onStartRadio: (track: Track) => void;
   onLocateTrack: (track: Track) => void;
@@ -148,6 +150,7 @@ export function SearchView({
   getAlbumImage,
   getTagImage,
   onPlayTracks,
+  onPlayAll,
   onEnqueueTrack,
   onStartRadio,
   onLocateTrack,
@@ -188,6 +191,9 @@ export function SearchView({
   const [hasMore, setHasMore] = useState({ tracks: false, albums: false, artists: false, tags: false });
   const [loadingMore, setLoadingMore] = useState({ tracks: false, albums: false, artists: false, tags: false });
   const [searched, setSearched] = useState(false);
+  /** The query `results` answer — not the text box, which runs ahead of a
+   *  search still in flight. Names what Play queues. */
+  const [resultsQuery, setResultsQuery] = useState("");
   const [trackSortChain, setTrackSortChain] = useState<SortKey[]>([]);
   const [artistSortChain, setArtistSortChain] = useState<SortKey[]>([]);
   const [albumSortChain, setAlbumSortChain] = useState<SortKey[]>([]);
@@ -322,6 +328,7 @@ export function SearchView({
     const tags = tagRes.tags ?? [];
 
     setResults({ tracks, albums, artists, tags });
+    setResultsQuery(q);
     setCounts({ tracks: trackRes.total, albums: albumRes.total, artists: artistRes.total, tags: tagRes.total });
     setHasMore({
       tracks: tracks.length < trackRes.total,
@@ -636,13 +643,18 @@ export function SearchView({
     lastClickedTrackRef.current = index;
   }
 
+  /** The selected tracks, in list order — for the menu, a drag and Play. */
+  function selectedTracks(): Track[] {
+    return results.tracks.filter(t => selectedTrackIds.has(t.id));
+  }
+
   function handleTrackItemContextMenu(e: React.MouseEvent, track: Track, index: number) {
     if (!selectedTrackIds.has(track.id)) {
       setSelectedTrackIds(new Set([track.id]));
       lastClickedTrackRef.current = index;
       onTrackContextMenu(e, track, [track]);
     } else {
-      onTrackContextMenu(e, track, selectedTrackIds.size > 1 ? results.tracks.filter(t => selectedTrackIds.has(t.id)) : [track]);
+      onTrackContextMenu(e, track, selectedTrackIds.size > 1 ? selectedTracks() : [track]);
     }
   }
 
@@ -660,7 +672,7 @@ export function SearchView({
       window.removeEventListener("mouseup", onMouseUp);
       let dragTracks: Track[];
       if (selectedTrackIds.has(results.tracks[index].id) && selectedTrackIds.size > 1) {
-        dragTracks = results.tracks.filter(t => selectedTrackIds.has(t.id));
+        dragTracks = selectedTracks();
       } else {
         dragTracks = [results.tracks[index]];
       }
@@ -808,6 +820,17 @@ export function SearchView({
   // library is empty, not that a search missed. Saying "No tracks found" there
   // reads as a broken search to a first-time user who hasn't added music yet.
   const libraryIsEmpty = query.trim() === "" && counts.tracks === 0;
+
+  // The Tracks tab's Play: the selection if there is one, else every loaded
+  // row, in the order shown. Named after the search so the queue banner says
+  // where the list came from.
+  const handlePlayAll = () => {
+    const tracks = selectedTrackIds.size > 0 ? selectedTracks() : results.tracks;
+    if (tracks.length === 0) return;
+    const q = resultsQuery.trim();
+    setSelectedTrackIds(new Set());
+    onPlayAll(tracks, { name: q ? `Search: \u201C${q}\u201D` : "Library" });
+  };
   const emptyTracksMessage = !libraryIsEmpty
     ? "No tracks found."
     : hasPluginViews
@@ -860,6 +883,9 @@ export function SearchView({
               </button>
             ))}
           </div>
+          {activeTab === "tracks" && (
+            <PlayAllButton count={results.tracks.length} selectedCount={selectedTrackIds.size} total={counts.tracks} onClick={handlePlayAll} />
+          )}
           <button className="sort-btn sort-bar-toggle" onClick={() => setSortBarCollapsed(v => !v)} title={sortBarCollapsed ? "Show sort bar" : "Hide sort bar"}>{sortBarCollapsed ? "\u25BC" : "\u25B2"}</button>
           <ViewModeToggle mode={viewModes[activeTab]} onChange={handleViewModeChange} />
         </div>
