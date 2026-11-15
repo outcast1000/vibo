@@ -1,0 +1,27 @@
+{
+  "name": "Tide Pool",
+  "author": "Vibo",
+  "version": "1.0.0",
+  "type": "dark",
+  "colors": {
+    "bg-primary": "#0f1a1f",
+    "bg-secondary": "#14232a",
+    "bg-tertiary": "#1b2e36",
+    "bg-surface": "#182930",
+    "bg-hover": "#22404a",
+    "text-primary": "#e8f1f2",
+    "text-secondary": "#a9c2c6",
+    "text-tertiary": "#7d979c",
+    "accent": "#ff8a5c",
+    "accent-dim": "#4a2c22",
+    "accent-text": "#1a0f0b",
+    "border": "#2a434c",
+    "now-playing-bg": "#12242b",
+    "success": "#4fd1a5",
+    "error": "#ff5c7a",
+    "warning": "#f2c14e",
+    "like": "#ff6b8a",
+    "dislike": "#8a9aa0",
+    "video-bg": "#000000"
+  }
+}

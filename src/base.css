@@ -1,40 +1,42 @@
 :root {
+  /* First-paint colours = the default skin (Tide Pool, `DEFAULT_SKIN_ID` in
+     skins/index.ts), so a launch doesn't flash another palette before the
+     skin is injected. Keep them in step. */
   /* Backgrounds */
-  --bg-primary: #1a1a2e;
-  --bg-secondary: #16213e;
-  --bg-tertiary: #1e2a4a;
-  --bg-surface: #0f3460;
-  --bg-surface-rgb: 15, 52, 96;
-  --bg-hover: #1a3a6e;
-  --now-playing-bg: #0d1b2a;
-  --now-playing-bg-rgb: 13, 27, 42;
+  --bg-primary: #0f1a1f;
+  --bg-secondary: #14232a;
+  --bg-tertiary: #1b2e36;
+  --bg-surface: #182930;
+  --bg-surface-rgb: 24, 41, 48;
+  --bg-hover: #22404a;
+  --now-playing-bg: #12242b;
+  --now-playing-bg-rgb: 18, 36, 43;
 
   /* Text */
-  --text-primary: #e0e0e0;
-  --text-secondary: #a0a0b0;
-  --text-tertiary: #707080;
+  --text-primary: #e8f1f2;
+  --text-secondary: #a9c2c6;
+  --text-tertiary: #7d979c;
 
   /* Accent & status */
-  --accent: #53a8ff;
-  --accent-rgb: 83, 168, 255;
-  --accent-dim: #3a7bd5;
+  --accent: #ff8a5c;
+  --accent-rgb: 255, 138, 92;
+  --accent-dim: #4a2c22;
   /* Text/icon color painted on accent-filled surfaces (primary/danger buttons,
-     card play FAB). Defaults to white; skinnable so pale-accent skins can keep
-     contrast. */
-  --accent-text: #fff;
-  --success: #4caf50;
-  --success-rgb: 76, 175, 80;
-  --error: #f44336;
-  --error-rgb: 244, 67, 54;
-  --warning: #ff9500;
-  --warning-rgb: 255, 149, 0;
+     card play FAB). Skinnable so pale-accent skins can keep contrast. */
+  --accent-text: #1a0f0b;
+  --success: #4fd1a5;
+  --success-rgb: 79, 209, 165;
+  --error: #ff5c7a;
+  --error-rgb: 255, 92, 122;
+  --warning: #f2c14e;
+  --warning-rgb: 242, 193, 78;
   /* Like / dislike rating colors. Independent from --error/--warning so a skin
      can theme the "favorite" hue (a brand signature) without touching the
      danger/validation palette. Default to the danger/warning hues for parity. */
-  --like: #ff4d6a;
-  --like-rgb: 255, 77, 106;
-  --dislike: #ff9500;
-  --dislike-rgb: 255, 149, 0;
+  --like: #ff6b8a;
+  --like-rgb: 255, 107, 138;
+  --dislike: #8a9aa0;
+  --dislike-rgb: 138, 154, 160;
   /* Letterbox / pillarbox fill behind video (the video container and the mpv
      layer under it). Independent from --bg-primary so a light skin can
      keep a cinema-black surround without darkening the whole app. Defaults to
@@ -42,7 +44,7 @@
   --video-bg: #000000;
 
   /* Chrome */
-  --border: #2a2a4a;
+  --border: #2a434c;
   --overlay-base: 255, 255, 255;
   --overlay-inverse: 0, 0, 0;
 

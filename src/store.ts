@@ -1,5 +1,6 @@
 import { LazyStore } from "@tauri-apps/plugin-store";
 import { invoke } from "@tauri-apps/api/core";
+import { DEFAULT_SKIN_ID } from "./skins";
 
 const STORE_DEFAULTS = {
   // Only keys something reads. Selected entities are never restored (startup
@@ -46,7 +47,7 @@ const STORE_DEFAULTS = {
   sidebarCollapsed: true,
   queueCollapsed: true,
   lastDownloadDest: null,
-  skin: "default",
+  skin: DEFAULT_SKIN_ID,
   loggingEnabled: false,
   debugLogging: false,
   debugMode: false,

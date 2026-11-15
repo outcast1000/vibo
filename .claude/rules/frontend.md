@@ -26,7 +26,7 @@ paths:
 - **types/skin.ts** — Skin system types (SkinJson, SkinInfo, SkinColors, GallerySkinEntry).
 - **types/plugin.ts** — Plugin types (PluginManifest, PluginState, PluginContextMenuTarget, PluginViewData, ViboplrPluginAPI).
 - **types/informationTypes.ts** — InfoEntity, InfoFetchResult, InfoTypeDeclaration, DisplayKind.
-- **skins/** — Built-in skin JSON files (8 skins) and index.
+- **skins/** — Built-in skin JSON files (9 skins) and index. The default is **Tide Pool** (`DEFAULT_SKIN_ID`, used by the store default, `useSkins`' fallback and delete-active; `base.css`'s `:root` first paint mirrors its colours); id `default` is Default Dark Blue, the former default, kept so saved picks resolve. A user skin whose id matches a built-in is shadowed by it (`useSkins` → `installedSkins`), so promoting a user skin to built-in never lists it twice.
 
 ## Components (src/components/)
 

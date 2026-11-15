@@ -101,6 +101,7 @@ import { homeCardOriginKey } from "../utils/homeCardOrigin";
 import { isCoreImageProvider } from "../utils/coreImageProviders";
 import { permissionReasons } from "../pluginWorker/permissions";
 import type { DeleteTracksResult } from "./useContextMenuActions";
+import { DEFAULT_SKIN_ID } from "../skins";
 
 export interface ControlApiDeps {
   appRestoring: boolean;
@@ -1671,7 +1672,7 @@ export function useControlApi(deps: ControlApiDeps) {
         if ("error" in found) bad(found.error);
         const wasActive = d.skins.activeSkinId === found.skin.id;
         await d.skins.deleteSkin(found.skin.id);
-        return { ok: true, id: found.skin.id, name: found.skin.name, activeSkinId: wasActive ? "default" : d.skins.activeSkinId };
+        return { ok: true, id: found.skin.id, name: found.skin.name, activeSkinId: wasActive ? DEFAULT_SKIN_ID : d.skins.activeSkinId };
       }
 
       case "tags.edit": {

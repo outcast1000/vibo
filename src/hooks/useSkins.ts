@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { store } from "../store";
-import { BUILTIN_SKINS } from "../skins";
+import { BUILTIN_SKINS, DEFAULT_SKIN_ID } from "../skins";
 import { generateSkinCSS, buildStarterSkin, skinSubmissionUrl, validateSkin } from "../skinUtils";
 import { track as trackTelemetry } from "../telemetry";
 import { nativeEngine } from "../playback/nativeEngine";
@@ -40,7 +40,7 @@ function injectSkinCSS(skin: SkinInfo) {
 
 export function useSkins(notify?: Notify) {
   const notifyRef = useLatestRef(notify);
-  const [activeSkinId, setActiveSkinId] = useState("default");
+  const [activeSkinId, setActiveSkinId] = useState(DEFAULT_SKIN_ID);
   const [userSkins, setUserSkins] = useState<SkinInfo[]>([]);
   const [gallerySkins, setGallerySkins] = useState<GallerySkinEntry[]>([]);
   const [galleryLoading, setGalleryLoading] = useState(false);
@@ -50,8 +50,14 @@ export function useSkins(notify?: Notify) {
   const lastGalleryFetchRef = useRef(0);
   useEffect(() => { gallerySkinsRef.current = gallerySkins; }, [gallerySkins]);
 
-  const installedSkins: SkinInfo[] = [...BUILTIN_SKINS, ...userSkins];
-  const activeSkin = installedSkins.find(s => s.id === activeSkinId) || BUILTIN_SKINS[0];
+  // A user skin with a built-in's id is shadowed by the built-in (which `find`
+  // already preferred) — so a skin promoted to built-in isn't listed twice.
+  const installedSkins: SkinInfo[] = [
+    ...BUILTIN_SKINS,
+    ...userSkins.filter((s) => !BUILTIN_SKINS.some((b) => b.id === s.id)),
+  ];
+  const activeSkin = installedSkins.find(s => s.id === activeSkinId)
+    || BUILTIN_SKINS.find(s => s.id === DEFAULT_SKIN_ID) || BUILTIN_SKINS[0];
 
   // Load saved skin ID and user skins on mount
   useEffect(() => {
@@ -148,7 +154,7 @@ export function useSkins(notify?: Notify) {
     await invoke("delete_user_skin", { id });
     await refreshUserSkins();
     if (activeSkinId === id) {
-      applySkin("default");
+      applySkin(DEFAULT_SKIN_ID);
     }
   }, [activeSkinId, applySkin, refreshUserSkins]);
 
