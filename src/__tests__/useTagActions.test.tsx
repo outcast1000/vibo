@@ -1,5 +1,5 @@
-// useTagActions is the in-app quick-edit path (the Now Playing bar's
-// TagPopover). It now runs the shared tag ops, so what these pin is the part
+// useTagActions is the in-app quick-edit path (TagPopover, opened from the
+// track page's Details tab). It now runs the shared tag ops, so what these pin is the part
 // that used to be missing: an edit here reaches the TagOpsContext refresh (the
 // tag recount + Library reload) the plugin API and control API get — before,
 // a tag added from the popover stayed invisible in the Tags tab until the

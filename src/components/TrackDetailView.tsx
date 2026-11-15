@@ -7,7 +7,7 @@ import type { Track } from "../types";
 import { formatDuration, formatDateTime, formatRelativeTime, formatFileSize } from "../utils";
 import { formatAverage, formatCompactCount } from "../utils/formatCount";
 import { isLocalTrack } from "../queueEntry";
-import { useDetailActions, useInfoSectionActions } from "../contexts/DetailViewContext";
+import { useDetailActions, useDetailState, useInfoSectionActions } from "../contexts/DetailViewContext";
 import { IconFolder, IconLastfm } from "./Icons";
 import { store } from "../store";
 
@@ -22,13 +22,14 @@ import { useDetailHeroImages } from "../hooks/useDetailHeroImages";
 import { resolveImageUrl } from "../utils/resolveImageUrl";
 import { DetailHero } from "./DetailHero";
 import { EntityArtFallback } from "./EntityArtFallback";
-import { EntityTagPanel } from "./EntityTagPanel";
+import TagPopover from "./TagPopover";
 import { buildHeroOverflowItems, type HeroOverflowItem } from "../utils/heroOverflow";
 import "./TrackDetailView.css";
 import { useTrackLike } from "../contexts/TrackLikeContext";
 
-const DEFAULT_TAB_ORDER = ["song_meaning", "lyrics", "song_bio", "similar_tracks", "details", "tags", "play-history"];
+const DEFAULT_TAB_ORDER = ["song_meaning", "lyrics", "song_bio", "similar_tracks", "details"];
 const PLAY_HISTORY_LIMIT = 50;
+const TRACK_TAB_ALIASES: Record<string, string> = { tags: "details", "play-history": "details" };
 
 interface TrackPlayStats {
   play_count: number;
@@ -72,6 +73,18 @@ function prettifyTagKey(key: string): string {
     .join(" ");
 }
 
+/** Plays (newest first) grouped by calendar year, keeping that order. */
+function groupPlaysByYear(plays: Array<{ played_at: number }>): { year: number; entries: Array<{ played_at: number }> }[] {
+  const groups: { year: number; entries: Array<{ played_at: number }> }[] = [];
+  for (const entry of plays) {
+    const year = new Date(entry.played_at * 1000).getFullYear();
+    const last = groups[groups.length - 1];
+    if (last && last.year === year) last.entries.push(entry);
+    else groups.push({ year, entries: [entry] });
+  }
+  return groups;
+}
+
 export function TrackDetailView({
   trackId, track, albumImagePath, artistImagePath,
   isCurrentTrack, storyboardsEnabled,
@@ -85,9 +98,13 @@ export function TrackDetailView({
   const isLibrary = trackId != null;
 
   const [playStats, setPlayStats] = useState<TrackPlayStats | null>(null);
-  const [playHistory, setPlayHistory] = useState<Array<{ played_at: number }>>([]);
   const [audioProps, setAudioProps] = useState<{ sample_rate?: number; bit_depth?: number; channels?: number; bitrate?: number } | null>(null);
   const [extraTags, setExtraTags] = useState<Record<string, string> | null>(null);
+  // The track's library tags, shown on the Details tab's Tags row and edited
+  // by TagPopover (controlled — this is the only copy). `null` while loading.
+  // The latest plays, listed under the Details tab's rows (newest first).
+  const [playHistory, setPlayHistory] = useState<Array<{ played_at: number }>>([]);
+  const [libraryTags, setLibraryTags] = useState<string[] | null>(null);
   const [trackInfo, setTrackInfo] = useState<{ listeners?: string; playcount?: string; perListener?: string; url?: string } | null>(null);
   // title_line values from providers other than Last.fm's track_info (e.g.
   // Spotify plays), rendered after the Last.fm line. Keyed by info type id.
@@ -147,9 +164,27 @@ export function TrackDetailView({
       invoke<Record<string, string> | null>("get_track_extra_tags", { trackId })
         .then(setExtraTags).catch(e => console.error("Failed to load extra tags:", e));
     }
-    invoke<TrackPlayStats | null>("get_track_play_stats", { title: track.title, artistName: track.artist_name }).then(s => { if (s) setPlayStats(s); }).catch(e => console.error("Failed to load play stats:", e));
     invoke<Array<{ played_at: number }>>("get_track_play_history", { title: track.title, artistName: track.artist_name, limit: PLAY_HISTORY_LIMIT }).then(setPlayHistory).catch(e => console.error("Failed to load play history:", e));
+    invoke<TrackPlayStats | null>("get_track_play_stats", { title: track.title, artistName: track.artist_name }).then(s => { if (s) setPlayStats(s); }).catch(e => console.error("Failed to load play stats:", e));
   }, [trackId, isLibrary, track.artist_name, track.title]);
+
+  // The Tags row's list: loaded per track, and again when a bulk edit (Edit
+  // Properties, Bulk Edit) lands — `bulkEditKey` — since those write tags too.
+  // Edits from the row's own dialog arrive through `onTagsChange` instead.
+  const { bulkEditKey } = useDetailState();
+  const [tagsFor, setTagsFor] = useState(trackId);
+  if (tagsFor !== trackId) {
+    setTagsFor(trackId);
+    setLibraryTags(null);
+  }
+  useEffect(() => {
+    if (trackId == null) return;
+    let cancelled = false;
+    invoke<Array<{ id: number; name: string }>>("get_tags_for_track", { trackId })
+      .then(rows => { if (!cancelled) setLibraryTags(rows.map(r => r.name)); })
+      .catch(e => console.error("Failed to load track tags:", e));
+    return () => { cancelled = true; };
+  }, [trackId, bulkEditKey]);
 
   // Receive track_info data from InformationSections (via onTitleData callback)
   const handleTitleData = useCallback((typeId: string, data: unknown) => {
@@ -380,12 +415,44 @@ export function TrackDetailView({
           onTabOrderChange={handleTabOrderChange}
           onTitleData={handleTitleData}
           livePosition={isCurrentTrack}
+          // The Tags and Play History tabs were folded into Details (tags
+          // row + the plays list); a plugin link naming them opens Details.
+          tabAliases={TRACK_TAB_ALIASES}
           customTabs={[
             {
               id: "details",
               name: "Details",
               content: (
                 <div className="track-details-section">
+                  {trackId != null && (
+                    <div className="track-details-row track-details-tags-row">
+                      <span className="track-details-label">Tags</span>
+                      <span className="track-details-value track-details-tags">
+                        {libraryTags && libraryTags.length > 0 ? libraryTags.map(name => (
+                          <span
+                            key={name}
+                            className="track-details-tag"
+                            role="link"
+                            tabIndex={0}
+                            onClick={() => actions.navigateToTagByName(name)}
+                            onKeyDown={e => { if (e.key === "Enter") actions.navigateToTagByName(name); }}
+                          >#{name}</span>
+                        )) : libraryTags && <span className="track-details-tags-empty">None</span>}
+                        <TagPopover
+                          trackId={trackId}
+                          title={track.title}
+                          artistName={track.artist_name}
+                          tags={libraryTags}
+                          onTagsChange={setLibraryTags}
+                          className="track-details-tag-edit"
+                          suggestions={actions.tagSuggestionPool}
+                          invokeInfoFetch={actions.invokeInfoFetch}
+                          pluginsLoaded={actions.pluginsLoaded}
+                          onNavigateToTag={actions.navigateToTagByName}
+                        />
+                      </span>
+                    </div>
+                  )}
                   {playStats && (
                     <div className="track-details-row">
                       <span className="track-details-label">Plays</span>
@@ -452,49 +519,29 @@ export function TrackDetailView({
                       <span className="track-details-value">{String(v)}</span>
                     </div>
                   ))}
-                </div>
-              ),
-            },
-            ...(isLibrary ? [{
-              id: "tags",
-              name: "Tags",
-              content: <EntityTagPanel tracks={[{ ...track, id: trackId }]} embedded />,
-            }] : []),
-            {
-              id: "play-history",
-              name: `Play History${playStats ? ` (${formatCompactCount(playStats.play_count)})` : ""}`,
-              content: playHistory.length > 0 ? (
-                <div className="scrobble-list">
-                  {(() => {
-                    const groups: { year: number; entries: typeof playHistory }[] = [];
-                    for (const entry of playHistory) {
-                      const year = new Date(entry.played_at * 1000).getFullYear();
-                      const last = groups[groups.length - 1];
-                      if (last && last.year === year) {
-                        last.entries.push(entry);
-                      } else {
-                        groups.push({ year, entries: [entry] });
-                      }
-                    }
-                    return groups.map(({ year, entries }) => (
-                      <div key={year} className="scrobble-year-group">
-                        <div className="scrobble-year-label">{year}</div>
-                        {entries.map((entry) => (
-                          <div key={entry.played_at} className="scrobble-entry">
-                            {formatDateTime(entry.played_at)}
+                  {playHistory.length > 0 && (
+                    <div className="track-details-plays">
+                      <div className="track-details-subtitle">Play history</div>
+                      <div className="scrobble-list">
+                        {groupPlaysByYear(playHistory).map(({ year, entries }) => (
+                          <div key={year} className="scrobble-year-group">
+                            <div className="scrobble-year-label">{year}</div>
+                            {entries.map((entry) => (
+                              <div key={entry.played_at} className="scrobble-entry">
+                                {formatDateTime(entry.played_at)}
+                              </div>
+                            ))}
                           </div>
                         ))}
+                        {playStats && playStats.play_count > playHistory.length && (
+                          <div className="scrobble-list-more">
+                            Showing the latest {playHistory.length} of {playStats.play_count.toLocaleString()} plays
+                          </div>
+                        )}
                       </div>
-                    ));
-                  })()}
-                  {playStats && playStats.play_count > playHistory.length && (
-                    <div className="scrobble-list-more">
-                      Showing the latest {playHistory.length} of {playStats.play_count.toLocaleString()} plays
                     </div>
                   )}
                 </div>
-              ) : (
-                <div className="track-detail-empty">No play history</div>
               ),
             },
           ]}

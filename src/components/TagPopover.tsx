@@ -1,38 +1,56 @@
 import { useEffect, useMemo, useState } from "react";
+import { useLatestRef } from "../hooks/useLatestRef";
 import { createPortal } from "react-dom";
-import { invoke } from "@tauri-apps/api/core";
 import TagEditor from "./TagEditor";
 import { useTagActions } from "../hooks/useTagActions";
 import { useCommunityTags, type InvokeInfoFetch } from "../hooks/useCommunityTags";
 import { appendCommunityTags } from "../utils/tagSuggestions";
-import type { QueueTrack } from "../types";
 import "./TagPopover.css";
 import { normalizeForMatch } from "../utils/normalize";
 
 interface TagPopoverProps {
-  track: QueueTrack;
+  /** The library row being tagged. */
+  trackId: number;
+  /** The song's names: the title heads the dialog, and title + artist fetch
+   *  the Last.fm suggestions. */
+  title: string;
+  artistName?: string | null;
+  /** The track's tags, owned by the host (`null` while it is still loading
+   *  them). The dialog never loads its own copy, so there is one list and
+   *  nothing to fall out of step with the host's display. */
+  tags: string[] | null;
+  /** Called with the new list: optimistically on each edit, then with the
+   *  backend's answer (or the previous list again when the write failed). */
+  onTagsChange: (tags: string[]) => void;
+  /** Extra class for the trigger button (placement in the host). */
+  className?: string;
   suggestions: string[];
-  /** Fetches Last.fm community tags for the playing track so they can be
-   *  suggested alongside the library pool (only while the popover is open). */
+  /** Fetches Last.fm community tags for the track so they can be suggested
+   *  alongside the library pool (only while the dialog is open). */
   invokeInfoFetch?: InvokeInfoFetch;
   /** Whether plugins finished loading — re-fetches community tags once ready. */
   pluginsLoaded?: boolean;
-  /** Opens a tag's detail page. Clicking a chip closes the dialog and navigates
-   *  — the dialog is the bar's only tag surface (the subtitle shows none). */
+  /** Opens a tag's detail page. Clicking a chip closes the dialog and navigates. */
   onNavigateToTag?: (name: string) => void;
 }
 
-export default function TagPopover({ track, suggestions, invokeInfoFetch, pluginsLoaded, onNavigateToTag }: TagPopoverProps) {
+/**
+ * The edit-tags dialog behind a small tag button — used on the track page's
+ * Details tab (Tags row). Controlled: the host loads and shows the tags; this
+ * edits them through `useTagActions` (DB-only, optimistic, reverted on failure).
+ */
+export default function TagPopover({ trackId, title, artistName, tags, onTagsChange, className, suggestions, invokeInfoFetch, pluginsLoaded, onNavigateToTag }: TagPopoverProps) {
   const [open, setOpen] = useState(false);
-  const [resolvedId, setResolvedId] = useState<number | null>(null);
-  const [tags, setTags] = useState<string[]>([]);
   const tagActions = useTagActions();
+  // Edits read the newest list (a second edit may start before the first one
+  // answers), never the one captured by the render that started them.
+  const tagsRef = useLatestRef(tags);
 
-  // Fold Last.fm track + artist tags into the library pool while the popover
+  // Fold Last.fm track + artist tags into the library pool while the dialog
   // is open (cheap: only fetched on demand).
   const { tags: communityTags, loading: communityLoading } = useCommunityTags({
-    title: track.title,
-    artistName: track.artist_name,
+    title,
+    artistName: artistName ?? null,
     invokeInfoFetch,
     enabled: open,
     pluginsLoaded,
@@ -46,29 +64,8 @@ export default function TagPopover({ track, suggestions, invokeInfoFetch, plugin
     [communityTags],
   );
 
-  // Resolve + load tags whenever the modal opens (cheap: only on demand).
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    invoke<{ id: number } | null>("find_track_by_metadata", {
-      title: track.title,
-      artistName: track.artist_name ?? null,
-      albumName: track.album_title ?? null,
-    })
-      .then((lib) => {
-        if (cancelled) return;
-        if (!lib) { setResolvedId(null); setTags([]); return; }
-        setResolvedId(lib.id);
-        invoke<Array<{ id: number; name: string }>>("get_tags_for_track", { trackId: lib.id })
-          .then((rows) => { if (!cancelled) setTags(rows.map((r) => r.name)); })
-          .catch((e) => console.error("Failed to load tags for now-playing track:", e));
-      })
-      .catch((e) => console.error("Failed to resolve now-playing track:", e));
-    return () => { cancelled = true; };
-  }, [open, track.title, track.artist_name, track.album_title]);
-
-  // Reset when the track changes (close the modal).
-  useEffect(() => { setOpen(false); }, [track.key]);
+  // A different track closes the dialog.
+  useEffect(() => { setOpen(false); }, [trackId]);
 
   // Escape closes the modal. Per the modal-dismiss convention, an outside click
   // on the overlay does NOT close it — only Escape, the × button, or Done.
@@ -80,29 +77,26 @@ export default function TagPopover({ track, suggestions, invokeInfoFetch, plugin
   }, [open]);
 
   async function handleAdd(name: string) {
-    if (resolvedId == null) return;
-    setTags([...tags, name]);
-    const names = await tagActions.add(resolvedId, name);
-    if (names == null) setTags(tags.filter((t) => normalizeForMatch(t) !== normalizeForMatch(name)));
-    else setTags(names);
+    const before = tagsRef.current ?? [];
+    onTagsChange([...before, name]);
+    const names = await tagActions.add(trackId, name);
+    onTagsChange(names ?? (tagsRef.current ?? []).filter((t) => normalizeForMatch(t) !== normalizeForMatch(name)));
   }
 
   async function handleRemove(name: string) {
-    if (resolvedId == null) return;
-    const before = tags;
-    setTags(before.filter((t) => normalizeForMatch(t) !== normalizeForMatch(name)));
-    const names = await tagActions.remove(resolvedId, before, name);
-    if (names == null) setTags(before);
-    else setTags(names);
+    const before = tagsRef.current ?? [];
+    onTagsChange(before.filter((t) => normalizeForMatch(t) !== normalizeForMatch(name)));
+    const names = await tagActions.remove(trackId, before, name);
+    onTagsChange(names ?? before);
   }
 
   return (
     <>
       <button
-        className="now-tag-btn"
-        title="Tags"
+        className={className ? `now-tag-btn ${className}` : "now-tag-btn"}
+        title="Edit tags"
         onClick={() => setOpen(true)}
-        aria-label="Tags"
+        aria-label="Edit tags"
       >
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82Z" />
@@ -118,18 +112,18 @@ export default function TagPopover({ track, suggestions, invokeInfoFetch, plugin
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
               </button>
             </div>
-            <div className="tag-edit-modal-track">{track.title}</div>
-            {resolvedId != null && tags.length === 0 && (
+            <div className="tag-edit-modal-track">{title}</div>
+            {tags != null && tags.length === 0 && (
               <div className="tag-edit-modal-emptyhint">No tags yet — add one below.</div>
             )}
             <TagEditor
-              tags={tags}
+              tags={tags ?? []}
               suggestions={mergedSuggestions}
               onAdd={handleAdd}
               onRemove={handleRemove}
               variant="popover"
-              disabled={resolvedId == null}
-              disabledHint="Add this track to your library to tag it"
+              disabled={tags == null}
+              disabledHint="Loading tags…"
               placeholder="Type a tag and press Enter…"
               autoFocus
               chipPrefix="#"

@@ -20,7 +20,7 @@ export interface CommunityTagLike {
  * community names in their given order.
  *
  * Used by every tag-editing surface that already has a ranked library pool of
- * strings (BulkEditModal, the Now Playing TagPopover) and wants to fold in
+ * strings (BulkEditModal, TagPopover) and wants to fold in
  * Last.fm community/artist tags fetched on demand.
  */
 export function appendCommunityTags(

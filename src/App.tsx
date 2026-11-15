@@ -5225,7 +5225,6 @@ function App() {
       if (mini.miniModeRef.current) mini.toggleMiniMode();
       library.navigateToAlbumByName(name, artistName).catch((e) => console.error("Failed to open album from the player bar:", e));
     },
-    onNavigateToTagByName: library.navigateToTagByName,
     onSkipError: () => { playback.clearPlaybackError(); handleNext(); },
     // Defined unconditionally; the call site gates PRESENCE on currentTrack +
     // downloadPlan, so the bar still hides its download button.
@@ -7118,7 +7117,6 @@ function App() {
         onTrackClick={npBar.onTrackClick}
         onNavigateToArtistByName={npBar.onNavigateToArtistByName}
         onNavigateToAlbumByName={npBar.onNavigateToAlbumByName}
-        onNavigateToTagByName={npBar.onNavigateToTagByName}
         resolvedSource={resolvedSource}
         loadingTrack={playback.loadingTrack}
         loadingPlay={queueHook.loadingPlay}
@@ -7133,9 +7131,6 @@ function App() {
         getAlbumImage={albumImageCache.getImage}
         getArtistImage={artistImageCache.getImage}
         onDownloadTrack={playback.currentTrack && downloadPlan ? npBar.onDownloadTrack : undefined}
-        tagSuggestions={tagSuggestionPool}
-        invokeInfoFetch={plugins.invokeInfoFetch}
-        pluginsLoaded={plugins.pluginsLoaded}
         bitPerfect={bitPerfect.control}
         playerBarPins={playerBarPins}
         onPlayerBarPinsChange={npBar.onPlayerBarPinsChange}

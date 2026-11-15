@@ -659,12 +659,6 @@
   color: var(--text-primary);
 }
 
-.track-detail-empty {
-  font-size: var(--fs-sm);
-  color: var(--text-tertiary);
-  padding: 8px 0;
-}
-
 .track-tag-chip {
   display: inline-block;
   padding: 3px 10px;
@@ -710,7 +704,16 @@
   color: var(--text-primary);
 }
 
-.scrobble-list {
+/* Play history, listed under the Details rows (newest first, by year). */
+.track-details-plays {
+  margin-top: 10px;
+}
+
+.track-details-subtitle {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text-tertiary);
+  margin-bottom: 6px;
 }
 
 .scrobble-year-group {
@@ -784,6 +787,36 @@
 
 .track-details-value {
   color: var(--text-secondary);
+}
+
+/* Tags row: #links that open the tag's page, then the edit button that opens
+   the shared tag dialog (TagPopover). */
+.track-details-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 10px;
+  min-width: 0;
+}
+
+.track-details-tag {
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.track-details-tag:hover,
+.track-details-tag:focus-visible {
+  color: var(--text-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.track-details-tags-empty {
+  color: var(--text-tertiary);
+}
+
+.now-tag-btn.track-details-tag-edit {
+  margin-left: 0;
 }
 
 .track-details-path {

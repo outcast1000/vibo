@@ -32,6 +32,10 @@ interface InformationSectionsProps {
   /** Filter sections by placement. "header" shows ranked_list/tag_list/image_gallery; "below" shows everything else. Omit to show all. */
   placement?: "header" | "below";
   customTabs?: CustomTab[];
+  /** Requested-tab ids this page answers with another tab (a host tab that was
+   *  folded into another one), so `api.ui.navigateToEntity(…, { tab })` with
+   *  the old id still lands somewhere sensible. */
+  tabAliases?: Record<string, string>;
   /** Skip every plugin info section (no fetches, no cache reads) and render
    * only `customTabs`. For entities where per-entity metadata is meaningless —
    * a "Various Artists" collective, whose Last.fm bio/similar describe nothing. */
@@ -85,6 +89,7 @@ export function InformationSections({
   onTrackContextMenu,
   onEntityContextMenu,
   retrieve,
+  tabAliases,
 }: InformationSectionsProps) {
   const { sections, refresh, reloadCache, getTypeMeta, activate } = useInformationTypes({ entity, exclude, disabled: pluginSectionsDisabled, invokeInfoFetch, pluginNames });
   const [activeTab, setActiveTab] = useState<string | null>(null);
@@ -132,6 +137,7 @@ export function InformationSections({
   // page's main tab bar takes that request: the artist page's header strip
   // (Albums) is a second instance for the same entity and would use it up.
   const takesTabRequests = placement !== "header";
+  const tabAliasesRef = useLatestRef(tabAliases);
   const entityRef = useLatestRef(entity);
   // The entity the reset last ran for, folded. Neither of these is a new
   // page, and a second reset would throw away the tab the first one chose:
@@ -144,8 +150,9 @@ export function InformationSections({
     const identity = current ? entityIdentity(current) : null;
     if (resetForRef.current === identity) return;
     resetForRef.current = identity;
-    setActiveTab(current && takesTabRequests ? takeDetailTab(current) : null);
-  }, [entityKey, takesTabRequests, entityRef]);
+    const requested = current && takesTabRequests ? takeDetailTab(current) : null;
+    setActiveTab(requested ? (tabAliasesRef.current?.[requested] ?? requested) : null);
+  }, [entityKey, takesTabRequests, entityRef, tabAliasesRef]);
   // A request for the page already showing: the entity doesn't change, so the
   // effect above never runs — take it as it arrives.
   useEffect(() => {
@@ -153,9 +160,9 @@ export function InformationSections({
     return onDetailTabRequest(() => {
       const current = entityRef.current;
       const tab = current ? takeDetailTab(current) : null;
-      if (tab) setActiveTab(tab);
+      if (tab) setActiveTab(tabAliasesRef.current?.[tab] ?? tab);
     });
-  }, [takesTabRequests, entityRef]);
+  }, [takesTabRequests, entityRef, tabAliasesRef]);
 
   // Notify parent about title_line data (filtered from tabs but still fetched)
   useEffect(() => {

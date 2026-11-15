@@ -4,7 +4,7 @@ import { editTrackTags } from "../utils/tagOps";
 
 /**
  * Tag add/remove for a single library track id, for in-app quick-edit surfaces
- * (the Now Playing bar's TagPopover). A thin layer over utils/tagOps.ts — the
+ * (TagPopover, opened from the track page's Details tab). A thin layer over utils/tagOps.ts — the
  * same ops the plugin API and control API run — so an add here also recounts
  * tags and reloads the Library (a new tag used to stay invisible in the Tags
  * tab until the next scan). Each handler resolves to the track's full new tag

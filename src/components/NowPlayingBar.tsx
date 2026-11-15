@@ -30,11 +30,9 @@ import { IconHeartFilled } from "./Icons";
 import { SpinningDisc } from "./SpinningDisc";
 import { TrackArtFallback } from "./TrackArtFallback";
 import { MiniSearchPanel } from "./MiniSearchPanel";
-import TagPopover from "./TagPopover";
 import { NowPlayingInfoCycler, MarqueeText, initialCycleState, type MarqueePlan } from "./NowPlayingInfoCycler";
 import type { NowPlayingInfoResolved } from "../hooks/useNowPlayingInfo";
 import { SourceIndicator } from "./SourceIndicator";
-import type { InvokeInfoFetch } from "../hooks/useCommunityTags";
 import "./NowPlayingBar.css";
 import { useTrackLike } from "../contexts/TrackLikeContext";
 import { quantizeFraction } from "../utils/seekRepaint";
@@ -167,7 +165,6 @@ interface NowPlayingBarProps {
   onTrackClick: (track: QueueTrack) => void;
   onNavigateToArtistByName?: (name: string) => void;
   onNavigateToAlbumByName?: (name: string, artistName?: string) => void;
-  onNavigateToTagByName?: (name: string) => void;
   playbackError?: string | null;
   resolvedSource?: ResolvedSource | null;
   loadingTrack?: QueueTrack | null;
@@ -197,9 +194,6 @@ interface NowPlayingBarProps {
   };
   getAlbumImage?: (title: string, artistName?: string | null) => string | null;
   getArtistImage?: (name: string) => string | null;
-  tagSuggestions?: string[];
-  invokeInfoFetch?: InvokeInfoFetch;
-  pluginsLoaded?: boolean;
   /** Bit-perfect toggle (native engine on macOS only — null hides it). While on
    *  it also suspends the EQ cluster and locks the volume slider. Memoized by App. */
   bitPerfect?: BitPerfectControl | null;
@@ -231,7 +225,7 @@ export const NowPlayingBar = memo(function NowPlayingBar({
   onEqEnabledChange, onEqModeChange, onEqPresetChange, onEqGainChange, onEqPreGainChange, onEqBassChange, onEqTrebleChange, onEqClipProtectionChange, onEqResetAll, onEqSaveAs,
   eqShowBarControl, onEqShowBarControlChange,
   onToggleLike, onToggleDislike, likeDisabled, onTrackClick,
-  onNavigateToArtistByName, onNavigateToAlbumByName, onNavigateToTagByName,
+  onNavigateToArtistByName, onNavigateToAlbumByName,
   playbackError, resolvedSource, loadingTrack, loadingPlay = null, playbackWaiting = false, onCancelLoadingPlay, onSkipError, bitPerfect = null, playerBarPins, onPlayerBarPinsChange,
   onDownloadTrack,
   onContextMenu,
@@ -240,9 +234,6 @@ export const NowPlayingBar = memo(function NowPlayingBar({
   miniSearch,
   getAlbumImage,
   getArtistImage,
-  tagSuggestions,
-  invokeInfoFetch,
-  pluginsLoaded,
 }: NowPlayingBarProps) {
   // Subscribed here (not passed from App) so the ~4 Hz position tick — and the
   // buffer readout, which moves 1-4×/sec while a stream fills — re-render only
@@ -710,9 +701,6 @@ export const NowPlayingBar = memo(function NowPlayingBar({
                       </>
                     )}
                   </span>
-                  )}
-                  {!miniMode && (
-                    <TagPopover track={currentTrack} suggestions={tagSuggestions ?? []} invokeInfoFetch={invokeInfoFetch} pluginsLoaded={pluginsLoaded} onNavigateToTag={onNavigateToTagByName} />
                   )}
                 </span>
                 )}
