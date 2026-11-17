@@ -30,8 +30,17 @@ export interface McpSetupInfo {
   profile: string | null;
 }
 
-/** The key the server is registered under, in every client. */
+/** The key the server is registered under, in every client, for the default profile. */
 export const MCP_SERVER_KEY = "viboplr";
+
+/**
+ * The key for this profile. A named profile gets `viboplr-<name>`, so setting
+ * up a second profile adds a server instead of repointing the default one.
+ * Mirrors `mcp_clients::server_key` in Rust, which the Install buttons use.
+ */
+export function mcpServerKey(info: Pick<McpSetupInfo, "profile">): string {
+  return info.profile ? `${MCP_SERVER_KEY}-${info.profile}` : MCP_SERVER_KEY;
+}
 
 /**
  * Script path plus, for a named profile, `--profile=`.
@@ -62,7 +71,7 @@ export function buildMcpConfigSnippet(info: McpSetupInfo): string | null {
   return JSON.stringify(
     {
       mcpServers: {
-        [MCP_SERVER_KEY]: {
+        [mcpServerKey(info)]: {
           command: info.nodePath ?? "node",
           args: buildMcpArgs(info),
         },
@@ -84,10 +93,14 @@ export function shellQuote(value: string): string {
   return /[\s"']/.test(value) ? `"${value.replace(/"/g, '\\"')}"` : value;
 }
 
-/** The one-line `claude mcp add` form, or null when there is no script. */
+/**
+ * The one-line `claude mcp add` form, or null when there is no script.
+ * `--scope user`, like the Install button: the default (local) scope only
+ * registers the server for the folder the command happens to run in.
+ */
 export function buildMcpCliCommand(info: McpSetupInfo): string | null {
   if (!info.scriptPath) return null;
-  const parts = ["claude", "mcp", "add", MCP_SERVER_KEY, "--", info.nodePath ?? "node", ...buildMcpArgs(info)];
+  const parts = ["claude", "mcp", "add", "--scope", "user", mcpServerKey(info), "--", info.nodePath ?? "node", ...buildMcpArgs(info)];
   return parts.map(shellQuote).join(" ");
 }
 
@@ -109,4 +122,49 @@ export function mcpSetupProblem(info: McpSetupInfo): string | null {
     return `Node ${info.nodeVersion ?? "(unknown version)"} was found, but the server needs ${info.minNodeMajor} or newer.`;
   }
   return null;
+}
+
+/**
+ * One MCP client the app can install the server into, as `mcp_clients_status`
+ * reports it (`src-tauri/src/mcp_clients.rs`). The Install buttons send only
+ * the `id`: the entry written is computed in Rust, never in the webview.
+ */
+export interface McpClientStatus {
+  id: "claude-desktop" | "claude-code" | "cursor";
+  name: string;
+  configPath: string;
+  /** The client's own folder exists on this computer. */
+  detected: boolean;
+  state: "notInstalled" | "installed" | "outdated" | "unreadable";
+  /** Why the config couldn't be read (`unreadable` only). */
+  error: string | null;
+}
+
+/**
+ * The clients Settings lists: the ones found on this computer, plus any that
+ * still has our entry (an uninstalled client still deserves a Remove).
+ */
+export function visibleMcpClients(clients: McpClientStatus[]): McpClientStatus[] {
+  return clients.filter((c) => c.detected || c.state === "installed" || c.state === "outdated");
+}
+
+/** How the client picks up a change to its config. */
+export function mcpRestartHint(client: Pick<McpClientStatus, "id" | "name">): string {
+  return client.id === "claude-code"
+    ? "Start a new Claude Code session to use it."
+    : `Quit ${client.name} completely and reopen it to use it.`;
+}
+
+/** The status line under a client's name. */
+export function describeMcpClient(client: McpClientStatus): string {
+  switch (client.state) {
+    case "installed":
+      return `Installed. ${mcpRestartHint(client)}`;
+    case "outdated":
+      return "Set up for a different Node or app location. Update it to use this one.";
+    case "unreadable":
+      return `Vibo can't edit this config (${client.error ?? "unreadable"}). Use Copy config instead.`;
+    default:
+      return "Not installed.";
+  }
 }

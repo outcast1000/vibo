@@ -3,7 +3,10 @@
 import { describe, it, expect } from "vitest";
 import {
   type McpSetupInfo,
+  type McpClientStatus,
   MCP_SERVER_KEY,
+  visibleMcpClients,
+  describeMcpClient,
   buildMcpArgs,
   buildMcpConfigSnippet,
   buildMcpCliCommand,
@@ -72,8 +75,15 @@ describe("buildMcpConfigSnippet", () => {
 describe("buildMcpCliCommand", () => {
   it("produces the claude mcp add one-liner", () => {
     expect(buildMcpCliCommand(ok)).toBe(
-      `claude mcp add ${MCP_SERVER_KEY} -- /opt/homebrew/bin/node ${ok.scriptPath}`,
+      `claude mcp add --scope user ${MCP_SERVER_KEY} -- /opt/homebrew/bin/node ${ok.scriptPath}`,
     );
+  });
+
+  it("registers a named profile under its own key", () => {
+    // Same key the Install button writes (mcp_clients::server_key), so a
+    // second profile adds a server instead of repointing the default one.
+    expect(buildMcpCliCommand({ ...ok, profile: "perf" })).toContain(" viboplr-perf -- ");
+    expect(JSON.parse(buildMcpConfigSnippet({ ...ok, profile: "perf" })!).mcpServers).toHaveProperty("viboplr-perf");
   });
 
   it("quotes a path containing spaces", () => {
@@ -108,5 +118,37 @@ describe("mcpSetupProblem", () => {
   it("reports a missing Node separately from a missing script", () => {
     expect(mcpSetupProblem({ ...ok, nodePath: null, nodeVersion: null, nodeOk: false })).toMatch(/none was found/);
     expect(mcpSetupProblem({ ...ok, scriptPath: null })).toMatch(/missing from this install/);
+  });
+});
+
+describe("MCP client rows", () => {
+  const client = (over: Partial<McpClientStatus>): McpClientStatus => ({
+    id: "claude-desktop",
+    name: "Claude Desktop",
+    configPath: "/c.json",
+    detected: true,
+    state: "notInstalled",
+    error: null,
+    ...over,
+  });
+
+  it("lists detected clients, and undetected ones that still have our entry", () => {
+    const rows = visibleMcpClients([
+      client({ id: "claude-desktop" }),
+      client({ id: "cursor", detected: false }),
+      client({ id: "claude-code", detected: false, state: "installed" }),
+    ]);
+    expect(rows.map((r) => r.id)).toEqual(["claude-desktop", "claude-code"]);
+  });
+
+  it("tells the user how the client picks the change up", () => {
+    expect(describeMcpClient(client({ state: "installed" }))).toMatch(/Quit Claude Desktop/);
+    expect(describeMcpClient(client({ id: "claude-code", name: "Claude Code", state: "installed" }))).toMatch(/new Claude Code session/);
+  });
+
+  it("names the parse error and points at Copy config when a config can't be edited", () => {
+    const line = describeMcpClient(client({ state: "unreadable", error: "Not a JSON object: x" }));
+    expect(line).toContain("Not a JSON object");
+    expect(line).toContain("Copy config");
   });
 });

@@ -18,7 +18,10 @@ tauri = { version = "2", features = ["protocol-asset", "macos-private-api", "dev
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# raw_value: mcp_clients.rs edits other apps' config files and must leave
+# every entry it does not own byte-for-byte as it found it.
+serde_json = { version = "1", features = ["raw_value"] }
+indexmap = { version = "2", features = ["serde"] }
 lofty = "0.24"
 
 # "hooks" is for progress_handler only — the control API's ad-hoc query

@@ -28,9 +28,12 @@ import {
 } from "../hooks/useMiniMode";
 import {
   type McpSetupInfo,
+  type McpClientStatus,
   buildMcpConfigSnippet,
   buildMcpCliCommand,
   mcpSetupProblem,
+  visibleMcpClients,
+  describeMcpClient,
 } from "../utils/mcpConfig";
 import {
   CORE_FOLDER_PROVIDER,
@@ -866,6 +869,11 @@ function ControlApiSection({
   // The in-flight (or settled) probe, so rapid clicks on different buttons
   // share one backend call. Cleared on failure so the next click retries.
   const mcpProbeRef = useRef<Promise<McpSetupInfo> | null>(null);
+  // The MCP clients on this computer and whether each has our server; null
+  // until the first read lands. `clientBusy` is the client being changed.
+  const [mcpClients, setMcpClients] = useState<McpClientStatus[] | null>(null);
+  const [clientBusy, setClientBusy] = useState<string | null>(null);
+  const [clientError, setClientError] = useState<{ id: string; message: string } | null>(null);
   const [scopes, setScopes] = useState<AssistantScopes | null>(null);
   // Picking Custom keeps the switches on screen even while they happen to
   // match a preset (all off reads as Low otherwise, and the rows would vanish
@@ -966,6 +974,40 @@ function ControlApiSection({
 
   const serverRunning = enabled && status?.running === true;
 
+  // Read the clients once the connect rows are on screen. This runs the Node
+  // probe too (installed vs outdated needs it); the backend caches a usable
+  // answer for the app run, so reopening Settings is cheap.
+  useEffect(() => {
+    if (!serverRunning) return;
+    let cancelled = false;
+    invoke<McpClientStatus[]>("mcp_clients_status")
+      .then((list) => {
+        if (!cancelled) setMcpClients(list);
+      })
+      .catch((e) => console.error("Failed to read the MCP clients:", e));
+    // Same probe, so the subtitle can name a missing Node before any click.
+    probeMcp().catch((e) => console.error("Failed to inspect the MCP setup:", e));
+    return () => {
+      cancelled = true;
+    };
+  }, [serverRunning]);
+
+  async function handleMcpClient(client: McpClientStatus, install: boolean) {
+    if (clientBusy) return;
+    setClientBusy(client.id);
+    setClientError(null);
+    try {
+      const next = await invoke<McpClientStatus>(install ? "mcp_client_install" : "mcp_client_remove", {
+        clientId: client.id,
+      });
+      setMcpClients((list) => list?.map((c) => (c.id === next.id ? next : c)) ?? [next]);
+    } catch (e) {
+      console.error(`Failed to ${install ? "install the MCP server into" : "remove the MCP server from"} ${client.name}:`, e);
+      setClientError({ id: client.id, message: String(e) });
+    }
+    setClientBusy(null);
+  }
+
   // Probed on demand — only when the user clicks one of the connect buttons —
   // because it walks the filesystem and runs `node --version` per candidate.
   // The backend caches a usable answer for the app run (`mcp_setup.rs`), so
@@ -1044,6 +1086,7 @@ function ControlApiSection({
   }
 
   const mcpProblem = mcp ? mcpSetupProblem(mcp) : null;
+  const shownClients = mcpClients ? visibleMcpClients(mcpClients) : [];
   const levelInfo = level ? AI_ACCESS_LEVELS.find((o) => o.level === level) : undefined;
   return (
     // data-ui-input-protected: the control API's generic input (uiInput.ts)
@@ -1102,7 +1145,9 @@ function ControlApiSection({
                   style={mcpProblem ? { color: "var(--warning)" } : undefined}
                 >
                   {mcpProblem ??
-                    `Copy the config into your client (Claude Desktop → Settings → Developer → Edit Config), then fully quit and relaunch it. For Claude Code, copy the command and run it in a terminal.${mcp?.scriptPath ? ` Bundled server: ${mcp.scriptPath}` : ""}`}
+                    (shownClients.length > 0
+                      ? "Install Vibo's server into an assistant below. For any other MCP client, copy the config or the command."
+                      : `Copy the config into your client (Claude Desktop → Settings → Developer → Edit Config), then fully quit and relaunch it. For Claude Code, copy the command and run it in a terminal.${mcp?.scriptPath ? ` Bundled server: ${mcp.scriptPath}` : ""}`)}
                 </span>
               </div>
               <div className="settings-row-actions">
@@ -1130,6 +1175,52 @@ function ControlApiSection({
                 </button>
               </div>
             </div>
+            {shownClients.map((client) => {
+              const busyHere = clientBusy === client.id;
+              const failed = clientError?.id === client.id ? clientError.message : null;
+              const present = client.state === "installed" || client.state === "outdated";
+              // Install needs a Node that runs the server; Remove never does.
+              const installBlocked = mcpProblem != null || client.state === "unreadable";
+              return (
+                <div className="settings-row settings-row--nested" key={client.id}>
+                  <div className="settings-row-info">
+                    <span className="settings-label">{client.name}</span>
+                    <span
+                      className={`settings-description${failed || client.state === "unreadable" ? " settings-description--warning" : ""}`}
+                      title={client.configPath}
+                    >
+                      {failed ?? describeMcpClient(client)}
+                    </span>
+                  </div>
+                  <div className="settings-row-actions">
+                    {client.state !== "installed" && (
+                      <button
+                        className="ds-btn ds-btn--primary ds-btn--sm"
+                        disabled={clientBusy != null || installBlocked}
+                        title={installBlocked ? (mcpProblem ?? undefined) : `Adds Vibo to ${client.configPath}`}
+                        onClick={() => handleMcpClient(client, true)}
+                      >
+                        {busyHere ? <span className="ds-spinner ds-spinner--sm" aria-hidden="true" /> : null}
+                        {client.state === "outdated" ? "Update" : "Install"}
+                      </button>
+                    )}
+                    {present && (
+                      <button
+                        className="ds-btn ds-btn--secondary ds-btn--sm"
+                        disabled={clientBusy != null}
+                        title={`Removes Vibo from ${client.configPath}`}
+                        onClick={() => handleMcpClient(client, false)}
+                      >
+                        {busyHere && client.state === "installed" ? (
+                          <span className="ds-spinner ds-spinner--sm" aria-hidden="true" />
+                        ) : null}
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
             <div className="settings-row">
               <button
                 type="button"

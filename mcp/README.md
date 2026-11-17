@@ -36,7 +36,13 @@ contract").
 
 **From the app (easiest).** This script **ships in the bundle**
 (`bundle.resources` in `tauri.conf.json` maps it to `Resources/mcp/`), so there
-is nothing to download. With the toggle on, the same settings card offers
+is nothing to download. With the toggle on, the settings card lists the
+clients it finds (Claude Desktop, Claude Code, Cursor) with an **Install**
+button each: Vibo writes its own `viboplr` entry into that client's config,
+keeps a `.viboplr-backup` of the file, and touches nothing else in it (see
+`src-tauri/src/mcp_clients.rs`). Relaunch the client (Claude Code: a new
+session) and the tools are there. **Remove** takes the entry out again.
+For any other client the card offers
 **Copy config** / **Copy command** / **Show file** — the copied block already
 carries the script's absolute path, the absolute path of a `node` that can run
 it, and `--profile=` when the app is on a named profile. Paste it into your

@@ -542,6 +542,67 @@ pub async fn mcp_setup_info(
     .await
 }
 
+/// Which MCP clients are on this computer and whether each has our server.
+/// See `mcp_clients.rs`. Async for the same reason as `mcp_setup_info`: it
+/// needs that probe to tell "installed" from "outdated".
+#[tauri::command]
+pub async fn mcp_clients_status(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::mcp_clients::ClientStatus>, String> {
+    let resource_dir = app.path().resource_dir().ok();
+    let profile_name = state.profile_name.clone();
+    run_blocking(move || {
+        let info = crate::mcp_setup::collect(resource_dir.as_deref(), &profile_name);
+        Ok::<_, std::convert::Infallible>(crate::mcp_clients::statuses(&info))
+    })
+    .await
+}
+
+/// Write our server entry into one client's config. Takes only the client id:
+/// the entry is computed here, never supplied by the webview (`mcp_clients.rs`
+/// says why).
+#[tauri::command]
+pub async fn mcp_client_install(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    client_id: String,
+) -> Result<crate::mcp_clients::ClientStatus, String> {
+    mcp_client_apply(app, state, client_id, true).await
+}
+
+/// Remove our server entry from one client's config, leaving the rest alone.
+#[tauri::command]
+pub async fn mcp_client_remove(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    client_id: String,
+) -> Result<crate::mcp_clients::ClientStatus, String> {
+    mcp_client_apply(app, state, client_id, false).await
+}
+
+async fn mcp_client_apply(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    client_id: String,
+    install: bool,
+) -> Result<crate::mcp_clients::ClientStatus, String> {
+    let resource_dir = app.path().resource_dir().ok();
+    let profile_name = state.profile_name.clone();
+    run_blocking(move || {
+        let info = crate::mcp_setup::collect(resource_dir.as_deref(), &profile_name);
+        let status = crate::mcp_clients::apply(&info, &client_id, install)?;
+        log::info!(
+            "MCP server {} {} ({})",
+            if install { "installed into" } else { "removed from" },
+            status.name,
+            status.config_path
+        );
+        Ok::<_, String>(status)
+    })
+    .await
+}
+
 /// Rotate the bearer token. Implemented as stop → clear → start so the running
 /// server and the discovery file can never disagree about the live token.
 #[tauri::command]

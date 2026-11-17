@@ -14,6 +14,7 @@ mod home_snapshot;
 mod image_provider;
 mod local_lyrics;
 mod logging;
+mod mcp_clients;
 mod mcp_setup;
 mod models;
 mod profile_shortcuts;
@@ -414,6 +415,9 @@ macro_rules! invoke_handler {
             commands::stage_track_replacement,
             commands::confirm_track_replacement,
             commands::mcp_setup_info,
+            commands::mcp_clients_status,
+            commands::mcp_client_install,
+            commands::mcp_client_remove,
             $($extra,)*
         ]
     };
