@@ -8,6 +8,7 @@ import { track as trackTelemetry } from "../telemetry";
 import type { RadioOptions } from "../utils/radioOptions";
 import type { Notify } from "./useToasts";
 import type { BackfillOpts } from "../utils/queueOps";
+import { errorText } from "../utils/errorKind";
 
 interface PlayActionsArgs {
   // Raw `Track`s are fine — useQueue converts at the door (`toQueueTracks`).
@@ -95,6 +96,20 @@ export function buildTagContext(
 function sameEntry(a: QueueTrack, b: QueueTrack): boolean {
   if (a.path && b.path) return a.path === b.path;
   return a.title === b.title && (a.artist_name ?? null) === (b.artist_name ?? null);
+}
+
+// The longest source reason appended to a failure message. A plugin's
+// rejection is normally one sentence; anything longer is a stack or a dump
+// that belongs in the console, not a toast.
+const FAILURE_REASON_MAX = 160;
+
+/** "Couldn't load “X”." plus the source's reason → "Couldn't load “X”: <reason>".
+ *  No reason (an empty list, nothing thrown) leaves the message as it is. */
+export function withFailureReason(message: string, reason: string | null | undefined): string {
+  const text = (reason ?? "").trim().replace(/\s+/g, " ");
+  if (!text || text.length > FAILURE_REASON_MAX) return message;
+  const sentence = /[.!?…]$/.test(text) ? text : `${text}.`;
+  return `${message.replace(/[.!?…]+$/, "")}: ${sentence}`;
 }
 
 // Strip the already-playing head off a resolved tail so the seed doesn't play
@@ -284,11 +299,16 @@ export function usePlayActions({
       source: source ?? null,
       originKey: originKey ?? null,
     };
+    // A rejection's own message is kept for the failure text: "Couldn't load
+    // X" alone left the user nothing to act on when the source said why
+    // ("Spotify is busy — try again in a moment").
+    let failureReason: string | null = null;
     const resolveList = async (): Promise<QueueTrack[] | null> => {
       try {
         return await resolveTail();
       } catch (e) {
         console.error("Failed to resolve the rest of the queue:", e);
+        failureReason = errorText(e);
         return null;
       }
     };
@@ -305,7 +325,7 @@ export function usePlayActions({
       }
       if (!list || list.length === 0) {
         endLoadingPlay(loading, { kind: "nothing" });
-        if (tailErrorMessage) notify(tailErrorMessage, { kind: "error" });
+        if (tailErrorMessage) notify(withFailureReason(tailErrorMessage, failureReason), { kind: "error" });
         return [];
       }
       // Ends the loading play itself (a new session), releasing any waiter.
@@ -326,8 +346,9 @@ export function usePlayActions({
     }
     if (!tail || tail.length === 0) {
       // The head keeps playing — the user only needs to know the rest is missing.
-      if (tailErrorMessage) notify(tailErrorMessage, { kind: "error" });
-      endLoadingPlay(loading, { kind: "nothing" }, tailErrorMessage ?? `Couldn't load the rest of “${info.name}”.`);
+      const message = withFailureReason(tailErrorMessage ?? `Couldn't load the rest of “${info.name}”.`, failureReason);
+      if (tailErrorMessage) notify(message, { kind: "error" });
+      endLoadingPlay(loading, { kind: "nothing" }, message);
       return [];
     }
     const appended = appendToPlaySession(gen, dropPlayedHead(head, tail));

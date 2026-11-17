@@ -5,7 +5,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderHook, act, cleanup } from "@testing-library/react";
 import { useRef } from "react";
 import { useQueue } from "../hooks/useQueue";
-import { usePlayActions } from "../hooks/usePlayActions";
+import { usePlayActions, withFailureReason } from "../hooks/usePlayActions";
 import type { QueueTrack } from "../types";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -88,8 +88,8 @@ describe("playWithBackfill — known head (extend)", () => {
       });
     });
     expect(titles(hook.result.current.q.queue)).toEqual(["Song 1"]);
-    expect(notify).toHaveBeenCalledWith("Couldn't load the rest of “Mix”.", { kind: "error" });
-    expect(hook.result.current.q.loadFailure).toBe("Couldn't load the rest of “Mix”.");
+    expect(notify).toHaveBeenCalledWith("Couldn't load the rest of “Mix”: scrape failed.", { kind: "error" });
+    expect(hook.result.current.q.loadFailure).toBe("Couldn't load the rest of “Mix”: scrape failed.");
   });
 });
 
@@ -161,5 +161,35 @@ describe("playWithBackfill — no head (switch)", () => {
     expect(titles(hook.result.current.q.queue)).toEqual(["Song 8"]);
     expect(notify).toHaveBeenCalledWith("Couldn't load “Weekly”.", { kind: "error" });
     expect(hook.result.current.q.loadingPlay).toBeNull();
+  });
+
+  it("says why when the source rejected with a reason", async () => {
+    const { hook, notify } = mount();
+    act(() => { hook.result.current.q.playTracks([t(8)], 0); });
+    await act(async () => {
+      await hook.result.current.pa.playWithBackfill({
+        head: [], context: { name: "La Dispute Radio" },
+        resolveTail: async () => { throw new Error("Spotify is busy — try again in a moment"); },
+        tailErrorMessage: "Couldn't load “La Dispute Radio”.",
+      });
+    });
+    expect(titles(hook.result.current.q.queue)).toEqual(["Song 8"]);
+    expect(notify).toHaveBeenCalledWith(
+      "Couldn't load “La Dispute Radio”: Spotify is busy — try again in a moment.",
+      { kind: "error" },
+    );
+  });
+});
+
+describe("withFailureReason", () => {
+  it("appends the reason as the sentence's end", () => {
+    expect(withFailureReason("Couldn't load “X”.", "Spotify is busy")).toBe("Couldn't load “X”: Spotify is busy.");
+    expect(withFailureReason("Couldn't load “X”.", "  Not signed in!  ")).toBe("Couldn't load “X”: Not signed in!");
+  });
+
+  it("leaves the message alone with no reason, or one too long for a toast", () => {
+    expect(withFailureReason("Couldn't load “X”.", null)).toBe("Couldn't load “X”.");
+    expect(withFailureReason("Couldn't load “X”.", "   ")).toBe("Couldn't load “X”.");
+    expect(withFailureReason("Couldn't load “X”.", "x".repeat(161))).toBe("Couldn't load “X”.");
   });
 });
