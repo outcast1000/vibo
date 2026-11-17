@@ -270,7 +270,7 @@ pub fn begin_update(name: &str) -> Result<UpdateGuard, String> {
     Ok(UpdateGuard(name.to_string()))
 }
 
-fn is_updating(name: &str) -> bool {
+pub fn is_updating(name: &str) -> bool {
     UPDATING.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|n| n == name)
 }
 

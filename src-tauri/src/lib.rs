@@ -50,6 +50,7 @@ mod dependency_registry;
 mod plugin_programs;
 mod quit_handshake;
 mod trust_store;
+mod tool_auto_update;
 mod user_url;
 #[cfg(target_os = "macos")]
 mod cursor_tracker;
@@ -218,6 +219,10 @@ macro_rules! invoke_handler {
             commands::subsonic_test_connection,
             commands::check_dependencies,
             commands::dependency_install,
+            commands::dependency_auto_install,
+            commands::tool_auto_update_get,
+            commands::tool_auto_update_set,
+            commands::tool_auto_update_decline_offer,
             commands::dependency_uninstall_managed,
             commands::dependency_check_updates,
             commands::dependency_registry_status,

@@ -130,3 +130,28 @@
     margin-left: 0;
   }
 }
+
+/* "yt-dlp updates often — install its updates automatically?" A second row
+   under the headline, quieter than it: the headline's Update all is still the
+   thing the strip is for. */
+.update-notice-offer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+
+.update-notice-offer-text {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.update-notice-offer-error {
+  flex-basis: 100%;
+  color: var(--error);
+}

@@ -1369,7 +1369,23 @@ pub fn install_managed(
     name: &str,
     cache: &DepCache,
     confirmed_unverified: bool,
+    progress: impl FnMut(u64, Option<u64>),
+) -> Result<String, String> {
+    install_managed_gated(name, cache, confirmed_unverified, progress, || Ok(()))
+}
+
+/// [`install_managed`] with a hook run after the download is verified and
+/// before anything on disk is replaced. An `Err` from it abandons the install
+/// with that error and nothing swapped; its `Ok` value is held until the swap
+/// and the version check after it are done. An automatic update uses it to
+/// take the "not running" gate around the swap alone, so a run of the tool
+/// waits seconds rather than for the whole download (`tool_auto_update.rs`).
+pub fn install_managed_gated<G>(
+    name: &str,
+    cache: &DepCache,
+    confirmed_unverified: bool,
     mut progress: impl FnMut(u64, Option<u64>),
+    before_swap: impl FnOnce() -> Result<G, String>,
 ) -> Result<String, String> {
     let def = get_def(name).ok_or_else(|| format!("Unknown dependency: {}", name))?;
     let managed = def
@@ -1462,6 +1478,10 @@ pub fn install_managed(
                 name, managed.repo, asset, data.len(), sha256_hex(&data)
             ),
         }
+
+        // Verified and about to replace the copy in place: from here to the
+        // version check below, the hook's guard is held.
+        let _swap_guard = before_swap()?;
 
         if let Some(entry) = managed.folder_entry {
             install_folder(bin_dir, name, entry, &temp_path, &data)?;

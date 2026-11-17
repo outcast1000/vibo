@@ -8,8 +8,9 @@
 // being "notified" about was in practice invisible, and the release notes the
 // updater already fetches were rendered nowhere at all.
 //
-// Managed tools (yt-dlp, slskd, …) are announced here too and installed only on
-// the user's click: there is no silent tool updater any more.
+// Managed tools (yt-dlp, slskd, …) are announced here too and installed on the
+// user's click — except a tool the user let update itself, which App leaves
+// out before it gets here (`utils/toolAutoUpdate.ts` → `announcedToolUpdates`).
 //
 // Everything here is pure so the ranking and the dismissal rules can be
 // asserted without a store, a network or a render.

@@ -5,6 +5,13 @@ import { type PluginState } from "../types/plugin";
 import { useAssignRef, useLatestRef } from "./useLatestRef";
 import { track as trackTelemetry } from "../telemetry";
 import { setDependencyNames } from "../utils/errorKind";
+import {
+  AUTO_UPDATE_IN_USE_RETRY_MS,
+  autoAttemptDownloaded,
+  autoUpdates,
+  type AutoInstallOutcome,
+  type ToolAutoUpdateState,
+} from "../utils/toolAutoUpdate";
 
 export interface InstallInstructions {
   macos: string;
@@ -258,7 +265,20 @@ export function definitionsToAsk(pending: PendingDefinition[], answered: Readonl
   return [...byPlugin.values()];
 }
 
-export function useDependencies(pluginStates: PluginState[]) {
+export interface UseDependenciesOptions {
+  /** Every automatic update attempt that did something (installed or failed),
+   *  for App to record as a notification. Skips aren't reported. */
+  onAutoUpdate?: (name: string, outcome: AutoInstallOutcome) => void;
+}
+
+export function useDependencies(pluginStates: PluginState[], options: UseDependenciesOptions = {}) {
+  const onAutoUpdateRef = useLatestRef(options.onAutoUpdate);
+  // Tool name → whether it updates itself (Rust-owned; this is a mirror).
+  const [autoUpdate, setAutoUpdateStates] = useState<Record<string, ToolAutoUpdateState>>({});
+  const autoUpdateRef = useLatestRef(autoUpdate);
+  // Forward declaration: `checkUpdates` runs the opted-in updates, which are
+  // defined after `installDep`.
+  const runAutoUpdatesRef = useRef<(results: DepUpdateInfo[]) => Promise<void>>(async () => {});
   const [deps, setDeps] = useState<DependencyInfo[]>([]);
   const [updates, setUpdates] = useState<DepUpdateInfo[]>([]);
   const [modalState, setModalState] = useState<DepModalState | null>(null);
@@ -481,11 +501,28 @@ export function useDependencies(pluginStates: PluginState[]) {
     });
   }, []);
 
+  // Which tools update themselves (Rust-owned). Reading it touches files only,
+  // never runs a tool, so it can be asked at any time.
+  const refreshAutoUpdate = useCallback(async (): Promise<Record<string, ToolAutoUpdateState>> => {
+    try {
+      const list = ((await invoke("tool_auto_update_get")) as ToolAutoUpdateState[] | null) ?? [];
+      const map = Object.fromEntries(list.map((s) => [s.name, s]));
+      setAutoUpdateStates(map);
+      return map;
+    } catch (e) {
+      console.error("Failed to read automatic update settings:", e);
+      return autoUpdateRef.current;
+    }
+  }, [autoUpdateRef]);
+
   // Latest-vs-installed for all managed deps (network, 24h TTL-cached backend-side).
   // `force` (the user's Refresh click) skips that cache.
   const checkUpdates = useCallback(async (force = false): Promise<DepUpdateInfo[]> => {
     try {
       const results = ((await invoke("dependency_check_updates", { force })) as DepUpdateInfo[] | null) ?? [];
+      // Known before the results are, so a tool that updates itself is never
+      // announced by a check that landed before the settings had loaded.
+      await refreshAutoUpdate();
       setUpdates(results);
       // An install failure is about an update; once that update is gone (it
       // landed some other way) there is nothing left to retry.
@@ -499,12 +536,15 @@ export function useDependencies(pluginStates: PluginState[]) {
         return next;
       });
       await refreshServices(results.filter((u) => u.origin === "managed").map((u) => u.name));
+      // Fire-and-forget: an automatic install can take a while, and the
+      // check's callers (the Tools tab, the schedule) shouldn't wait on it.
+      runAutoUpdatesRef.current(results).catch((e) => console.error("Failed to run automatic tool updates:", e));
       return results;
     } catch (e) {
       console.error("Failed to check dependency updates:", e);
       return [];
     }
-  }, [refreshServices]);
+  }, [refreshServices, refreshAutoUpdate]);
 
   // Fill the forward declarations the listeners and the schedule read.
   useAssignRef(checkUpdatesRef, checkUpdates);
@@ -633,6 +673,90 @@ export function useDependencies(pluginStates: PluginState[]) {
     [checkDep, depsRef, updatesRef, refreshServices],
   );
 
+  // --- Automatic updates (opt-in per tool; Rust decides and enforces) ---
+
+  /** The user's switch (Tools row, the update notice's offer). Throws with
+   *  Rust's reason when the tool can't update itself. */
+  const setAutoUpdate = useCallback(async (name: string, enabled: boolean): Promise<void> => {
+    const next = (await invoke("tool_auto_update_set", { name, enabled })) as ToolAutoUpdateState;
+    setAutoUpdateStates((prev) => ({ ...prev, [name]: next }));
+    // Turned on while an update is pending: install it now rather than tomorrow.
+    if (enabled) runAutoUpdatesRef.current(updatesRef.current).catch((e) => console.error("Failed to run automatic tool updates:", e));
+  }, [updatesRef]);
+
+  const declineAutoUpdateOffer = useCallback(async (name: string): Promise<void> => {
+    try {
+      await invoke("tool_auto_update_decline_offer", { name });
+      setAutoUpdateStates((prev) => (prev[name] ? { ...prev, [name]: { ...prev[name], offerDeclined: true } } : prev));
+    } catch (e) {
+      console.error("Failed to record the declined offer:", e);
+    }
+  }, []);
+
+  // For the Tools row before any update check has run. (The check reads it
+  // again itself before publishing, so the notice never depends on this.)
+  useEffect(() => {
+    refreshAutoUpdate().catch(console.error);
+  }, [refreshAutoUpdate]);
+
+  const autoRunningRef = useRef<Set<string>>(new Set());
+  const autoRetryTimersRef = useRef<Map<string, number>>(new Map());
+  useEffect(() => () => {
+    for (const t of autoRetryTimersRef.current.values()) window.clearTimeout(t);
+  }, []);
+
+  const runAutoUpdates = useCallback(async (results: DepUpdateInfo[]): Promise<void> => {
+    const due = results.filter((u) => u.outdated && u.origin === "managed" && !u.sourceMismatch && u.verified);
+    if (due.length === 0) return;
+    const states = await refreshAutoUpdate();
+    for (const u of due) {
+      if (!autoUpdates(states[u.name]) || autoRunningRef.current.has(u.name)) continue;
+      autoRunningRef.current.add(u.name);
+      let outcome: AutoInstallOutcome | null = null;
+      try {
+        outcome = (await invoke("dependency_auto_install", { name: u.name })) as AutoInstallOutcome;
+      } catch (e) {
+        console.error(`Failed to update ${u.name} automatically:`, e);
+      }
+      autoRunningRef.current.delete(u.name);
+      if (!outcome) continue;
+      // Only an attempt that downloaded drew the progress row; any other
+      // ending leaves it to whoever owns it (the user's own install, "busy").
+      if (autoAttemptDownloaded(outcome)) {
+        setInstalling((prev) => {
+          if (!(u.name in prev)) return prev;
+          const next = { ...prev };
+          delete next[u.name];
+          return next;
+        });
+      }
+      if (outcome.status === "skipped") {
+        if (outcome.retryLater && !autoRetryTimersRef.current.has(u.name)) {
+          autoRetryTimersRef.current.set(u.name, window.setTimeout(() => {
+            autoRetryTimersRef.current.delete(u.name);
+            runAutoUpdatesRef.current(updatesRef.current).catch((e) => console.error("Failed to run automatic tool updates:", e));
+          }, AUTO_UPDATE_IN_USE_RETRY_MS));
+        }
+        continue;
+      }
+      // Reported first: the record of what happened must not depend on the
+      // refresh below succeeding.
+      onAutoUpdateRef.current?.(u.name, outcome);
+      if (outcome.status === "installed") {
+        setUpdates((prev) => prev.filter((x) => x.name !== u.name));
+        try {
+          checkedRef.current.delete(u.name);
+          await checkDep(u.name);
+          await refreshServices([u.name]);
+        } catch (e) {
+          console.error(`Failed to refresh ${u.name} after its automatic update:`, e);
+        }
+      }
+    }
+    await refreshAutoUpdate();
+  }, [refreshAutoUpdate, checkDep, refreshServices, updatesRef, onAutoUpdateRef]);
+  useAssignRef(runAutoUpdatesRef, runAutoUpdates);
+
   // Remove the app-managed copy; PATH falls back to any system copy. Refreshes
   // the row's status afterward.
   const uninstallManaged = useCallback(
@@ -753,6 +877,9 @@ export function useDependencies(pluginStates: PluginState[]) {
     checkDep,
     checkUpdates,
     installDep,
+    autoUpdate,
+    setAutoUpdate,
+    declineAutoUpdateOffer,
     uninstallManaged,
     promptDep,
     dismissModal,

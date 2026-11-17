@@ -27,6 +27,10 @@ export interface NotifyOptions {
   /** Who is talking — a plugin's name, "Assistant" — shown above the message
    *  and in the list. Omitted for the app itself. */
   source?: string;
+  /** Into the list only: no toast, and never the bell's dot. For a record of
+   *  something the user asked to happen unattended (a tool updating itself),
+   *  which shouldn't interrupt but should be findable. */
+  quiet?: boolean;
 }
 
 /** What every surface that raises feedback is handed. */
@@ -231,7 +235,7 @@ export function useToasts() {
       // On screen again (or in the open list), so it's seen; leaving decides afresh.
       const bumped: NotificationItem = { ...repeat, action, count: repeat.count + 1, at: now, unseen: false };
       commitItems([bumped, ...itemsRef.current.filter((i) => i.id !== repeat.id)]);
-      if (!listOpenRef.current) show(bumped);
+      if (!listOpenRef.current && !options?.quiet) show(bumped);
       return;
     }
 
@@ -239,8 +243,10 @@ export function useToasts() {
     if (source) item.source = source;
     if (action) item.action = action;
     commitItems([item, ...itemsRef.current].slice(0, NOTIFICATION_LIMIT));
-    // With the list open, the new row is right there — no toast over it.
-    if (!listOpenRef.current) show(item);
+    // With the list open, the new row is right there — no toast over it. A
+    // quiet one is never shown, so it never leaves the screen unhandled and
+    // never lights the bell.
+    if (!listOpenRef.current && !options?.quiet) show(item);
   }, [commitItems, show]);
 
   /** The toast's × — the user saw it, so it lights nothing. */

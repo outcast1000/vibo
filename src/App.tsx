@@ -94,6 +94,14 @@ import {
   type ToolUpdate,
   type UpdateNoticeDismissals,
 } from "./utils/updateNotice";
+import {
+  announcedToolUpdates,
+  coerceToolSightings,
+  pickAutoUpdateOffer,
+  recordToolSightings,
+  type AutoInstallOutcome,
+  type ToolUpdateSightings,
+} from "./utils/toolAutoUpdate";
 import { UpdateNoticeBanner } from "./components/UpdateNoticeBanner";
 import {
   useMiniMode, cycleRestingSize, cycleMiniWidth,
@@ -1090,7 +1098,11 @@ function App() {
     plugins.dispatchEvent("queue:changed");
   }, [queueHook.queue, queueHook.queueIndex, plugins.dispatchEvent]);
 
-  const dependencies = useDependencies(plugins.pluginStates);
+  // Filled once `notify` exists (below): an automatic tool update reports here.
+  const reportAutoUpdateRef = useRef<(name: string, outcome: AutoInstallOutcome) => void>(() => {});
+  const dependencies = useDependencies(plugins.pluginStates, {
+    onAutoUpdate: (name, outcome) => reportAutoUpdateRef.current(name, outcome),
+  });
   const scrobblerList = useMemo(
     () => buildScrobblerList(plugins.scrobblerPluginIds, plugins.pluginStates),
     [plugins.scrobblerPluginIds, plugins.pluginStates],
@@ -1249,6 +1261,25 @@ function App() {
   // failure/fallback paths can surface feedback.
   const notifications = useToasts();
   const { notify } = notifications;
+  // An update the user asked to happen unattended is recorded, not announced:
+  // a landed one goes into the list quietly; a failed one is a warning toast
+  // (the Tools row and the log say the same), and the one that switched
+  // automatic updates off says so.
+  useAssignRef(reportAutoUpdateRef, (name: string, outcome: AutoInstallOutcome) => {
+    if (outcome.status === "installed") {
+      notify(`${name} updated itself${outcome.from ? ` from ${outcome.from}` : ""} to ${outcome.to}`, { kind: "success", quiet: true });
+      if (outcome.restartErrors.length > 0) {
+        notify(`${name} was updated, but ${outcome.restartErrors.join("; ")}`, { kind: "warning" });
+      }
+    } else if (outcome.status === "failed") {
+      notify(
+        outcome.switchedOff
+          ? `${name} couldn't update itself again, so its automatic updates are now off: ${outcome.error}`
+          : `${name} couldn't update itself: ${outcome.error}. It will try again tomorrow.`,
+        { kind: "warning" },
+      );
+    }
+  });
   // Settings → AI control at the activity log: where the assistant segment's
   // label and an assistant failure's "Open AI control" both lead.
   const openAssistantLog = () => {
@@ -1940,14 +1971,48 @@ function App() {
   );
   // Vibo's own copies with a newer release — the same gate as the Tools row's
   // Update button (a copy from another source shows Reinstall there instead).
-  const toolUpdates = useMemo((): ToolUpdate[] => dependencies.updates
-    .filter((u) => u.outdated && u.origin === "managed" && u.latest && !u.sourceMismatch)
-    .map((u) => ({
-      name: u.name,
-      installed: u.installed,
-      latest: u.latest!,
-      running: dependencies.services[u.name]?.some((s) => s.running) ?? false,
-    })), [dependencies.updates, dependencies.services]);
+  // A tool the user let update itself is left out: it isn't theirs to click.
+  const toolUpdates = useMemo((): ToolUpdate[] => announcedToolUpdates(
+    dependencies.updates,
+    dependencies.autoUpdate,
+    (name) => dependencies.services[name]?.some((s) => s.running) ?? false,
+  ), [dependencies.updates, dependencies.services, dependencies.autoUpdate]);
+  // Which tool versions the notice has announced lately, so a tool that
+  // updates all the time (yt-dlp nightly) can be offered automatic updates.
+  // Not authorization — only when to ask; the switch itself is Rust's.
+  const [toolUpdateSightings, setToolUpdateSightings] = usePersistedSetting<ToolUpdateSightings>(
+    "toolUpdateSightings", {}, restoredRef, { restore: coerceToolSightings },
+  );
+  useEffect(() => {
+    if (toolUpdates.length === 0) return;
+    setToolUpdateSightings((prev) => recordToolSightings(prev, toolUpdates, Date.now()));
+  }, [toolUpdates, setToolUpdateSightings]);
+  const autoUpdateOffer = useMemo(
+    () => pickAutoUpdateOffer(toolUpdates, toolUpdateSightings, dependencies.autoUpdate, Date.now()),
+    [toolUpdates, toolUpdateSightings, dependencies.autoUpdate],
+  );
+  const [autoUpdateOfferError, setAutoUpdateOfferError] = useState<string | null>(null);
+  // Both are stable callbacks; `dependencies` itself is a new object every
+  // render, so depending on it would rebuild the offer (and the banner) each time.
+  const { setAutoUpdate: setToolAutoUpdate, declineAutoUpdateOffer } = dependencies;
+  const autoUpdateOfferProps = useMemo(() => {
+    if (!autoUpdateOffer) return null;
+    return {
+      name: autoUpdateOffer,
+      error: autoUpdateOfferError,
+      onAccept: () => {
+        setAutoUpdateOfferError(null);
+        setToolAutoUpdate(autoUpdateOffer, true).catch((e) => {
+          console.error("Failed to turn on automatic updates:", e);
+          setAutoUpdateOfferError(e instanceof Error ? e.message : String(e));
+        });
+      },
+      onDecline: () => {
+        setAutoUpdateOfferError(null);
+        declineAutoUpdateOffer(autoUpdateOffer).catch(console.error);
+      },
+    };
+  }, [autoUpdateOffer, autoUpdateOfferError, setToolAutoUpdate, declineAutoUpdateOffer]);
   const updateNotice = useMemo(() => resolveUpdateNotice({
     appUpdate: updater.updateState.available,
     extensionUpdates: extensionsHook.updates,
@@ -5623,6 +5688,7 @@ function App() {
               }}
               onDismiss={handleDismissUpdateNotice}
               onHeightChange={setUpdateNoticeHeight}
+              autoUpdateOffer={autoUpdateOfferProps}
             />
           )}
           <PluginSectionContext.Provider value={pluginSectionHost}>

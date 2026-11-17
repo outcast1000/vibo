@@ -162,6 +162,9 @@ pub async fn plugin_exec(
     // and they must not start paying for pipes and threads.
     let Some(exec_id) = exec_id else {
         return run_blocking(move || -> Result<_, String> {
+            // A run of the tool: an automatic update waits for it, and it waits
+            // for an automatic update already swapping the files.
+            let _in_use = crate::tool_auto_update::begin_use(&program);
             let mut cmd = build_plugin_command(&program, &args, cwd, &app_dir);
             let output = cmd.output()
                 .map_err(|e| format!("Failed to run {}: {}", program, e))?;
@@ -184,6 +187,7 @@ pub async fn plugin_exec(
     let stream = stream_output.unwrap_or(false);
     run_blocking(move || -> Result<_, String> {
         use std::process::Stdio;
+        let _in_use = crate::tool_auto_update::begin_use(&program);
         let mut cmd = build_plugin_command(&program, &args, cwd, &app_dir);
         cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         #[cfg(unix)]
@@ -373,66 +377,272 @@ pub async fn dependency_install(
 ) -> Result<DependencyInstallOutcome, String> {
     let cache = Arc::clone(&state.dep_cache);
     let app_dir = state.app_dir.clone();
-    run_blocking(move || -> Result<_, String> {
-        // The guard first, then the list: a start arriving after the guard is
-        // refused, and one already past its check holds the store lock until
-        // its pid is stamped, so waiting for that lock puts it in the list.
-        let updating = crate::plugin_programs::begin_update(&name)?;
-        drop(crate::plugin_programs::approved::store_lock());
-        let running = crate::plugin_programs::running_for_dependency(&app_dir, &name);
-        let mut stopped = Vec::new();
-        let mut stop_error = None;
-        for reg in &running {
-            log::info!("Stopping {}:{} to update {}", reg.plugin_id, reg.name, name);
-            match crate::plugin_programs::stop(&app_dir, &reg.plugin_id, &reg.name, SERVICE_UPDATE_GRACE) {
-                Ok(_) => stopped.push(reg.clone()),
-                Err(e) => {
-                    stop_error = Some(format!("Couldn't stop {} to update {}: {}", reg.name, name, e));
-                    break;
-                }
+    let confirmed = confirmed_unverified.unwrap_or(false);
+    run_blocking(move || install_dependency(&app, &app_dir, &cache, &name, confirmed, || Ok(()))).await
+}
+
+/// The one install path, shared by the user's click (`dependency_install`)
+/// and an opted-in automatic update (`dependency_auto_install`). Blocking.
+/// `before_swap` runs once the download is verified, before anything is
+/// replaced (`dependencies::install_managed_gated`); the click passes a no-op.
+fn install_dependency<G>(
+    app: &tauri::AppHandle,
+    app_dir: &std::path::Path,
+    cache: &dependencies::DepCache,
+    name: &str,
+    confirmed: bool,
+    before_swap: impl FnOnce() -> Result<G, String>,
+) -> Result<DependencyInstallOutcome, String> {
+    // The guard first, then the list: a start arriving after the guard is
+    // refused, and one already past its check holds the store lock until
+    // its pid is stamped, so waiting for that lock puts it in the list.
+    let updating = crate::plugin_programs::begin_update(name)?;
+    drop(crate::plugin_programs::approved::store_lock());
+    let running = crate::plugin_programs::running_for_dependency(app_dir, name);
+    let mut stopped = Vec::new();
+    let mut stop_error = None;
+    for reg in &running {
+        log::info!("Stopping {}:{} to update {}", reg.plugin_id, reg.name, name);
+        match crate::plugin_programs::stop(app_dir, &reg.plugin_id, &reg.name, SERVICE_UPDATE_GRACE) {
+            Ok(_) => stopped.push(reg.clone()),
+            Err(e) => {
+                stop_error = Some(format!("Couldn't stop {} to update {}: {}", reg.name, name, e));
+                break;
             }
         }
-        // One still running would be swapped from under (and restarted as a
-        // second copy), so nothing installs; the ones already stopped start again.
-        let result = match &stop_error {
-            Some(e) => Err(e.clone()),
-            None => {
-                let progress_name = name.clone();
-                let confirmed = confirmed_unverified.unwrap_or(false);
-                dependencies::install_managed(&name, &cache, confirmed, |downloaded, total| {
-                    let _ = app.emit(
-                        "dependency-install-progress",
-                        serde_json::json!({ "name": progress_name, "downloaded": downloaded, "total": total }),
-                    );
+    }
+    // One still running would be swapped from under (and restarted as a
+    // second copy), so nothing installs; the ones already stopped start again.
+    let result = match &stop_error {
+        Some(e) => Err(e.clone()),
+        None => dependencies::install_managed_gated(
+            name,
+            cache,
+            confirmed,
+            |downloaded, total| {
+                let _ = app.emit(
+                    "dependency-install-progress",
+                    serde_json::json!({ "name": name, "downloaded": downloaded, "total": total }),
+                );
+            },
+            before_swap,
+        ),
+    };
+    drop(updating);
+    let mut restart_errors = Vec::new();
+    for reg in &stopped {
+        match crate::plugin_programs::restart(app_dir, reg) {
+            Ok(()) => {
+                let _ = app.emit(
+                    "program-restarted",
+                    serde_json::json!({ "pluginId": reg.plugin_id, "name": reg.name }),
+                );
+            }
+            Err(e) => {
+                log::warn!("{}:{} didn't start again after the update: {}", reg.plugin_id, reg.name, e);
+                restart_errors.push(format!("{} didn't start again: {}", reg.name, e));
+            }
+        }
+    }
+    let version = result.map_err(|e| match restart_errors.is_empty() {
+        true => e,
+        false => format!("{e}\n{}", restart_errors.join("\n")),
+    })?;
+    let _ = app.emit(
+        "dependency-installed",
+        serde_json::json!({ "name": name, "version": version }),
+    );
+    log::info!("Installed managed {} {}", name, version);
+    Ok(DependencyInstallOutcome { version, restart_errors })
+}
+
+/// One tool's auto-update state, for the Tools row and the update notice.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolAutoUpdateState {
+    name: String,
+    #[serde(flatten)]
+    prefs: crate::tool_auto_update::ToolPrefs,
+    /// Why it can't be switched on, when it can't (guardrails 1–4).
+    ineligible: Option<crate::tool_auto_update::Ineligible>,
+    ineligible_message: Option<String>,
+}
+
+fn auto_update_state(
+    app_dir: &std::path::Path,
+    name: &str,
+    prefs: crate::tool_auto_update::ToolPrefs,
+) -> ToolAutoUpdateState {
+    let facts = crate::tool_auto_update::facts_for(app_dir, name);
+    let ineligible = crate::tool_auto_update::eligibility(&facts).err();
+    ToolAutoUpdateState {
+        name: name.to_string(),
+        prefs,
+        ineligible,
+        ineligible_message: ineligible.map(|i| i.message(name)),
+    }
+}
+
+/// Every managed tool's auto-update state. Reads files only — it never runs a
+/// tool (`facts_for`), so it is safe on the startup path.
+#[tauri::command]
+pub async fn tool_auto_update_get(state: State<'_, AppState>) -> Result<Vec<ToolAutoUpdateState>, String> {
+    let app_dir = state.app_dir.clone();
+    run_blocking(move || {
+        let prefs = crate::tool_auto_update::read_prefs();
+        Ok::<_, std::convert::Infallible>(
+            dependencies::all_defs()
+                .into_iter()
+                .filter(|def| def.managed.as_ref().is_some_and(|m| m.platform_asset().is_some()))
+                .map(|def| {
+                    let entry = prefs.get(def.name).cloned().unwrap_or_default();
+                    auto_update_state(&app_dir, def.name, entry)
+                })
+                .collect(),
+        )
+    })
+    .await
+}
+
+/// The user's switch on the Tools row or the update notice's offer. Turning it
+/// on is refused for a tool outside the guardrails; turning it off never is.
+#[tauri::command]
+pub async fn tool_auto_update_set(
+    state: State<'_, AppState>,
+    name: String,
+    enabled: bool,
+) -> Result<ToolAutoUpdateState, String> {
+    let app_dir = state.app_dir.clone();
+    run_blocking(move || -> Result<_, String> {
+        if enabled {
+            let facts = crate::tool_auto_update::facts_for(&app_dir, &name);
+            if let Err(why) = crate::tool_auto_update::eligibility(&facts) {
+                return Err(why.message(&name));
+            }
+        }
+        let prefs = crate::tool_auto_update::update_prefs(&name, |e| {
+            crate::tool_auto_update::apply_user_choice(e, enabled)
+        })?;
+        log::info!("Automatic updates for {} turned {}", name, if enabled { "on" } else { "off" });
+        Ok(auto_update_state(&app_dir, &name, prefs))
+    })
+    .await
+}
+
+/// "No thanks" on the update notice's offer: it isn't asked again.
+#[tauri::command]
+pub async fn tool_auto_update_decline_offer(name: String) -> Result<(), String> {
+    run_blocking(move || {
+        crate::tool_auto_update::update_prefs(&name, |e| e.offer_declined = true).map(|_| ())
+    })
+    .await
+}
+
+/// What an automatic update attempt did.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "status")]
+pub enum AutoInstallOutcome {
+    Installed { from: Option<String>, to: String, restart_errors: Vec<String> },
+    /// Nothing was installed; `reason` is a kebab-case code (`in-use` is the
+    /// only one that downloaded first — see `autoAttemptDownloaded`), and
+    /// `retry_later` says the frontend may ask again soon.
+    Skipped { reason: String, retry_later: bool },
+    Failed { error: String, switched_off: bool },
+}
+
+/// Install an update of `name` because the user turned its automatic updates
+/// on — never otherwise. Every guardrail is re-checked here, whatever the
+/// frontend believed (see `tool_auto_update.rs`).
+#[tauri::command]
+pub async fn dependency_auto_install(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<AutoInstallOutcome, String> {
+    use crate::tool_auto_update as auto;
+    let cache = Arc::clone(&state.dep_cache);
+    let app_dir = state.app_dir.clone();
+    run_blocking(move || -> Result<_, String> {
+        let skip = |reason: &str, retry_later: bool| {
+            Ok(AutoInstallOutcome::Skipped { reason: reason.to_string(), retry_later })
+        };
+        let prefs = auto::read_prefs().get(&name).cloned().unwrap_or_default();
+        if !prefs.enabled {
+            return skip("off", false);
+        }
+        if let Err(why) = auto::eligibility(&auto::facts_for(&app_dir, &name)) {
+            log::info!("Not updating {} automatically: {}", name, why.message(&name));
+            return skip("ineligible", false);
+        }
+        let now = auto::now_secs();
+        if auto::attempted_recently(&prefs, now) {
+            return skip("too-soon", false);
+        }
+        // The real origin, from the version probe: the file being on disk
+        // (what `facts_for` reads) isn't proof it's the copy in use.
+        let installed = match dependencies::check_single(&name, &cache) {
+            dependencies::DepStatus::Installed { version, origin: dependencies::DepOrigin::Managed } => version,
+            _ => return skip("ineligible", false),
+        };
+        let latest = match dependencies::latest_version(&name, &cache) {
+            Ok(v) => v,
+            Err(_) => return skip("no-answer", false),
+        };
+        if !dependencies::version_lt(&installed, &latest) {
+            return skip("up-to-date", false);
+        }
+        // The user's own install of it is running: theirs wins, ask again later.
+        if crate::plugin_programs::is_updating(&name) {
+            return skip("busy", true);
+        }
+        // Guardrail 5, around the swap alone: the download and its checksum
+        // check run with nothing held, so a search waits seconds, not for the
+        // whole download. Busy at that moment, the verified download is
+        // discarded and this is a skip, not a failure.
+        let gate_name = name.clone();
+        let gate_dir = app_dir.clone();
+        let before_swap = move || -> Result<auto::InstallGuard, String> {
+            let guard = auto::begin_auto_install(&gate_name).ok_or_else(|| auto::SWAP_IN_USE.to_string())?;
+            // A background program (any profile) would be swapped from under.
+            if auto::running_as_service_anywhere(&gate_dir, &gate_name) {
+                return Err(auto::SWAP_IN_USE.to_string());
+            }
+            Ok(guard)
+        };
+        match install_dependency(&app, &app_dir, &cache, &name, false, before_swap) {
+            Ok(outcome) => {
+                auto::update_prefs(&name, |e| {
+                    auto::record_success(e, Some(installed.clone()), outcome.version.clone(), now)
+                })?;
+                log::info!("Auto-updated {} {} → {}", name, installed, outcome.version);
+                Ok(AutoInstallOutcome::Installed {
+                    from: Some(installed),
+                    to: outcome.version,
+                    restart_errors: outcome.restart_errors,
                 })
             }
-        };
-        drop(updating);
-        let mut restart_errors = Vec::new();
-        for reg in &stopped {
-            match crate::plugin_programs::restart(&app_dir, reg) {
-                Ok(()) => {
-                    let _ = app.emit(
-                        "program-restarted",
-                        serde_json::json!({ "pluginId": reg.plugin_id, "name": reg.name }),
-                    );
-                }
-                Err(e) => {
-                    log::warn!("{}:{} didn't start again after the update: {}", reg.plugin_id, reg.name, e);
-                    restart_errors.push(format!("{} didn't start again: {}", reg.name, e));
-                }
+            // Not failures of the update, so neither counts toward switching it
+            // off. `in-use`: verified, then the tool was busy at swap time (the
+            // download is gone). `busy`: the user's own install of it started
+            // in between and refused this one (`begin_update`) before any
+            // download — the progress on screen is theirs.
+            Err(error) if error == auto::SWAP_IN_USE => {
+                log::info!("Automatic update of {} postponed: {}", name, error);
+                skip("in-use", true)
+            }
+            Err(error) if error == format!("{name} is already being updated") => skip("busy", true),
+            Err(error) => {
+                let mut switched_off = false;
+                auto::update_prefs(&name, |e| switched_off = auto::record_failure(e, error.clone(), now))?;
+                log::warn!(
+                    "Automatic update of {} failed: {}{}",
+                    name,
+                    error,
+                    if switched_off { " — automatic updates for it are now off" } else { "" }
+                );
+                Ok(AutoInstallOutcome::Failed { error, switched_off })
             }
         }
-        let version = result.map_err(|e| match restart_errors.is_empty() {
-            true => e,
-            false => format!("{e}\n{}", restart_errors.join("\n")),
-        })?;
-        let _ = app.emit(
-            "dependency-installed",
-            serde_json::json!({ "name": name, "version": version }),
-        );
-        log::info!("Installed managed {} {}", name, version);
-        Ok(DependencyInstallOutcome { version, restart_errors })
     })
     .await
 }

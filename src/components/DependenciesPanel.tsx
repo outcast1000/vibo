@@ -10,6 +10,8 @@ import type {
 } from "../hooks/useDependencies";
 import { HelpLink } from "./HelpLink";
 import { getPlatform } from "./DependencyModal";
+import { ToggleSwitch } from "./ToggleSwitch";
+import { autoUpdateStatusLine, type ToolAutoUpdateState } from "../utils/toolAutoUpdate";
 // Reuses the Settings card/row look; imported here so the Tools tab doesn't
 // depend on SettingsPanel having been loaded first.
 import "./SettingsPanel.css";
@@ -34,6 +36,10 @@ export interface DependenciesApi {
   removeUnused: (name: string) => Promise<void>;
   /** Tools enabled plugins use that nothing installed defines. */
   missingDefinitions: UndefinedTool[];
+  /** Tool name → whether it installs its own updates (Rust-owned mirror). */
+  autoUpdate?: Record<string, ToolAutoUpdateState>;
+  /** The row's switch. Throws with the reason when the tool can't update itself. */
+  setAutoUpdate?: (name: string, enabled: boolean) => Promise<void>;
 }
 
 /**
@@ -81,9 +87,11 @@ export function serviceLines(
 /**
  * External-binary dependencies (ffmpeg, yt-dlp, …): status, origin, install /
  * update / take-over / stop-managing, and whether a plugin runs one as a
- * background program. Rendered as the Extensions view's Tools tab. Nothing here
- * updates on its own: an update is announced (the update notice, this tab's
- * badge) and installed on the user's click.
+ * background program. Rendered as the Extensions view's Tools tab. An update is
+ * announced (the update notice, this tab's badge) and installed on the user's
+ * click — unless the user switched on "Install updates automatically" for that
+ * tool here, which Rust allows only inside its guardrails
+ * (`tool_auto_update.rs`).
  */
 export function DependenciesPanel({
   dependencies,
@@ -147,6 +155,17 @@ export function DependenciesPanel({
       console.error("Failed to install dependency:", e);
     } finally {
       setActioning(null);
+    }
+  };
+
+  const handleAutoUpdate = async (name: string, enabled: boolean) => {
+    if (!dependencies.setAutoUpdate) return;
+    setRowError(name, null);
+    try {
+      await dependencies.setAutoUpdate(name, enabled);
+    } catch (e) {
+      console.error("Failed to change automatic updates:", e);
+      setRowError(name, e);
     }
   };
 
@@ -329,6 +348,49 @@ export function DependenciesPanel({
                     {dep.origin === "system" ? " (installed outside Vibo — update via your package manager)" : ""}
                   </span>
                 )}
+                {installed && dep.origin === "managed" && dependencies.autoUpdate?.[dep.name] && (() => {
+                  const auto = dependencies.autoUpdate[dep.name];
+                  // The switch shows the user's choice, and a click always
+                  // flips that choice. A tool that may not update itself (right
+                  // now) can't be switched on — but one already on stays
+                  // switchable *off*, and says it's paused and why; showing it
+                  // off would leave a stored "on" nobody could clear.
+                  const refused = !!auto.ineligible;
+                  const status = autoUpdateStatusLine(auto);
+                  return (
+                    <div className="dep-auto-update" style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <ToggleSwitch
+                          checked={auto.enabled}
+                          onChange={() => { handleAutoUpdate(dep.name, !auto.enabled).catch(console.error); }}
+                          disabled={busy || (refused && !auto.enabled)}
+                          label={`Install ${dep.name} updates automatically`}
+                        />
+                        <span style={{ fontSize: "var(--fs-xs)", color: refused && !auto.enabled ? "var(--text-tertiary)" : "var(--text-secondary)" }}>
+                          Install updates automatically
+                        </span>
+                      </div>
+                      {refused ? (
+                        <span style={{ fontSize: "var(--fs-xs)", color: auto.enabled ? "var(--warning)" : "var(--text-tertiary)" }}>
+                          {auto.enabled ? `Paused: ${auto.ineligibleMessage}. Its updates are announced meanwhile.` : auto.ineligibleMessage}
+                        </span>
+                      ) : auto.enabled && !status ? (
+                        <span style={{ fontSize: "var(--fs-xs)", color: "var(--text-tertiary)" }}>
+                          Checked daily. Each download is verified, and it's never replaced while running.
+                        </span>
+                      ) : null}
+                      {status && (
+                        <span
+                          className="dep-auto-update-status"
+                          role={status.tone === "error" ? "alert" : undefined}
+                          style={{ fontSize: "var(--fs-xs)", color: status.tone === "error" ? "var(--error)" : "var(--text-tertiary)" }}
+                        >
+                          {status.text}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })()}
                 {(rowErrors[dep.name] ?? dependencies.installErrors?.[dep.name]) && (
                   <span className="dep-row-error" role="alert" style={{ fontSize: "var(--fs-xs)", color: "var(--error)", whiteSpace: "pre-wrap" }}>
                     {rowErrors[dep.name] ?? dependencies.installErrors?.[dep.name]?.message}

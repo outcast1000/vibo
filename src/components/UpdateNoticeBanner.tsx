@@ -29,6 +29,17 @@ export interface UpdateNoticeBannerProps {
    * this to start *below* the strip instead of covering it.
    */
   onHeightChange?: (height: number) => void;
+  /**
+   * Offer to let a tool that updates all the time install its own updates
+   * (`utils/toolAutoUpdate.ts` → `pickAutoUpdateOffer`). Turn on is the
+   * consent; No thanks is remembered and the offer doesn't come back.
+   */
+  autoUpdateOffer?: {
+    name: string;
+    error: string | null;
+    onAccept: () => void;
+    onDecline: () => void;
+  } | null;
 }
 
 /**
@@ -54,6 +65,7 @@ export function UpdateNoticeBanner({
   onOpenDetails,
   onDismiss,
   onHeightChange,
+  autoUpdateOffer,
 }: UpdateNoticeBannerProps) {
   const [notesOpen, setNotesOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -148,6 +160,23 @@ export function UpdateNoticeBanner({
       </div>
 
       {failure && <div className="update-notice-error">{failure}</div>}
+
+      {autoUpdateOffer && !installing && (
+        <div className="update-notice-offer">
+          <span className="update-notice-offer-text">
+            {autoUpdateOffer.name} has had several new versions lately. Let Vibo install its updates
+            automatically? Each download is checked against its published checksum, and Vibo never replaces it
+            while it's running. You can turn this off in Extensions → Tools.
+          </span>
+          <button type="button" className="ds-btn ds-btn--secondary ds-btn--sm" onClick={autoUpdateOffer.onAccept}>
+            Turn on
+          </button>
+          <button type="button" className="ds-btn ds-btn--ghost ds-btn--sm" onClick={autoUpdateOffer.onDecline}>
+            No thanks
+          </button>
+          {autoUpdateOffer.error && <span className="update-notice-offer-error">{autoUpdateOffer.error}</span>}
+        </div>
+      )}
 
       {notesOpen && details && <div className="update-notice-notes">{details}</div>}
     </div>

@@ -164,6 +164,7 @@
           <li><strong>System</strong> — found on your PATH, e.g. installed via Homebrew or winget. Vibo never modifies these; update them with your package manager.</li>
         </ul>
         <p>For managed copies Vibo checks for new releases daily and announces them in the update bar at the top of the window, next to app and extension updates — nothing installs until you click <strong>Update</strong>. Keep <code>yt-dlp</code> current: an outdated version is the usual reason YouTube stops working. A tool a plugin runs in the background (such as slskd for Soulseek) is stopped and started again around its update.</p>
+        <p>A tool that updates often, like <code>yt-dlp</code>, can install its own updates instead: switch on <strong>Install updates automatically</strong> on its row in Extensions &rarr; Tools, or answer the offer in the update bar. It is off until you turn it on, and Vibo only does it for its own copy of a tool whose downloads it can verify with a published checksum. It checks once a day, never replaces the tool while it is running, and never for a tool a plugin runs in the background. Each automatic update is listed in your notifications and on the tool's row; if one fails twice in a row, automatic updates for that tool switch themselves off and its updates are announced again.</p>
       </div>
     </div>
   </section>
