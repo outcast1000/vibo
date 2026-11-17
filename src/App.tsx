@@ -139,7 +139,7 @@ import { useLikeActions } from "./hooks/useLikeActions";
 import { useControlApi } from "./hooks/useControlApi";
 import { useCollectionActions } from "./hooks/useCollectionActions";
 import { useContextMenuActions } from "./hooks/useContextMenuActions";
-import type { PluginTrack, PluginBadge, PluginPlayContext, ReplaceTrackFileRequest, ReplaceTrackFileResult, RowMenuAction, TrackRowItem } from "./types/plugin";
+import type { PluginTrack, PluginBadge, PluginPlayContext, ReplaceTrackFileRequest, ReplaceTrackFileResult, RowMenuAction, TrackRowItem, PluginSidebarItem } from "./types/plugin";
 import { ReplaceTrackFileModal } from "./components/ReplaceTrackFileModal";
 import { isTrackBeingReplaced, type StagedReplacement } from "./utils/replaceTrackFile";
 import { HOST_SEARCH_ACTION } from "./types/plugin";
@@ -164,6 +164,7 @@ import { VideoAmbientOverlay } from "./components/VideoAmbientOverlay";
 import { VideoSubtitles } from "./components/VideoSubtitles";
 import { AddServerModal } from "./components/AddServerModal";
 import { showNativeMenu, type MenuItemSpec } from "./nativeMenu";
+import { buildPluginNavMenuSpecs } from "./contextMenu/buildPluginNavMenuSpecs";
 import { buildPluginMenuSpecs } from "./contextMenu/pluginMenuGroups";
 import { toPluginTarget } from "./types/contextMenu";
 import { buildRatingMenuSpecs } from "./contextMenu/ratingMenu";
@@ -176,6 +177,7 @@ import { PlaylistsView } from "./components/PlaylistsView";
 import { SavePlaylistModal } from "./components/SavePlaylistModal";
 import { PlaylistPickerModal } from "./components/PlaylistPickerModal";
 import { ConfirmModal } from "./components/ConfirmModal";
+import { UninstallPluginConfirm } from "./components/UninstallPluginConfirm";
 import { EditTrackMetadataModal, buildTrackInfoEntries, type TrackInfoEntry } from "./components/EditTrackMetadataModal";
 import { CollectionsView } from "./components/CollectionsView";
 import { EditCollectionModal } from "./components/EditCollectionModal";
@@ -1935,6 +1937,44 @@ function App() {
     getPermissionsToApprove: plugins.permissionsToApprove,
     onPermissionsNeeded: enqueuePermissionRequests,
   });
+
+  // Right-click on a plugin's sidebar entry: details / disable / uninstall —
+  // the Extensions view's own actions (same busy modal, same confirmation),
+  // reachable without going there first. Read off the Extensions view's own
+  // item so both surfaces agree on what can be uninstalled.
+  const [navUninstallPrompt, setNavUninstallPrompt] = useState<{ id: string; name: string; revertsToBuiltin: boolean } | null>(null);
+  const pluginStatesRef = useLatestRef(plugins.pluginStates);
+  const viewRef = useLatestRef(library.view);
+  // Taking a plugin away while its own view is open would leave the main pane
+  // on a view nothing renders any more — go Home first.
+  const leavePluginView = useCallback((pluginId: string) => {
+    if (viewRef.current.startsWith(`plugin:${pluginId}:`)) {
+      library.setView("home");
+      library.clearDetailSelection();
+    }
+  }, [viewRef, library]);
+  const { allExtensions, busyMessage: extBusyMessage, toggleEnabled: extToggleEnabled, uninstall: extUninstall } = extensionsHook;
+  const handlePluginNavContextMenu = useCallback((item: PluginSidebarItem, x: number, y: number) => {
+    const ext = allExtensions.find((e) => e.kind === "plugin" && e.id === item.pluginId);
+    if (!ext) return;
+    const revertsToBuiltin = !!ext.revertsToBuiltin;
+    const specs = buildPluginNavMenuSpecs({
+      canUninstall: ext.source !== "builtin",
+      revertsToBuiltin,
+      busy: extBusyMessage !== null,
+      onDetails: () => showPluginInExtensions(ext.id),
+      onDisable: () => {
+        // The menu was built from a snapshot; toggleEnabled flips whatever the
+        // state is now, so a plugin switched off meanwhile must not come back on.
+        const status = pluginStatesRef.current.find((p) => p.id === ext.id)?.status;
+        if (status !== "active" && status !== "needs-approval") return;
+        leavePluginView(ext.id);
+        void extToggleEnabled(ext.id, "plugin");
+      },
+      onUninstall: () => setNavUninstallPrompt({ id: ext.id, name: ext.name, revertsToBuiltin }),
+    });
+    showNativeMenu(x, y, specs).catch((e) => console.error("Failed to show plugin sidebar menu:", e));
+  }, [allExtensions, extBusyMessage, extToggleEnabled, showPluginInExtensions, pluginStatesRef, leavePluginView]);
 
   // Gallery installs an AI assistant asks for (control API extensions.install):
   // the app's own dialog asks the user, then runs the Extensions view's flow.
@@ -5483,6 +5523,7 @@ function App() {
         pluginNavItems={plugins.sidebarItems}
         badgeMap={mergedBadgeMap}
         onPluginView={handleOpenPluginView}
+        onPluginContextMenu={handlePluginNavContextMenu}
       />
       <PaneSplitter
         side="start"
@@ -7012,6 +7053,21 @@ function App() {
 
       {pluginLoadingMessage && (
         <PluginLoadingModal message={pluginLoadingMessage} />
+      )}
+
+      {navUninstallPrompt && (
+        <UninstallPluginConfirm
+          name={navUninstallPrompt.name}
+          revertsToBuiltin={navUninstallPrompt.revertsToBuiltin}
+          onCancel={() => setNavUninstallPrompt(null)}
+          onConfirm={() => {
+            const { id, revertsToBuiltin } = navUninstallPrompt;
+            setNavUninstallPrompt(null);
+            // A revert keeps the bundled copy running, view included.
+            if (!revertsToBuiltin) leavePluginView(id);
+            void extUninstall(id, "plugin");
+          }}
+        />
       )}
 
       {extensionsHook.busyMessage && (

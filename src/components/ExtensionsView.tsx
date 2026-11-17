@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { PermissionList } from "./PermissionList";
 import { ConfirmModal } from "./ConfirmModal";
+import { UninstallPluginConfirm } from "./UninstallPluginConfirm";
 import { ALWAYS_ASK_PERMISSIONS, describePermission } from "../pluginWorker/permissions";
 import type {
   ExtensionItem,
@@ -1521,15 +1522,9 @@ export default function ExtensionsView(props: ExtensionsViewProps) {
       )}
 
       {uninstallPrompt && (
-        <ConfirmModal
-          title={uninstallPrompt.revertsToBuiltin ? `Revert ${uninstallPrompt.name} to the built-in version?` : `Uninstall ${uninstallPrompt.name}?`}
-          messageClassName="delete-confirm-warning"
-          message={uninstallPrompt.revertsToBuiltin
-            ? `This removes the update you installed. ${uninstallPrompt.name} keeps running, as the version that came with Vibo, and keeps its settings. Check for updates to get the newer one back.`
-            : `This removes ${uninstallPrompt.name} from this device. You can reinstall it from the gallery later.`}
-          destructive
-          autoFocusConfirm
-          confirmLabel={uninstallPrompt.revertsToBuiltin ? "Revert" : "Uninstall"}
+        <UninstallPluginConfirm
+          name={uninstallPrompt.name}
+          revertsToBuiltin={uninstallPrompt.revertsToBuiltin}
           onCancel={() => setUninstallPrompt(null)}
           onConfirm={() => { const id = uninstallPrompt.id; setUninstallPrompt(null); onUninstall(id, "plugin"); }}
         />

@@ -73,6 +73,8 @@ interface SidebarProps {
   collectionAlertLabel?: string | null;
   pluginNavItems?: PluginSidebarItem[];
   onPluginView?: (pluginId: string, viewId: string) => void;
+  /** Right-click on a plugin entry: App pops the native details / disable / uninstall menu. */
+  onPluginContextMenu?: (item: PluginSidebarItem, x: number, y: number) => void;
   badgeMap?: Map<string, PluginBadge>;
 }
 
@@ -88,6 +90,7 @@ export function Sidebar({
   collectionAlertLabel,
   pluginNavItems,
   onPluginView,
+  onPluginContextMenu,
   badgeMap,
 }: SidebarProps) {
   const noDetail = selectedTrack === null;
@@ -144,6 +147,10 @@ export function Sidebar({
                   key={viewKey}
                   className={`nav-btn ${noDetail && view === viewKey ? "active" : ""}`}
                   onClick={() => navClick("plugin:" + item.pluginId, () => onPluginView?.(item.pluginId, item.id))}
+                  onContextMenu={onPluginContextMenu ? (e) => {
+                    e.preventDefault();
+                    onPluginContextMenu(item, e.clientX, e.clientY);
+                  } : undefined}
                   title={item.label}
                   aria-label={item.label}
                   aria-current={noDetail && view === viewKey ? "page" : undefined}
