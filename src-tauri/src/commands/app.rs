@@ -716,9 +716,10 @@ pub fn set_cursor_tracker(state: State<'_, AppState>, active: bool) {
     state.cursor_tracker_active.store(active, Ordering::Relaxed);
 }
 
-/// Start dragging the window from a webview mouse-down (the mini player). On
-/// macOS this replaces `startDragging`, which can hand AppKit the wrong event
-/// and make the window jump under the cursor — see `window_drag`.
+/// Start dragging the window from a webview mouse-down (the mini player, the
+/// main window's caption bar). On macOS this replaces `startDragging`, which
+/// can hand AppKit the wrong event and make the window jump under the cursor —
+/// see `window_drag`.
 #[tauri::command]
 pub fn start_window_drag(window: tauri::WebviewWindow) -> Result<(), String> {
     #[cfg(target_os = "macos")]

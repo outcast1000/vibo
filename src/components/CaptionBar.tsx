@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { WindowControls } from "./WindowControls";
 import { AppLogoMark } from "./AppLogoMark";
 import { CentralSearchDropdown } from "./CentralSearchDropdown";
@@ -27,6 +28,27 @@ function SyncProgressBar({ fraction }: { fraction: number | null }) {
       aria-valuenow={fraction == null ? undefined : Math.round(fraction * 100)}
     />
   );
+}
+
+const isMac = navigator.platform.includes("Mac");
+
+/**
+ * macOS: start a caption-bar drag through our own `start_window_drag` instead
+ * of Tauri's built-in `data-tauri-drag-region` handler. That one ends in tao's
+ * `drag_window`, which hands AppKit whatever event is current when the IPC
+ * call lands; after a click on an unfocused window that is often not the
+ * mouse-down, and the window jumped (backend window_drag.rs). Only single
+ * clicks on a region element itself — the rule Tauri applies to a bare
+ * attribute. Stopping propagation keeps the event from reaching Tauri's
+ * document listener; a double click is left to it (zoom on mouse-up).
+ */
+function handleMacCaptionDrag(e: React.MouseEvent) {
+  if (e.button !== 0 || e.detail !== 1) return;
+  const attr = (e.target as HTMLElement).getAttribute("data-tauri-drag-region");
+  if (attr === null || attr === "false") return;
+  e.preventDefault();
+  e.stopPropagation();
+  invoke("start_window_drag").catch((err) => console.error("Failed to start the window drag:", err));
 }
 
 interface CaptionBarProps {
@@ -73,7 +95,7 @@ export function CaptionBar({
   notificationBell,
 }: CaptionBarProps) {
   return (
-    <div className="search-bar" data-tauri-drag-region>
+    <div className="search-bar" data-tauri-drag-region onMouseDown={isMac ? handleMacCaptionDrag : undefined}>
       <WindowControls position="left" minimizeToMiniPlayer={minimizeToMiniPlayer} onMinimizeToMini={onToggleMiniMode} />
         <div className="caption-brand" data-tauri-drag-region>
           <AppLogoMark className="caption-brand-mark" />

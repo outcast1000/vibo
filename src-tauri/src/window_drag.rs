@@ -1,4 +1,4 @@
-//! Window drag for the mini player on macOS.
+//! Window drag on macOS: the mini player and the main window's caption bar.
 //!
 //! `performWindowDragWithEvent:` uses the event's location as the point the
 //! cursor holds on to, so that event has to be the mouse-down, in this window's
@@ -19,6 +19,14 @@ use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType, N
 use objc2_foundation::{MainThreadMarker, NSProcessInfo};
 
 pub fn start(ns_window: &NSWindow, mtm: MainThreadMarker) -> Result<(), String> {
+    // The button may already be up: a quick click (typically the click that
+    // activates an unfocused window) finishes before the IPC call lands. A drag
+    // started then has no mouse-up left to end it, so the window follows the
+    // cursor until the next click. No button held, no drag.
+    if NSEvent::pressedMouseButtons() & 1 == 0 {
+        log::debug!("Window drag: left button already released, not dragging");
+        return Ok(());
+    }
     let window_number = ns_window.windowNumber();
     let current = NSApplication::sharedApplication(mtm).currentEvent();
     let usable = current.as_ref().filter(|e| {
