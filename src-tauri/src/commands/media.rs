@@ -538,9 +538,12 @@ pub async fn tool_auto_update_decline_offer(name: String) -> Result<(), String> 
     .await
 }
 
-/// What an automatic update attempt did.
+/// What an automatic update attempt did. `rename_all_fields` is load-bearing:
+/// on an enum `rename_all` renames only the variants, so without it the
+/// frontend got `restart_errors` / `switched_off` / `retry_later`, threw on
+/// `restartErrors.length`, and never cleared the tool's Update button.
 #[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase", tag = "status")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "status")]
 pub enum AutoInstallOutcome {
     Installed { from: Option<String>, to: String, restart_errors: Vec<String> },
     /// Nothing was installed; `reason` is a kebab-case code (`in-use` is the
@@ -1289,6 +1292,26 @@ pub async fn queue_entry_file_size(state: State<'_, AppState>, path: String) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The frontend reads these fields in camelCase (`AutoInstallOutcome` in
+    /// `utils/toolAutoUpdate.ts`); `rename_all` alone left them snake_case.
+    #[test]
+    fn test_auto_install_outcome_fields_are_camel_case() {
+        let installed = serde_json::to_value(AutoInstallOutcome::Installed {
+            from: Some("1".into()),
+            to: "2".into(),
+            restart_errors: vec![],
+        })
+        .unwrap();
+        assert_eq!(installed["status"], "installed");
+        assert!(installed["restartErrors"].is_array());
+        let skipped =
+            serde_json::to_value(AutoInstallOutcome::Skipped { reason: "in-use".into(), retry_later: true }).unwrap();
+        assert_eq!(skipped["retryLater"], true);
+        let failed =
+            serde_json::to_value(AutoInstallOutcome::Failed { error: "x".into(), switched_off: true }).unwrap();
+        assert_eq!(failed["switchedOff"], true);
+    }
 
     /// A real, playable 1-second silent WAV. Written by hand because the repo
     /// carries no audio fixtures, and lofty can only tag a file it can parse.

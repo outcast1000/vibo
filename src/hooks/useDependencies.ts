@@ -741,7 +741,13 @@ export function useDependencies(pluginStates: PluginState[], options: UseDepende
       }
       // Reported first: the record of what happened must not depend on the
       // refresh below succeeding.
-      onAutoUpdateRef.current?.(u.name, outcome);
+      // A throwing reporter must not skip the cleanup below — that left the
+      // Update button up after a successful automatic update.
+      try {
+        onAutoUpdateRef.current?.(u.name, outcome);
+      } catch (e) {
+        console.error(`Failed to report the automatic update of ${u.name}:`, e);
+      }
       if (outcome.status === "installed") {
         setUpdates((prev) => prev.filter((x) => x.name !== u.name));
         try {
