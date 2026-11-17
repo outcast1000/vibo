@@ -9,6 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { StreamResolveResult } from "./types/plugin";
 import type { Track } from "./types";
 import { isVideoTrack } from "./utils";
+import { withResolverLog } from "./utils/resolverLog";
 
 /** A resolver's answer as the host sees it: the plugin-facing result plus
  *  `format`, which only the built-in Library resolver sets (it names the real
@@ -53,49 +54,68 @@ export function createLibraryStreamResolver(): StreamResolver {
     id: "built-in:library",
     name: "Library",
     source: "built-in",
-    resolve: async (title, artistName, albumName, _durationSecs, opts) => {
-      const matches = await invoke<Track[]>("find_tracks_by_metadata", {
-        title: stripRemasterSuffix(title) ?? title,
-        artistName,
-        albumName: stripRemasterSuffix(albumName),
-      });
-      // The prefer-video pass wants a VIDEO copy specifically — a user's own
-      // music-video file should beat fetching one from the network. Only video
-      // copies count there; with none playable the answer is null, so the pass
-      // falls through (the normal-pass entry still serves the audio copy).
-      const candidates = opts?.preferVideo ? matches.filter((t) => isVideoTrack(t)) : matches;
-      for (const track of candidates) {
-        if (!track.path) continue;
-        if (track.path.startsWith("file://")) {
-          // A library row is not proof the bytes are still there — a moved or
-          // deleted file leaves the row behind, and a source that resolves
-          // "successfully" and then won't load fails at *playback*, which
-          // never advances the chain. Skipping here is what lets the network
-          // copy (or a resolver further down the chain) play instead.
-          const filePath = track.path.substring(7);
-          if (!(await invoke<boolean>("file_exists", { path: filePath }))) {
-            console.debug(`Library copy is no longer on disk, trying the next copy: ${filePath}`);
-            continue;
-          }
-        }
-        // Report the matched copy's media kind so the resolver layer can
-        // reclassify the played track: a VIDEO track that falls back to a
-        // library AUDIO copy (e.g. a VPN-blocked YouTube video → its local /
-        // Subsonic audio version) must then play as audio. (See the
-        // reclassify branch in useStreamResolution.)
-        //
-        // `sourceUrl` is the copy's own URI — `file://`-prefixed for a local
-        // copy, which is what `effectiveLocalPath` and the queue-thumb
-        // localPath derivation key on.
-        return {
-          url: track.path,
-          label: "Library",
-          sourceUrl: track.path,
-          video: isVideoTrack(track),
-          format: track.format,
-        };
-      }
-      return null;
-    },
+    // Logged like the plugin resolvers (usePlugins → invokeStreamResolve), so
+    // the resolver log shows whether a walk asked the library and what it
+    // matched — without it, a Library miss was indistinguishable from the
+    // Library never being asked.
+    resolve: (title, artistName, albumName, durationSecs, opts) =>
+      withResolverLog(
+        {
+          kind: "stream",
+          provider: "built-in:library",
+          input: { title, artistName, albumName, durationSecs, ...(opts?.preferVideo ? { preferVideo: true } : {}) },
+        },
+        () => resolveFromLibrary(title, artistName, albumName, opts),
+      ),
   };
+}
+
+async function resolveFromLibrary(
+  title: string,
+  artistName: string | null,
+  albumName: string | null,
+  opts: { preferVideo?: boolean } | undefined,
+): Promise<ChainResult | null> {
+  const matches = await invoke<Track[]>("find_tracks_by_metadata", {
+    title: stripRemasterSuffix(title) ?? title,
+    artistName,
+    albumName: stripRemasterSuffix(albumName),
+  });
+  // The prefer-video pass wants a VIDEO copy specifically — a user's own
+  // music-video file should beat fetching one from the network. Only video
+  // copies count there; with none playable the answer is null, so the pass
+  // falls through (the normal-pass entry still serves the audio copy).
+  const candidates = opts?.preferVideo ? matches.filter((t) => isVideoTrack(t)) : matches;
+  for (const track of candidates) {
+    if (!track.path) continue;
+    if (track.path.startsWith("file://")) {
+      // A library row is not proof the bytes are still there — a moved or
+      // deleted file leaves the row behind, and a source that resolves
+      // "successfully" and then won't load fails at *playback*, which
+      // never advances the chain. Skipping here is what lets the network
+      // copy (or a resolver further down the chain) play instead.
+      const filePath = track.path.substring(7);
+      if (!(await invoke<boolean>("file_exists", { path: filePath }))) {
+        console.debug(`Library copy is no longer on disk, trying the next copy: ${filePath}`);
+        continue;
+      }
+    }
+    // Report the matched copy's media kind so the resolver layer can
+    // reclassify the played track: a VIDEO track that falls back to a
+    // library AUDIO copy (e.g. a VPN-blocked YouTube video → its local /
+    // Subsonic audio version) must then play as audio. (See the
+    // reclassify branch in useStreamResolution.)
+    //
+    // `sourceUrl` is the copy's own URI — `file://`-prefixed for a local
+    // copy, which is what `effectiveLocalPath` and the queue-thumb
+    // localPath derivation key on.
+    return {
+      url: track.path,
+      label: "Library",
+      sourceUrl: track.path,
+      video: isVideoTrack(track),
+      format: track.format,
+    };
+  }
+  return null;
 }

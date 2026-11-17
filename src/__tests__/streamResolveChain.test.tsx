@@ -20,6 +20,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { useStreamResolution, skippedAttempt } from "../hooks/useStreamResolution";
 import { fallBackFromFailedSource, clearAllNativeRetries } from "../playback/playbackRetry";
 import { createLibraryStreamResolver } from "../streamResolvers";
+import { resolverLogEntries, clearResolverLog } from "../utils/resolverLog";
 import type { QueueTrack, ResolvedTrackSource } from "../types";
 import type { StreamCandidate } from "../types/plugin";
 import type { StreamResolver } from "../streamResolvers";
@@ -215,6 +216,35 @@ describe("chain order: the track's own source, then a library copy of it", () =>
 
     expect(resolveStreamByUri).not.toHaveBeenCalled();
     expect(out.engineSource).toEqual({ kind: "file", path: STALE_LIBRARY_PATH });
+  });
+});
+
+describe("the resolver log records the Library resolver", () => {
+  const libraryEntries = () => resolverLogEntries().filter((e) => e.provider === "built-in:library");
+
+  it("logs a hit with the copy it matched", async () => {
+    clearResolverLog();
+    const { resolve } = mountChain({
+      libraryMatches: [{ path: `file://${STALE_LIBRARY_PATH}`, format: "mp3" }],
+      fileOnDisk: true,
+      uriFails: true,
+    });
+    await resolve();
+    const entries = libraryEntries();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: "stream",
+      outcome: "ok",
+      input: { title: "Nothingman", artistName: "Pearl Jam", albumName: "Vitalogy", durationSecs: 276 },
+      result: { url: `file://${STALE_LIBRARY_PATH}`, label: "Library" },
+    });
+  });
+
+  it("logs a miss as empty, so a Library miss can be told from the Library never being asked", async () => {
+    clearResolverLog();
+    const { resolve } = mountChain({ libraryMatches: [], uriFails: true });
+    await expect(resolve()).rejects.toThrow(/Couldn't find a playable source/);
+    expect(libraryEntries().map((e) => e.outcome)).toEqual(["empty"]);
   });
 });
 
