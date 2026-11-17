@@ -90,9 +90,7 @@ function playlistTrackToMinimalTrack(t: PlaylistTrack): QueueTrack {
 interface PlaylistsViewProps {
   searchQuery: string;
   onSearchChange: (query: string) => void;
-  /** `exactSource`: a row's play button — that row's own file only (see
-   *  usePlayback.handlePlay). Play-all and the selection menu leave it off. */
-  onPlayTracks: (tracks: QueueTrack[], startIndex: number, context?: PlaylistContext | null, opts?: { exactSource?: boolean }) => void;
+  onPlayTracks: (tracks: QueueTrack[], startIndex: number, context?: PlaylistContext | null) => void;
   onEnqueueTracks: (tracks: QueueTrack[]) => void;
   onStartRadio?: (seed: { title: string; artistName: string | null; coverPath: string | null }) => void;
   onLocateTrack?: (title: string, artistName: string | null, albumName: string | null) => void;
@@ -1019,7 +1017,7 @@ export function PlaylistsView({ searchQuery, onSearchChange, onPlayTracks, onEnq
       <img src={detailArtSrc} alt={selectedPlaylist.name} />
     );
 
-    const playOne = (t: PlaylistTrack) => onPlayTracks([playlistTrackToMinimalTrack(t)], 0, playlistContext(selectedPlaylist), { exactSource: true });
+    const playOne = (t: PlaylistTrack) => onPlayTracks([playlistTrackToMinimalTrack(t)], 0, playlistContext(selectedPlaylist));
     const enqueueOne = (t: PlaylistTrack) => onEnqueueTracks([playlistTrackToMinimalTrack(t)]);
     // Tile art: the shared render-time chain already yields a ready-to-render
     // URL (explicit image → video frame → album → artist), so hand it to the

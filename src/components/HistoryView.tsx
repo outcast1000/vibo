@@ -50,7 +50,7 @@ interface HistoryViewProps {
   onQueryChange: (q: string) => void;
   currentTrack: QueueTrack | null;
   onPlayTracks: (tracks: QueueTrack[], index: number) => void;
-  /** The Plays / Tracks tabs' Play button: the whole list, not one row's own source. */
+  /** The Plays / Tracks tabs' Play button: the whole list. */
   onPlayAll: (tracks: QueueTrack[], context: PlaylistContext | null) => void;
   onEnqueueTracks: (tracks: QueueTrack[]) => void;
   /** Open the track page of a library row (the copy the history row plays). */

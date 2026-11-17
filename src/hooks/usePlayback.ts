@@ -86,19 +86,10 @@ export function isCurrentPlayGeneration(captured: number, current: number): bool
   return captured === current;
 }
 
-/** How `handlePlay` should find a source. */
-export interface PlayOptions {
-  /** Play the entry's own source only — a row's play button. See handlePlay. */
-  exactSource?: boolean;
-}
-
 /** What `resolveTrackSrcRef` is asked to do. */
 export interface ResolveTrackOptions {
   /** A preload of the next track, off the play-resolution lane. */
   preload?: boolean;
-  /** Only the entry's own source: no Library copy, no plugin fallback, no
-   *  "Prefer video" pass. Ignored for an entry with no source of its own. */
-  exactSource?: boolean;
 }
 
 export type HandlePlayOutcome = "play" | "bail" | "retry" | "fail";
@@ -390,9 +381,6 @@ export function usePlayback(
   // walk several fallbacks for a minute each. Pause / Stop read it to cancel
   // that play instead of acting on a session it hasn't opened yet.
   const pendingPlayRef = useRef<{ generation: number; track: QueueTrack } | null>(null);
-  // The entry whose play is restricted to its own source (a row's play
-  // button) — inherited by that entry's engine-error replays. See handlePlay.
-  const exactSourceKeyRef = useRef<string | null>(null);
   const playStartedAtRef = useRef(0);
   // Set by swapCurrentFile: the scrobble state of a session that is resuming
   // on a replaced file, restored by playWithSrc for that key instead of reset.
@@ -883,18 +871,7 @@ export function usePlayback(
     );
   }, []);
 
-  async function handlePlay(track: QueueTrack, source: "user" | "auto" = "user", opts?: PlayOptions) {
-    // A row's play button plays that row's own file and nothing else (owner
-    // decision, 2026-11-09): no Library copy, no plugin fallback, no "Prefer
-    // video" substitution — it fails visibly instead. The engine-error replays
-    // of the same entry come back through here as "auto" and inherit it, which
-    // is also what keeps the engine-error fallback off: with a one-entry chain
-    // `fallBackFromFailedSource` has nothing to fall back to. Any other play
-    // (Next, end of track, auto-continue, a list's Play) uses the whole chain.
-    exactSourceKeyRef.current = opts?.exactSource
-      ? track.key
-      : source === "auto" && exactSourceKeyRef.current === track.key ? track.key : null;
-    const exactSource = exactSourceKeyRef.current === track.key;
+  async function handlePlay(track: QueueTrack, source: "user" | "auto" = "user") {
     // A deliberate play is a fresh start, so it starts at the top of the stream
     // ladder again — a track that stepped down to 480p an hour ago must not stay
     // there for the session. The engine-error replay comes through as "auto",
@@ -912,9 +889,7 @@ export function usePlayback(
     // Tier-1: reuse a pre-resolved VIDEO source prepared during the previous
     // track (captured before invalidatePreload clears it). Single-use.
     const preVideo = videoPreresolvedRef.current;
-    // The pre-resolve walked the whole chain, so its answer may not be this
-    // entry's own source.
-    const reuseVideoResolved = preVideo && preVideo.key === track.key && !exactSource ? preVideo.resolved : null;
+    const reuseVideoResolved = preVideo && preVideo.key === track.key ? preVideo.resolved : null;
     invalidatePreload();
     setPlaybackError(null);
     setLoadingTrack(track);
@@ -927,7 +902,7 @@ export function usePlayback(
       // Nothing can play without the engine — say so before running a resolver
       // that may take seconds (yt-dlp) only to fail at the end.
       if (!useNativeEngineRef.current) throw new Error(ENGINE_UNAVAILABLE_ERROR);
-      let resolved = reuseVideoResolved ?? await resolveTrackSrcRef.current(track, { exactSource });
+      let resolved = reuseVideoResolved ?? await resolveTrackSrcRef.current(track);
       if (reuseVideoResolved) logPlayback(`Play: used pre-resolved video "${track.title}"`);
       // resolveTrackSrc returns an empty-src sentinel whenever ITS resolve
       // generation was bumped mid-flight — by a newer play, but ALSO by a
@@ -942,7 +917,7 @@ export function usePlayback(
       );
       if (decision === "retry") {
         diagnosePlayOutcome("retry", track, generation, !!resolved.src);
-        resolved = await resolveTrackSrcRef.current(track, { exactSource });
+        resolved = await resolveTrackSrcRef.current(track);
         decision = decideHandlePlayOutcome(
           isCurrentPlayGeneration(generation, playGenerationRef.current),
           !!resolved.src,
@@ -1128,9 +1103,8 @@ export function usePlayback(
     }
     // Nothing open in the engine (restored at launch, cued by loadPaused,
     // handed over to a clip, or after an error): a play opens the track,
-    // starting where pendingSeekRef says — still restricted to its own source
-    // when a row's play button picked it (a Pause that cancelled that play).
-    if (currentTrack) handlePlay(currentTrack, "user", { exactSource: exactSourceKeyRef.current === currentTrack.key });
+    // starting where pendingSeekRef says.
+    if (currentTrack) handlePlay(currentTrack);
   }
 
   /**

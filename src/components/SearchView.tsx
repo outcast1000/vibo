@@ -89,7 +89,7 @@ interface SearchViewProps {
   getAlbumImage: (title: string, artistName?: string | null) => string | null;
   getTagImage: (name: string) => string | null;
   onPlayTracks: (tracks: Track[], index: number, context?: PlaylistContext | null) => void;
-  /** The Tracks tab's Play button: the whole list, not one row's own source. */
+  /** The Tracks tab's Play button: the whole list. */
   onPlayAll: (tracks: Track[], context: PlaylistContext | null) => void;
   onEnqueueTrack: (track: Track) => void;
   onStartRadio: (track: Track) => void;

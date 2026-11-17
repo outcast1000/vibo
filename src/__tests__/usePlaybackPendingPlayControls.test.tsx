@@ -157,24 +157,6 @@ describe("usePlayback: transport while a play is still resolving", () => {
     expect(result.current.playing).toBe(true);
   });
 
-  it("a row play asks for its own source only; the same entry's replays inherit it, other plays don't", async () => {
-    const { result, resolve } = mountPlayback();
-    const exactOf = () => ((resolve.mock.calls.at(-1) as unknown[] | undefined)?.[1] as { exactSource?: boolean } | undefined)?.exactSource;
-
-    await act(async () => { await result.current.handlePlay(first, "user", { exactSource: true }); });
-    expect(exactOf()).toBe(true);
-    // An engine-error replay of the same entry (comes through as "auto").
-    await act(async () => { await result.current.handlePlay(first, "auto"); });
-    expect(exactOf()).toBe(true);
-    // A Pause→Play resume of that entry with no session open keeps it.
-    act(() => { result.current.handleStop(); });
-    await act(async () => { result.current.handlePause(); await Promise.resolve(); });
-    expect(exactOf()).toBe(true);
-    // Next / a list's Play / end of track: the whole chain.
-    await act(async () => { await result.current.handlePlay(first, "user"); });
-    expect(exactOf()).toBe(false);
-  });
-
   it("Pause with nothing pending still toggles the open session", async () => {
     const { result } = mountPlayback();
     await act(async () => { await result.current.handlePlay(first); });

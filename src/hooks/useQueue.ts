@@ -12,7 +12,6 @@ import { sameSong } from "./useLikeActions";
 import { trackLikeId } from "../utils/likeReconcile";
 
 import { useAssignRef } from "./useLatestRef";
-import type { PlayOptions } from "./usePlayback";
 import { isMixtapePath } from "./useFileDrop";
 export interface PlaylistContext {
   name: string;
@@ -92,7 +91,7 @@ export interface EnqueueOutcome {
 
 export function useQueue(
   restoredRef: React.RefObject<boolean>,
-  handlePlay: (track: QueueTrack, source?: "user" | "auto", opts?: PlayOptions) => void,
+  handlePlay: (track: QueueTrack, source?: "user" | "auto") => void,
   // Fired whenever a play *replaces* the queue (the "Latest play" capture point).
   // Not fired by enqueue / play-next / auto-continue, which extend the queue.
   // `session.fillsLater`: the play is a head whose tail is still resolving
@@ -348,9 +347,7 @@ export function useQueue(
     tracks: Array<Track | QueueTrack>,
     startIndex: number,
     context?: PlaylistContext | null,
-    // `exactSource`: a row's play button — the starting entry plays its own
-    // source only (usePlayback.handlePlay). The rest of the list doesn't.
-    opts?: { fillsLater?: boolean; exactSource?: boolean },
+    opts?: { fillsLater?: boolean },
   ): number {
     const incoming = toQueueTracks(tracks);
     // Anonymous: an intentional play + its origin (album/artist/tag/radio/
@@ -386,7 +383,7 @@ export function useQueue(
     handOver("play");
     setQueue(dedupedTracks);
     setQueueIndex(startIndex);
-    if (!continues) handlePlay(dedupedTracks[startIndex], "user", { exactSource: !!opts?.exactSource });
+    if (!continues) handlePlay(dedupedTracks[startIndex]);
     setPlaylistContext(context ?? null);
     endPlaySession();
     sessionTracksRef.current = { gen: playGenRef.current, tracks: dedupedTracks };
