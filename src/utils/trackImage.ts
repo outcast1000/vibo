@@ -1,4 +1,4 @@
-import { resolveImageUrl } from "./resolveImageUrl";
+import { resolveImageSrc } from "./resolveImageUrl";
 
 // Minimal track shape the image chain reads. Works for QueueTrack, HomeShelf
 // track items, and the now-playing currentTrack alike.
@@ -38,19 +38,21 @@ export function pickEntityImagePath(
   );
 }
 
-// The full render-time image chain shared by the queue panel and home shelves:
+// The full render-time image chain shared by the queue panel, home shelves and
+// the now-playing art (App's `nowPlayingArtSrc`):
 //   explicit image_url → already-converted video frame → album → artist.
 // `videoFrame` is an already-converted asset URL from the VideoFrameQueue (or
 // null) and is used verbatim — re-converting it would corrupt the URL. Every
-// other candidate goes through resolveImageUrl, so http/data passthrough and
-// `#v=N` → `?v=N` cache-busting behave identically on every surface. Returns a
+// other candidate goes through resolveImageSrc, so a `file://` prefix is
+// stripped, and http/data passthrough and `#v=N` → `?v=N` cache-busting behave
+// identically on every surface. Returns a
 // value ready to assign to an image element's source (or null, for the
 // first-letter placeholder the surfaces render on a miss).
 export function resolveTrackImage(
   t: TrackImageMeta,
   deps: EntityImageLookups & { videoFrame?: string | null },
 ): string | null {
-  if (t.image_url) return resolveImageUrl(t.image_url) ?? null;
+  if (t.image_url) return resolveImageSrc(t.image_url);
   if (deps.videoFrame) return deps.videoFrame;
-  return resolveImageUrl(pickEntityImagePath(t, deps)) ?? null;
+  return resolveImageSrc(pickEntityImagePath(t, deps));
 }

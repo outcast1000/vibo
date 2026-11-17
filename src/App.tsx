@@ -27,9 +27,8 @@ import { contextToExportMetadata, contextFromMixtapeMetadata, playlistContextTit
 import { collectionAlert } from "./utils/collectionAlert";
 import { type RecentPlaySession } from "./utils/recentPlays";
 import { useLatestPlay, type LatestPlayDeps } from "./hooks/useLatestPlay";
-import { resolveImageUrl, resolveImageSrc, stripImageVersion } from "./utils/resolveImageUrl";
-import { resolveNowPlayingArt } from "./utils/nowPlayingArt";
-import { pickEntityImagePath } from "./utils/trackImage";
+import { stripImageVersion } from "./utils/resolveImageUrl";
+import { pickEntityImagePath, resolveTrackImage } from "./utils/trackImage";
 import { buildTagSuggestionPool } from "./utils/tagSuggestions";
 import { resolveShelfPlayAction } from "./utils/homeShelfPlay";
 import { builtinQualityOptions } from "./utils/builtinDownloadQualities";
@@ -715,6 +714,50 @@ function App() {
     debugLoggingRef.current = enabled;
   }, []);
   const albumImageCache = useImageCache("album");
+  const artistImageCache = useImageCache("artist");
+
+  // A local video's first frame, extracted on demand by the effect further down.
+  // Keyed by path so a late answer can't land on the next track; `src: null`
+  // means "settled, no frame" (unavailable, not in the library, lookup failed).
+  // A frame is already a webview URL (VideoFrameQueue converts it) — never
+  // re-convert it.
+  const [currentVideoFrame, setCurrentVideoFrame] = useState<{ path: string; src: string | null } | null>(null);
+  const playingTrack = playback.currentTrack;
+  const videoFramePath = playingTrack && !playingTrack.image_url && isVideoTrack(playingTrack) && isLocalTrack(playingTrack)
+    ? playingTrack.path
+    : null;
+  const videoFrameSettled = videoFramePath !== null && currentVideoFrame?.path === videoFramePath;
+
+  // The playing track's art, through the queue rows' own chain
+  // (`resolveTrackImage`: explicit `image_url` → video first frame → album →
+  // artist), so the bar and the queue can't disagree about the order.
+  //
+  // Resolved here, in render, never stamped onto `currentTrack`: a stamp was
+  // final, so an artist picture taken while the album lookup (or its provider
+  // download) was still running stuck on the bar for the whole track while the
+  // queue showed the cover. Reading the caches at render follows them as they
+  // settle.
+  //
+  // `nowPlayingArtSrc` is the one ready `<img src>` for every surface that shows
+  // the art — both bars, the OS media session, the visualizer, the stopped-video
+  // still. While a local video's frame is still coming it is null (the bar's
+  // placeholder), so album/artist art doesn't flash in ahead of the frame — the
+  // one thing the queue's chain has no notion of. `nowPlayingArtPath` is the raw
+  // album → artist path/URL that plugins get (below); a frame is a webview URL
+  // they couldn't load, so it is left out there.
+  const entityImageLookups = {
+    albumImageFor: albumImageCache.getImage,
+    artistImageFor: artistImageCache.getImage,
+  };
+  const nowPlayingArtPath = playingTrack && !playingTrack.image_url
+    ? pickEntityImagePath(playingTrack, entityImageLookups)
+    : null;
+  const nowPlayingArtSrc = !playingTrack || (videoFramePath !== null && !videoFrameSettled)
+    ? null
+    : resolveTrackImage(playingTrack, {
+        ...entityImageLookups,
+        videoFrame: videoFrameSettled ? currentVideoFrame?.src : null,
+      });
 
   const library = useLibrary(restoredRef, () => beforeNavRef.current(), viewSearch.getDebouncedQuery, undefined, setNavError);
 
@@ -763,6 +806,17 @@ function App() {
 
   // Plugin system
   const currentTrackRef = useLatestRef<QueueTrack | null>(playback.currentTrack);
+  // What `api.playback.getCurrentTrack()` returns: the playing track with its
+  // resolved art filled into `image_url` (raw path/URL, as a plugin always got
+  // it). A separate ref, because `currentTrackRef` feeds paths that write their
+  // copy back as the current track (swapCurrentFile) and must not carry it.
+  const pluginCurrentTrack = useMemo(
+    () => playingTrack && !playingTrack.image_url && nowPlayingArtPath
+      ? { ...playingTrack, image_url: nowPlayingArtPath }
+      : playingTrack,
+    [playingTrack, nowPlayingArtPath],
+  );
+  const pluginCurrentTrackRef = useLatestRef<QueueTrack | null>(pluginCurrentTrack);
   const pluginPlayingRef = useLatestRef(playback.playing);
   const pluginPositionRef = useRef(0);
   // Position lives in the external positionStore (not React state), so the
@@ -858,7 +912,7 @@ function App() {
   // plugins then load in the background without contending with startup on the
   // single IPC channel. debugMode/devPluginPath are restored before this flips,
   // so the deferred first load already sees their final values.
-  const plugins = usePlugins(currentTrackRef, pluginPlayingRef, pluginPositionRef, pluginQueueRef, pluginPlaybackCallbacks, pluginHostCallbacksRef, debugMode, devPluginPath, !appRestoring);
+  const plugins = usePlugins(pluginCurrentTrackRef, pluginPlayingRef, pluginPositionRef, pluginQueueRef, pluginPlaybackCallbacks, pluginHostCallbacksRef, debugMode, devPluginPath, !appRestoring);
   const waveformPluginsRef = useLatestRef<WaveformPluginBridge | null>(plugins.waveformBridge);
   useAssignRef(autoContinueBridgeRef, plugins.autoContinueBridge);
   useAssignRef(prefetchLeadRef, prefetchLeadSecs({
@@ -2095,26 +2149,6 @@ function App() {
     onLibraryChanged: notifyLibraryChanged,
   });
 
-  // Image caches
-  const artistImageCache = useImageCache("artist");
-
-  // Art for the deck's label and the fullscreen stage. Resolved here, in render,
-  // because that's where the image cache lives: a queue track's own `image_url` is
-  // usually empty and the real art comes from the album→artist chain by name,
-  // exactly as the queue rows and now-playing bar resolve it.
-  //
-  // The same chain the Now Playing view reads, so it goes through the same
-  // (unit-tested) resolver rather than a second copy of the walk. `pending` is
-  // ignored here: these consumers just show an image late, they don't switch a
-  // text/layout regime on the answer — the distinction that made the flag exist.
-  const nowPlayingArtSrc = playback.currentTrack
-    ? resolveImageSrc(
-        resolveNowPlayingArt(playback.currentTrack, {
-          getAlbumImage: albumImageCache.getImage,
-          getArtistImage: artistImageCache.getImage,
-        }).path,
-      )
-    : null;
   const tagImageCache = useImageCache("tag");
 
   // After the Retrieve modal applies a new image, drop the cached entry so the
@@ -2204,15 +2238,14 @@ function App() {
       navigator.mediaSession.metadata = null;
       return;
     }
-    const artSrc = resolveImageUrl(track.image_url ?? null);
-    const artwork: MediaImage[] = artSrc ? [{ src: artSrc }] : [];
+    const artwork: MediaImage[] = nowPlayingArtSrc ? [{ src: nowPlayingArtSrc }] : [];
     navigator.mediaSession.metadata = new MediaMetadata({
       title: track.title,
       artist: track.artist_name ?? undefined,
       album: track.album_title ?? undefined,
       artwork,
     });
-  }, [playback.currentTrack]);
+  }, [playback.currentTrack, nowPlayingArtSrc]);
 
   useEffect(() => {
     if (!("mediaSession" in navigator)) return;
@@ -3823,87 +3856,44 @@ function App() {
     }
   }, [detailTrack]);
 
-  // Resolve image for current track: video frame → album → artist. Album/artist
-  // come from useImageCache (which also fires the fetch; the listener below patches
-  // currentTrack on {album,artist}-image-ready). Video first-frames go through the
-  // shared VideoFrameQueue — extract on demand and patch currentTrack when the frame
-  // lands, since there is no backend event for frame completion. If the video has no
-  // extractable frame, fall back to album/artist like the non-video path.
+  // Fetches the playing local video's first frame for `nowPlayingArtSrc`
+  // (`videoFramePath`, computed beside the art above). Frames go through the
+  // shared VideoFrameQueue — extracted on demand, with no backend event when one
+  // lands, so this subscribes until the entry settles. Every way of not getting
+  // a frame settles as `src: null`, so the art falls back to album → artist
+  // instead of staying blank. Frame extraction needs a local file (the backend
+  // rejects remote tracks), mirroring useVideoFrames / useQueueVideoFrames.
   useEffect(() => {
-    const track = playback.currentTrack;
-    if (!track || track.image_url) return;
+    if (!videoFramePath) return;
     let cancelled = false;
     let unsubFrames: (() => void) | null = null;
-    // Only stamp if the current track is still this one (guards against the track
-    // changing while a fetch/extraction was in flight).
-    const stamp = (img: string) => playback.setCurrentTrack(prev =>
-      prev && !prev.image_url && prev.path === track.path ? { ...prev, image_url: img } : prev);
-    const applyEntityFallback = () => {
-      // Same album→artist sequence as the queue/home shelves (pickEntityImagePath),
-      // but we stamp the RAW path — NowPlayingBar converts it via resolveImageUrl
-      // at render, so this must not pre-convert.
-      const img = pickEntityImagePath(track, {
-        albumImageFor: albumImageCache.getImage,
-        artistImageFor: artistImageCache.getImage,
-      });
-      if (img) stamp(img);
+    const settle = (src: string | null) => {
+      if (!cancelled) setCurrentVideoFrame({ path: videoFramePath, src });
     };
     (async () => {
-      // Frame extraction needs a local file — the backend rejects remote tracks
-      // (subsonic, and prefer-video streams reclassified to video), so only try
-      // it for file:// video and otherwise fall back to entity art. Mirrors the
-      // isLocalTrack gate in useVideoFrames / useQueueVideoFrames.
-      if (isVideoTrack(track) && isLocalTrack(track)) {
-        const trackId = await invoke<number | null>("find_track_id_by_path", { path: track.path });
-        if (cancelled) return;
-        const fq = videoFrameQueueRef.current;
-        if (trackId != null && fq) {
-          // Returns true once the frame entry has settled (ready -> stamp, or
-          // unavailable -> entity fallback); false while still loading.
-          const resolveFromEntry = (): boolean => {
-            const entry = fq.getEntry(trackId);
-            if (entry.status === "ready" && entry.frames[0]) { stamp(entry.frames[0]); return true; }
-            if (entry.status === "unavailable") { applyEntityFallback(); return true; }
-            return false;
-          };
-          if (resolveFromEntry()) return;
-          unsubFrames = fq.subscribe(() => {
-            if (cancelled) return;
-            if (resolveFromEntry()) { unsubFrames?.(); unsubFrames = null; }
-          });
-          if (cancelled) { unsubFrames(); unsubFrames = null; return; }
-          fq.enqueue(trackId);
-          return; // video resolves via the queue
-        }
-      }
+      const trackId = await invoke<number | null>("find_track_id_by_path", { path: videoFramePath });
+      const fq = videoFrameQueueRef.current;
       if (cancelled) return;
-      applyEntityFallback();
-    })();
+      if (trackId == null || !fq) { settle(null); return; }
+      // True once the entry has settled (ready or unavailable); false while loading.
+      const takeFrame = (): boolean => {
+        const entry = fq.getEntry(trackId);
+        if (entry.status === "ready") { settle(entry.frames[0] ?? null); return true; }
+        if (entry.status === "unavailable") { settle(null); return true; }
+        return false;
+      };
+      if (takeFrame()) return;
+      unsubFrames = fq.subscribe(() => {
+        if (cancelled) return;
+        if (takeFrame()) { unsubFrames?.(); unsubFrames = null; }
+      });
+      fq.enqueue(trackId);
+    })().catch(e => {
+      console.error("Failed to resolve the playing video's first frame:", e);
+      settle(null);
+    });
     return () => { cancelled = true; if (unsubFrames) { unsubFrames(); unsubFrames = null; } };
-  }, [playback.currentTrack, albumImageCache.getImage, artistImageCache.getImage, albumImageCache.cache, artistImageCache.cache]);
-
-  // When a backend image fetch completes, update currentTrack if it's still missing artwork
-  useEffect(() => {
-    const norm = (s: string | null | undefined) => (s ?? "").toLowerCase();
-    const stopAlbum = subscribe<{ title: string; artist_name?: string | null; path: string }>("album-image-ready", (event) => {
-      const { title, artist_name, path } = event.payload;
-      playback.setCurrentTrack(prev => {
-        if (!prev || prev.image_url) return prev;
-        if (norm(prev.album_title) !== norm(title)) return prev;
-        if (artist_name && norm(prev.artist_name) !== norm(artist_name)) return prev;
-        return { ...prev, image_url: path };
-      });
-    });
-    const stopArtist = subscribe<{ name: string; path: string }>("artist-image-ready", (event) => {
-      const { name, path } = event.payload;
-      playback.setCurrentTrack(prev => {
-        if (!prev || prev.image_url) return prev;
-        if (norm(prev.artist_name) !== norm(name)) return prev;
-        return { ...prev, image_url: path };
-      });
-    });
-    return combineUnlisten(stopAlbum, stopArtist);
-  }, [playback.setCurrentTrack]);
+  }, [videoFramePath]);
 
 
   const handleToggleLikeRef = useRef((_track: QueueTrack) => {});
@@ -5134,9 +5124,7 @@ function App() {
   // session already open) the surface keeps the plain `--video-bg` fill until
   // mpv presents.
   const videoStarting = playback.playing || playback.nativeVideoActive;
-  const videoStill = videoPlaying && !videoStarting
-    ? resolveImageUrl(playback.currentTrack?.image_url ?? null) ?? null
-    : null;
+  const videoStill = videoPlaying && !videoStarting ? nowPlayingArtSrc : null;
   const videoInQueue = videoPlaying && videoLayout.dockSide === "queue" && !videoTheater && !playback.nativeFullscreen && !queueCollapsed;
 
   // Every NowPlayingBar callback goes through useStableCallbacks so the memo'd
@@ -5352,7 +5340,7 @@ function App() {
     scrobbled: playback.scrobbled,
     volume: controlsVolume,
     muted: playback.muted,
-    imagePath: playback.currentTrack?.image_url || null,
+    artSrc: nowPlayingArtSrc,
     onPause: playback.handlePause,
     onStop: playback.handleStop,
     onNext: handleNext,
@@ -7069,7 +7057,7 @@ function App() {
         trackRank={trackRank}
         volume={controlsVolume}
         muted={playback.muted}
-        imagePath={playback.currentTrack?.image_url || null}
+        artSrc={nowPlayingArtSrc}
         miniMode={mini.miniMode}
         miniExpanded={mini.miniExpanded}
         miniRestingSize={mini.miniRestingSize}

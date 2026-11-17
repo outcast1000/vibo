@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { QueueTrack, ResolvedSource } from "../types";
-import { resolveImageUrl } from "../utils/resolveImageUrl";
 import { formatDuration } from "../utils";
 import { usePlaybackPosition } from "../playback/positionStore";
 import { useIdleVisibility } from "../hooks/useIdleVisibility";
@@ -32,7 +31,8 @@ interface FullscreenControlsProps {
   scrobbled: boolean;
   volume: number;
   muted: boolean;
-  imagePath: string | null;
+  /** Ready-to-use <img src> for the playing track (App resolves it at render). */
+  artSrc: string | null;
   onPause: () => void;
   onStop: () => void;
   onNext: () => void;
@@ -88,7 +88,7 @@ export function FullscreenControls({
   currentTrack, playing,
   durationSecs, scrobbled,
   volume, muted,
-  imagePath,
+  artSrc,
   onPause, onStop, onNext, onPrevious,
   onSeek, onVolume, onMute,
   onToggleLike, onToggleDislike, onToggleFullscreen, showQueue, onToggleQueue, hasSubtitles, subtitlesOn, onToggleSubtitles, onNavigateToArtistByName, onNavigateToAlbumByName,
@@ -198,7 +198,7 @@ export function FullscreenControls({
       </div>
       <div className="fs-main">
         <div className="fs-info">
-          {imagePath && <img className="fs-art" src={resolveImageUrl(imagePath)} alt="" />}
+          {artSrc && <img className="fs-art" src={artSrc} alt="" />}
           <div className="fs-like-col">
             {currentTrack && (
               <LikeDislikeButtons

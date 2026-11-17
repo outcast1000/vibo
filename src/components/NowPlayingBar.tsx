@@ -3,7 +3,6 @@ import { LoadingElapsed } from "./LoadingPlay";
 import { memo, useCallback, useRef, useState, useEffect, type ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
-import { resolveImageUrl } from "../utils/resolveImageUrl";
 import { usePlaybackPosition } from "../playback/positionStore";
 import type { QueueTrack, SearchAllResults, SearchResultItem, ResolvedSource } from "../types";
 import type { SearchLikeHandlers } from "../utils/searchLikes";
@@ -110,7 +109,8 @@ interface NowPlayingBarProps {
   trackRank: number | null;
   volume: number;
   muted: boolean;
-  imagePath: string | null;
+  /** Ready-to-use <img src> for the playing track (App resolves it at render). */
+  artSrc: string | null;
   miniMode: boolean;
   miniExpanded: boolean;
   miniRestingSize: MiniRestingSize;
@@ -218,7 +218,7 @@ export const NowPlayingBar = memo(function NowPlayingBar({
   icyTitle,
   trackRank,
   volume, muted,
-  imagePath, miniMode, miniExpanded, miniRestingSize, titleScroll, miniWidthSize, onCancelCollapseTimer, onBeginMiniDrag, onCycleRestingSize, onCycleMiniWidth, onToggleMiniMode, onClose,
+  artSrc, miniMode, miniExpanded, miniRestingSize, titleScroll, miniWidthSize, onCancelCollapseTimer, onBeginMiniDrag, onCycleRestingSize, onCycleMiniWidth, onToggleMiniMode, onClose,
   onPause, onStop, onNext, onPrevious,
   onSeek, onVolume, onMute, onToggleFullscreen, canFullscreen,
   eqEnabled, eqMode, eqPreset, eqGains, eqPreGainDb, eqBassDb, eqTrebleDb, eqClipProtection, eqCustomPresets,
@@ -379,8 +379,8 @@ export const NowPlayingBar = memo(function NowPlayingBar({
           <div className="mini-compact-row">
             <div className="now-info">
               <div className="now-mini-art-wrapper">
-                {imagePath ? (
-                  <CrossfadeArt className="now-mini-art" src={resolveImageUrl(imagePath)} fallback={miniArtPlaceholder} />
+                {artSrc ? (
+                  <CrossfadeArt className="now-mini-art" src={artSrc} fallback={miniArtPlaceholder} />
                 ) : miniArtPlaceholder}
               </div>
               <div className="now-mini-info-text">
@@ -605,8 +605,8 @@ export const NowPlayingBar = memo(function NowPlayingBar({
       <div className="now-main">
         <div className={`now-info${waitingForPlay ? " now-info--waiting" : ""}`}>
           <div className={`now-art-wrapper${playing ? " playing" : ""}`}>
-            {imagePath ? (
-              <CrossfadeArt className="now-art" src={resolveImageUrl(imagePath)} fallback={artPlaceholder} />
+            {artSrc ? (
+              <CrossfadeArt className="now-art" src={artSrc} fallback={artPlaceholder} />
             ) : artPlaceholder}
           </div>
           <div className="now-like-col">

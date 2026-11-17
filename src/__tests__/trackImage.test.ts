@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 
-// resolveTrackImage routes album/artist paths through resolveImageUrl, which
+// resolveTrackImage routes album/artist paths through resolveImageSrc, which
 // calls Tauri's convertFileSrc for local paths. Stub it so the test runs without
 // the Tauri runtime and so we can assert the conversion + cache-bust behavior.
 vi.mock("@tauri-apps/api/core", () => ({
@@ -46,12 +46,18 @@ describe("pickEntityImagePath", () => {
 });
 
 describe("resolveTrackImage", () => {
-  it("uses an explicit image_url first, converted via resolveImageUrl", () => {
+  it("uses an explicit image_url first, converted via resolveImageSrc", () => {
     const src = resolveTrackImage(
       { image_url: "/explicit/cover.jpg", album_title: "Greatest", artist_name: "Artie" },
       { ...lookups, videoFrame: "asset://frame.jpg" },
     );
     expect(src).toBe("asset:///explicit/cover.jpg");
+  });
+
+  it("strips a file:// prefix from an image_url before converting it", () => {
+    expect(
+      resolveTrackImage({ image_url: "file:///covers/x.jpg" }, lookups),
+    ).toBe("asset:///covers/x.jpg");
   });
 
   it("passes a remote image_url through unchanged", () => {
