@@ -1,65 +1,53 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import type { RendererProps } from "./index";
 import type { LyricsData } from "../../types/informationTypes";
 import { usePlaybackPosition } from "../../playback/positionStore";
-import { scrollLineToCenter } from "../../utils/lyrics";
+import { currentSyncedLineIndex, parseLrc, scrollLineToCenter } from "../../utils/lyrics";
+import type { LyricsKind } from "../../utils/lyricsEditor";
+import { LyricsEditor } from "./LyricsEditor";
 
-interface LrcLine {
-  time: number;
-  text: string;
-}
-
-function parseLrc(lrc: string): LrcLine[] {
-  const lines: LrcLine[] = [];
-  for (const line of lrc.split("\n")) {
-    const match = line.match(/^\[(\d{2}):(\d{2})(?:[.:](\d{2,3}))?\](.*)$/);
-    if (match) {
-      const mins = parseInt(match[1], 10);
-      const secs = parseInt(match[2], 10);
-      const cs = match[3] ? parseInt(match[3], 10) / (match[3].length === 3 ? 1000 : 100) : 0;
-      const text = match[4].trim();
-      if (text) lines.push({ time: mins * 60 + secs + cs, text });
-    }
-  }
-  return lines;
-}
-
-function getCurrentLineIndex(lines: LrcLine[], position: number): number {
-  let idx = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].time <= position) idx = i;
-    else break;
-  }
-  return idx;
-}
-
+/**
+ * The Lyrics tab: synced lines that follow the song (click one to jump
+ * there), plain text, or — when the song has none — an invitation to add
+ * them. Editing happens in `LyricsEditor`.
+ *
+ * `data` is null when the providers found nothing; the host passes that only
+ * where adding lyrics makes sense (a track page), so null renders the empty
+ * state rather than nothing.
+ */
 export function LyricsRenderer({ data, onAction, context }: RendererProps) {
-  const d = data as LyricsData;
+  const d = data as LyricsData | null;
 
   // All hooks MUST be called before any conditional return (React rules of hooks)
   const [editing, setEditing] = useState(false);
-  const [editText, setEditText] = useState("");
-  const [editKind, setEditKind] = useState<"plain" | "synced">("plain");
-  const [syncEnabled, setSyncEnabled] = useState(true);
+  const [follow, setFollow] = useState(true);
   const [userScrolled, setUserScrolled] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const activeLineRef = useRef<HTMLDivElement>(null);
   const userScrollTimeout = useRef<number>(0);
 
+  const live = context?.livePosition ?? false;
+  const seek = context?.seek;
   // Live position only when the host says this entity is the playing track;
-  // otherwise the hook opts out of per-tick re-renders and returns 0.
-  const positionSecs = usePlaybackPosition(context?.livePosition ?? false);
-  const lrcLines = d?.kind === "synced" && d?.text ? parseLrc(d.text) : null;
-  const currentLineIdx = lrcLines ? getCurrentLineIndex(lrcLines, positionSecs) : -1;
+  // otherwise the hook opts out of per-tick re-renders and returns 0. Not
+  // while editing: the editor subscribes for itself.
+  const positionSecs = usePlaybackPosition(live && !editing);
+  const lrcLines = useMemo(
+    () => (d?.kind === "synced" && d.text ? parseLrc(d.text).filter(l => l.text) : null),
+    [d?.kind, d?.text],
+  );
+  const currentLineIdx = lrcLines ? currentSyncedLineIndex(lrcLines, positionSecs) : -1;
 
   // `scrollLineToCenter`, NOT `scrollIntoView({ block: "center" })`: the latter
   // scrolls every scrollable ancestor, so following a line would also drag the
   // detail page's own scroll position around. See utils/lyrics.ts.
   useEffect(() => {
-    if (syncEnabled && !userScrolled && activeLineRef.current && scrollRef.current) {
+    if (follow && !userScrolled && activeLineRef.current && scrollRef.current) {
       scrollLineToCenter(scrollRef.current, activeLineRef.current);
     }
-  }, [currentLineIdx, userScrolled, syncEnabled]);
+  }, [currentLineIdx, userScrolled, follow]);
+
+  useEffect(() => () => window.clearTimeout(userScrollTimeout.current), []);
 
   const handleScroll = useCallback(() => {
     setUserScrolled(true);
@@ -67,37 +55,34 @@ export function LyricsRenderer({ data, onAction, context }: RendererProps) {
     userScrollTimeout.current = window.setTimeout(() => setUserScrolled(false), 5000);
   }, []);
 
-  // Early return AFTER all hooks
-  if (!d?.text) return null;
+  const handleSave = useCallback(async (text: string, kind: LyricsKind) => {
+    if (!onAction) throw new Error("This page can't save lyrics");
+    await onAction("save-lyrics", { text, kind });
+  }, [onAction]);
 
-  const startEdit = () => {
-    setEditText(d.text);
-    setEditKind((d.kind as "plain" | "synced") ?? "plain");
-    setEditing(true);
-  };
-
-  const handleSave = () => {
-    if (onAction) onAction("save-lyrics", { text: editText, kind: editKind });
-    setEditing(false);
-  };
+  const canEdit = !!onAction && !d?.local;
 
   if (editing) {
     return (
       <div className="renderer-lyrics">
-        <div className="lyrics-actions">
-          <select value={editKind} onChange={e => setEditKind(e.target.value as "plain" | "synced")}>
-            <option value="plain">Plain</option>
-            <option value="synced">Synced (LRC)</option>
-          </select>
-          <button className="lyrics-action-btn" onClick={handleSave}>Save</button>
-          <button className="lyrics-action-btn" onClick={() => setEditing(false)}>Cancel</button>
-        </div>
-        <textarea
-          className="lyrics-editor"
-          value={editText}
-          onChange={e => setEditText(e.target.value)}
-          spellCheck={false}
+        <LyricsEditor
+          initialText={d?.text ?? ""}
+          live={live}
+          seek={seek}
+          onSave={handleSave}
+          onClose={() => setEditing(false)}
         />
+      </div>
+    );
+  }
+
+  if (!d?.text) {
+    if (!canEdit) return null;
+    return (
+      <div className="lyrics-empty">
+        <p className="lyrics-empty-title">No lyrics found for this song</p>
+        <p className="lyrics-empty-hint">Paste them in yourself, then time each line while the song plays to get lyrics that follow along.</p>
+        <button className="ds-btn ds-btn--primary ds-btn--sm" onClick={() => setEditing(true)}>Add lyrics</button>
       </div>
     );
   }
@@ -105,20 +90,29 @@ export function LyricsRenderer({ data, onAction, context }: RendererProps) {
   return (
     <div className="renderer-lyrics">
       <div className="lyrics-actions">
-        <span className={`lyrics-badge${d.kind === "synced" ? " lyrics-badge-synced" : ""}`}>
-          {d.kind}
+        <span
+          className={`lyrics-badge${d.kind === "synced" ? " lyrics-badge-synced" : ""}`}
+          title={d.kind === "synced" ? "Each line is timed to the song" : "Text only, without timing"}
+        >
+          {d.kind === "synced" ? "Synced" : "Plain"}
         </span>
-        {d.local && <span className="lyrics-badge" title="From the track's own files — edit the file to change them">local</span>}
-        {lrcLines && positionSecs > 0 && (
+        {d.local && <span className="lyrics-badge" title="From the track's own files — edit the file to change them">From file</span>}
+        <span className="lyrics-actions-spacer" />
+        {lrcLines && live && (
           <button
-            className={`lyrics-action-btn${syncEnabled ? " active" : ""}`}
-            onClick={() => setSyncEnabled(v => !v)}
-            title={syncEnabled ? "Disable synced scroll" : "Enable synced scroll"}
-          >&#9201;</button>
+            className={`ds-btn ds-btn--sm ds-btn--ghost lyrics-follow-btn${follow ? " active" : ""}`}
+            onClick={() => setFollow(v => !v)}
+            aria-pressed={follow}
+            title={follow ? "Stop scrolling with the song" : "Scroll with the song"}
+          >Follow</button>
         )}
         {/* No editor for file-backed lyrics: a cache edit would be overwritten
             by the next re-probe of the local file (issue #131). */}
-        {!d.local && <button className="lyrics-action-btn" onClick={startEdit} title="Edit lyrics">&#9998;</button>}
+        {canEdit && (
+          <button className="ds-btn ds-btn--sm ds-btn--secondary" onClick={() => setEditing(true)}>
+            {d.kind === "synced" ? "Edit" : "Edit or sync"}
+          </button>
+        )}
       </div>
       <div className="lyrics-body" ref={scrollRef} onScroll={handleScroll}>
         {lrcLines ? (
@@ -128,8 +122,9 @@ export function LyricsRenderer({ data, onAction, context }: RendererProps) {
               <div
                 key={i}
                 ref={active ? activeLineRef : undefined}
-                className="lyrics-line"
-                style={{ opacity: active ? 1 : 0.5, fontWeight: active ? 600 : 400 }}
+                className={`lyrics-line${active ? " is-active" : ""}${seek ? " is-seekable" : ""}`}
+                onClick={seek ? () => seek(line.time) : undefined}
+                title={seek ? "Play from this line" : undefined}
               >
                 {line.text}
               </div>

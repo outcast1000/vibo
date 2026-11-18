@@ -3,7 +3,7 @@ import type { InfoEntity } from "../types/informationTypes";
 import { useInformationTypes } from "../hooks/useInformationTypes";
 import type { OpenInfoArgs } from "../hooks/useRetrieveModal";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { saveInfoValue } from "../utils/infoFetchChain";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { buildEntityKey } from "../types/informationTypes";
@@ -43,6 +43,9 @@ interface InformationSectionsProps {
   /** True when the entity is the currently playing track — lets position-aware
       renderers (lyrics) subscribe to the live playback position. */
   livePosition?: boolean;
+  /** Play the entity from a position (seeks when it is already playing).
+   *  Lets the lyrics tab jump to a line and sync along with the song. */
+  onSeek?: (secs: number) => void;
   invokeInfoFetch: (
     pluginId: string,
     infoTypeId: string,
@@ -78,6 +81,7 @@ export function InformationSections({
   customTabs,
   pluginSectionsDisabled,
   livePosition,
+  onSeek,
   invokeInfoFetch,
   pluginNames,
   tabOrder,
@@ -94,6 +98,10 @@ export function InformationSections({
   const { sections, refresh, reloadCache, getTypeMeta, activate } = useInformationTypes({ entity, exclude, disabled: pluginSectionsDisabled, invokeInfoFetch, pluginNames });
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const entityKey = entity ? buildEntityKey(entity) : null;
+  const rendererContext = useMemo(
+    () => (livePosition != null || onSeek ? { livePosition, seek: onSeek } : undefined),
+    [livePosition, onSeek],
+  );
 
   // After the Retrieve modal applies new info for one of our types, reload the
   // section from cache so it reflects the newly-saved value.
@@ -187,10 +195,12 @@ export function InformationSections({
       if (!p) return;
       // Same write as a plugin's api.lyrics.save. It announces the change, so
       // this section (and any other open view of the song) re-reads by itself.
+      // Rethrown: the editor stays open and shows the reason.
       try {
         await saveInfoValue({ typeId: "lyrics", entity, value: { text: p.text, kind: p.kind } });
       } catch (e) {
         console.error("Failed to save lyrics:", e);
+        throw e;
       }
       return;
     }
@@ -439,7 +449,11 @@ export function InformationSections({
               )}
             </div>
           ) : s.state.kind === "loaded" && s.state.data && Renderer ? (
-            <Renderer data={s.state.data} onEntityClick={onEntityClick} onAction={(id, p) => handleAction(id, p, s.name)} resolveEntity={resolveEntity} context={livePosition != null ? { livePosition } : undefined} onTrackContextMenu={onTrackContextMenu} onEntityContextMenu={onEntityContextMenu} />
+            <Renderer data={s.state.data} onEntityClick={onEntityClick} onAction={(id, p) => handleAction(id, p, s.name)} resolveEntity={resolveEntity} context={rendererContext} onTrackContextMenu={onTrackContextMenu} onEntityContextMenu={onEntityContextMenu} />
+          ) : s.state.kind === "empty" && s.displayKind === "lyrics" && entity?.kind === "track" && Renderer ? (
+            // No lyrics found: the tab offers to add them (the renderer draws
+            // its own empty state) instead of a bare "No data available".
+            <Renderer data={null} onAction={(id, p) => handleAction(id, p, s.name)} context={rendererContext} />
           ) : s.state.kind === "empty" ? (
             <div className="info-section-empty">No data available</div>
           ) : null;

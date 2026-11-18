@@ -17,9 +17,14 @@ import { TitleLineRenderer } from "./TitleLineRenderer";
 export interface RendererProps {
   data: unknown;
   onEntityClick?: (kind: string, id?: number, name?: string) => void;
-  onAction?: (actionId: string, payload?: unknown) => void;
+  /** May return a promise: `save-lyrics` rejects when the save failed, so the
+   *  editor can stay open and say why. */
+  onAction?: (actionId: string, payload?: unknown) => void | Promise<void>;
   resolveEntity?: (kind: string, name: string) => { id?: number; imageSrc?: string } | undefined;
-  context?: { livePosition?: boolean };
+  /** `livePosition`: the entity is the playing track. `seek`: play the entity
+   *  from a position (seeks when it is already playing); absent where the
+   *  page can't start it. */
+  context?: { livePosition?: boolean; seek?: (secs: number) => void };
   onTrackContextMenu?: (e: MouseEvent, trackInfo: { trackId?: number; title: string; artistName: string | null }) => void;
   onEntityContextMenu?: (e: MouseEvent, info: { kind: "track" | "artist" | "album"; id?: number; name: string; artistName?: string | null }) => void;
 }

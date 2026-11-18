@@ -1,0 +1,153 @@
+// Pure model behind the lyrics editor (components/renderers/LyricsEditor.tsx).
+//
+// The editor has two views over ONE text: Write (a textarea) and Sync (tap a
+// key on each line while the song plays). The text stays the single source of
+// truth — Sync parses it into lines, changes one line, and writes it back — so
+// switching views never loses anything. Each line keeps its `raw` spelling and
+// only a line the user actually re-timed is re-spelled, which keeps a pasted
+// LRC byte-identical until it is touched (3-digit milliseconds, metadata tags
+// like `[ar:…]` and blank stanza breaks all survive).
+
+/** One line of the editor's text. `time` is seconds, or null when untimed. */
+export interface EditorLine {
+  raw: string;
+  time: number | null;
+  text: string;
+  /** An LRC header tag (`[ar:Artist]`, `[offset:+200]`) — kept verbatim and
+   *  never offered for syncing. */
+  meta: boolean;
+}
+
+export type LyricsKind = "plain" | "synced";
+
+const TIMED_RE = /^\s*\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\](.*)$/;
+const META_RE = /^\s*\[[a-zA-Z#]+:[^\]]*\]\s*$/;
+
+export function parseEditorLines(text: string): EditorLine[] {
+  return text.split(/\r?\n/).map(raw => {
+    const m = raw.match(TIMED_RE);
+    if (m) {
+      const frac = m[3] ? parseInt(m[3], 10) / Math.pow(10, m[3].length) : 0;
+      return { raw, time: parseInt(m[1], 10) * 60 + parseInt(m[2], 10) + frac, text: m[4].trim(), meta: false };
+    }
+    if (META_RE.test(raw)) return { raw, time: null, text: raw.trim(), meta: true };
+    return { raw, time: null, text: raw.trim(), meta: false };
+  });
+}
+
+export function serializeEditorLines(lines: EditorLine[]): string {
+  return lines.map(l => l.raw).join("\n");
+}
+
+/** `mm:ss.cc` — the spelling LRC players all read. */
+export function formatLrcTime(secs: number): string {
+  const cs = Math.round(Math.max(0, secs) * 100);
+  const m = Math.floor(cs / 6000);
+  const s = Math.floor((cs % 6000) / 100);
+  const c = cs % 100;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(c).padStart(2, "0")}`;
+}
+
+/** `m:ss.c` for on-screen readouts (the stamps in the Sync list). */
+export function formatClock(secs: number): string {
+  const ds = Math.round(Math.max(0, secs) * 10);
+  const m = Math.floor(ds / 600);
+  const s = Math.floor((ds % 600) / 10);
+  return `${m}:${String(s).padStart(2, "0")}.${ds % 10}`;
+}
+
+function respell(line: EditorLine, time: number | null): EditorLine {
+  if (time == null) return { ...line, time: null, raw: line.text };
+  const t = Math.max(0, Math.round(time * 100) / 100);
+  return { ...line, time: t, raw: `[${formatLrcTime(t)}]${line.text}` };
+}
+
+/** The lines Sync offers: sung lines only — not headers, not blank lines
+ *  (a blank stanza break, timed or not, is kept but never needs a stamp). */
+export function syncableIndices(lines: EditorLine[]): number[] {
+  const out: number[] = [];
+  lines.forEach((l, i) => { if (!l.meta && l.text) out.push(i); });
+  return out;
+}
+
+export function setLineTime(lines: EditorLine[], index: number, time: number | null): EditorLine[] {
+  if (index < 0 || index >= lines.length) return lines;
+  const next = lines.slice();
+  next[index] = respell(lines[index], time);
+  return next;
+}
+
+export function nudgeLineTime(lines: EditorLine[], index: number, delta: number): EditorLine[] {
+  const t = lines[index]?.time;
+  if (t == null) return lines;
+  return setLineTime(lines, index, t + delta);
+}
+
+/** Text-level wrappers: what the editor actually calls, since text is its state. */
+export function stampInText(text: string, index: number, time: number | null): string {
+  return serializeEditorLines(setLineTime(parseEditorLines(text), index, time));
+}
+
+export function nudgeInText(text: string, index: number, delta: number): string {
+  return serializeEditorLines(nudgeLineTime(parseEditorLines(text), index, delta));
+}
+
+/** Remove every timestamp (Sync's "Start over"), headers included. */
+export function clearAllTimes(text: string): string {
+  return serializeEditorLines(
+    parseEditorLines(text)
+      .filter(l => !l.meta)
+      .map(l => (l.time == null ? l : respell(l, null))),
+  );
+}
+
+export interface LyricsStats {
+  /** Sung lines (what Sync offers). */
+  lines: number;
+  timed: number;
+  /** Timed lines whose time is earlier than the timed line before them —
+   *  they would play out of order. */
+  outOfOrder: number;
+}
+
+export function lyricsStats(lines: EditorLine[]): LyricsStats {
+  let timed = 0;
+  let outOfOrder = 0;
+  let last = -Infinity;
+  const idx = syncableIndices(lines);
+  for (const i of idx) {
+    const t = lines[i].time;
+    if (t == null) continue;
+    timed++;
+    if (t < last) outOfOrder++;
+    last = Math.max(last, t);
+  }
+  return { lines: idx.length, timed, outOfOrder };
+}
+
+/** The kind to save as, read off the text — never a separate choice. A text
+ *  with any timed line is synced; that's what LRC means. (A dropdown used to
+ *  decide, and "Synced" on plain text rendered an empty panel.) */
+export function detectLyricsKind(text: string): LyricsKind {
+  return parseEditorLines(text).some(l => l.time != null) ? "synced" : "plain";
+}
+
+/** Where Sync's cursor should start: the first sung line without a time, or
+ *  the first sung line when every one is already timed. -1 when there is
+ *  nothing to sync. */
+export function firstUntimedIndex(lines: EditorLine[]): number {
+  const idx = syncableIndices(lines);
+  return idx.find(i => lines[i].time == null) ?? idx[0] ?? -1;
+}
+
+/** The sung line after `index` (or -1 at the end). */
+export function nextSyncable(lines: EditorLine[], index: number): number {
+  return syncableIndices(lines).find(i => i > index) ?? -1;
+}
+
+/** The sung line before `index` (or -1 at the start). */
+export function prevSyncable(lines: EditorLine[], index: number): number {
+  const idx = syncableIndices(lines);
+  for (let k = idx.length - 1; k >= 0; k--) if (idx[k] < index) return idx[k];
+  return -1;
+}

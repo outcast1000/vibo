@@ -5788,7 +5788,6 @@ function App() {
                 isCurrentTrack={false}
                 storyboardsEnabled={videoStoryboards}
                 onPlay={() => queueHook.playTracks([syntheticTrack], 0)}
-                onPlayAt={() => {}}
                 onStartRadio={syntheticTrack.artist_name ? () => contextMenuActions.startRadio({ title: syntheticTrack.title, artistName: syntheticTrack.artist_name, coverPath: albumImg ?? artistImg ?? null }) : undefined}
                 onToggleLike={() => likeActions.handleToggleLike(syntheticTrack)}
                 onToggleDislike={() => likeActions.handleToggleDislike(syntheticTrack)}

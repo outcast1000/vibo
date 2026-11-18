@@ -48,7 +48,9 @@ interface TrackDetailViewProps {
   /** Settings > Playback > "Video seek previews" — see `useStoryboard`. */
   storyboardsEnabled: boolean;
   onPlay: () => void;
-  onPlayAt: (secs: number) => void;
+  /** Play this track from `secs` (seeks when it is the one playing). Absent
+   *  where the page can't start the track. */
+  onPlayAt?: (secs: number) => void;
   onShowInFolder: () => void;
   onStartRadio?: () => void;
   onToggleLike: () => void;
@@ -415,6 +417,7 @@ export function TrackDetailView({
           onTabOrderChange={handleTabOrderChange}
           onTitleData={handleTitleData}
           livePosition={isCurrentTrack}
+          onSeek={onPlayAt}
           // The Tags and Play History tabs were folded into Details (tags
           // row + the plays list); a plugin link naming them opens Details.
           tabAliases={TRACK_TAB_ALIASES}
