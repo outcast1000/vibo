@@ -117,7 +117,7 @@ links, and **plugin assistant tools**.
 
 The server's `instructions` stay under ~2,000 characters, because Claude Code
 truncates anything longer and the safety rules would be the first thing lost.
-The step-by-step recipes for multi-step jobs (renaming, tagging, upgrade,
+The step-by-step recipes for multi-step jobs (renaming, tagging, upgrade, synced lyrics,
 extensions, "what can you do?") are read on demand with the read-only `guide`
 tool instead of being sent up front. Likewise `cue_sheet`'s schema types only
 the card fields; clip-mode layout and motion fields are documented in

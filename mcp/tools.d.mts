@@ -71,7 +71,7 @@ export const SLOW_MS: number;
 export const DEFAULT_MS: number;
 export const TOOL_CATEGORIES: ToolCategory[];
 export const INSTRUCTIONS: string;
-export const GUIDES: Record<"renaming" | "tagging" | "upgrade" | "extensions" | "capabilities", string>;
+export const GUIDES: Record<"renaming" | "tagging" | "upgrade" | "synced-lyrics" | "extensions" | "capabilities", string>;
 export const TOOLS: CatalogTool[];
 export const PROXY_SEP: string;
 export const PROXY_DROP_GRACE_MS: number;
