@@ -1,6 +1,6 @@
 import type { LoadingPlay } from "../hooks/useQueue";
 import { LoadingElapsed } from "./LoadingPlay";
-import { memo, useCallback, useRef, useState, useEffect, type ReactNode } from "react";
+import { memo, useCallback, useMemo, useRef, useState, useEffect, type ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { usePlaybackPosition } from "../playback/positionStore";
@@ -31,6 +31,7 @@ import { TrackArtFallback } from "./TrackArtFallback";
 import { MiniSearchPanel } from "./MiniSearchPanel";
 import { NowPlayingInfoCycler, MarqueeText, initialCycleState, type MarqueePlan } from "./NowPlayingInfoCycler";
 import type { NowPlayingInfoResolved } from "../hooks/useNowPlayingInfo";
+import { compactName } from "../utils/compactTitle";
 import { SourceIndicator } from "./SourceIndicator";
 import "./NowPlayingBar.css";
 import { useTrackLike } from "../contexts/TrackLikeContext";
@@ -284,6 +285,15 @@ export const NowPlayingBar = memo(function NowPlayingBar({
   const handleUltraPlan = useCallback((plan: MarqueePlan | null) => {
     if (plan && ultraRequestRef.current) setUltraTitleYielded(true);
   }, []);
+  // The compact row has room for one short line, so its title and artist /
+  // album names drop "Remastered 2009", "(feat. X)", "[Deluxe Edition]"
+  // (`compactName`). Display text only: the segments' `nav` keeps the full
+  // names, the tooltip shows them, and the other surfaces are unchanged.
+  const compactInfo = useMemo(() => nowPlayingInfo.map((item) => (
+    item.segments.some((seg) => seg.nav)
+      ? { ...item, segments: item.segments.map((seg) => (seg.nav ? { ...seg, text: compactName(seg.text) } : seg)) }
+      : item
+  )), [nowPlayingInfo]);
   // Scrub preview over the seek track: pct drives the waveform's ghost tint,
   // x positions the floating time bubble (px within .now-seek-wrap).
   const [seekHover, setSeekHover] = useState<SeekHover | null>(null);
@@ -457,11 +467,11 @@ export const NowPlayingBar = memo(function NowPlayingBar({
                 <span className={`mini-ultra-lead${ultraTitleYielded ? " is-yielded" : ""}`}>
                   <span className="mini-ultra-lead-inner">
                     {currentLiked === 1 && <IconHeartFilled size={11} className="mini-ultra-heart" />}
-                    <span className="mini-ultra-track">{currentTrack.title}</span>
+                    <span className="mini-ultra-track">{compactName(currentTrack.title)}</span>
                     <span className="mini-ultra-sep">—</span>
                   </span>
                 </span>
-                <NowPlayingInfoCycler plain className="mini-ultra-artist" items={nowPlayingInfo} sep=" · " fallbackText={currentTrack.artist_name || "Unknown"} cycleResetKey={currentTrack.key} cycleState={infoCycleState} onCycleState={setInfoCycleState} onDisplay={handleUltraDisplay} />
+                <NowPlayingInfoCycler plain className="mini-ultra-artist" items={compactInfo} sep=" · " fallbackText={currentTrack.artist_name ? compactName(currentTrack.artist_name) : "Unknown"} cycleResetKey={currentTrack.key} cycleState={infoCycleState} onCycleState={setInfoCycleState} onDisplay={handleUltraDisplay} />
               </MarqueeText>
             ) : loadingTrack ? (
               <span className="mini-ultra-title">{`Loading ${loadingTrack.title}…`}</span>
