@@ -55,12 +55,16 @@ export function LyricsRenderer({ data, onAction, context }: RendererProps) {
     userScrollTimeout.current = window.setTimeout(() => setUserScrolled(false), 5000);
   }, []);
 
+  // `local` tells the host the lyrics came from the track's own files, so the
+  // edit is saved back into that file rather than only into the app's copy —
+  // which the next re-probe of the file would overwrite.
+  const local = !!d?.local;
   const handleSave = useCallback(async (text: string, kind: LyricsKind) => {
     if (!onAction) throw new Error("This page can't save lyrics");
-    await onAction("save-lyrics", { text, kind });
-  }, [onAction]);
+    await onAction("save-lyrics", { text, kind, local });
+  }, [onAction, local]);
 
-  const canEdit = !!onAction && !d?.local;
+  const canEdit = !!onAction;
 
   if (editing) {
     return (
@@ -96,7 +100,7 @@ export function LyricsRenderer({ data, onAction, context }: RendererProps) {
         >
           {d.kind === "synced" ? "Synced" : "Plain"}
         </span>
-        {d.local && <span className="lyrics-badge" title="From the track's own files — edit the file to change them">From file</span>}
+        {d.local && <span className="lyrics-badge" title="From the track's own files. Edits are saved back to the lyrics file">From file</span>}
         <span className="lyrics-actions-spacer" />
         {lrcLines && live && (
           <button
@@ -106,8 +110,6 @@ export function LyricsRenderer({ data, onAction, context }: RendererProps) {
             title={follow ? "Stop scrolling with the song" : "Scroll with the song"}
           >Follow</button>
         )}
-        {/* No editor for file-backed lyrics: a cache edit would be overwritten
-            by the next re-probe of the local file (issue #131). */}
         {canEdit && (
           <button className="ds-btn ds-btn--sm ds-btn--secondary" onClick={() => setEditing(true)}>
             {d.kind === "synced" ? "Edit" : "Edit or sync"}

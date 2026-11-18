@@ -243,6 +243,7 @@ macro_rules! invoke_handler {
             commands::get_audio_properties_by_path,
             commands::read_file_tags,
             commands::get_local_lyrics,
+            commands::save_local_lyrics,
             commands::get_file_size,
             commands::queue_entry_file_size,
             commands::get_track_extra_tags,

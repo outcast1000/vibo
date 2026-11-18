@@ -4,7 +4,8 @@ import { useInformationTypes } from "../hooks/useInformationTypes";
 import type { OpenInfoArgs } from "../hooks/useRetrieveModal";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { saveInfoValue } from "../utils/infoFetchChain";
+import { CORE_LOCAL_LYRICS_PROVIDER, saveInfoValue } from "../utils/infoFetchChain";
+import { saveLocalLyrics } from "../utils/localLyrics";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { buildEntityKey } from "../types/informationTypes";
 import type { QueueTrack } from "../types";
@@ -191,13 +192,27 @@ export function InformationSections({
       entity?.artistName ??
       (entity?.kind === "artist" ? entity.name : undefined);
     if (actionId === "save-lyrics" && entity) {
-      const p = payload as { text: string; kind: string } | undefined;
+      const p = payload as { text: string; kind: string; local?: boolean } | undefined;
       if (!p) return;
-      // Same write as a plugin's api.lyrics.save. It announces the change, so
-      // this section (and any other open view of the song) re-reads by itself.
-      // Rethrown: the editor stays open and shows the reason.
+      // Lyrics from the track's own files are saved back into that file, then
+      // cached under the local-lyrics row as what the file now says. Anything
+      // else is the same write as a plugin's api.lyrics.save. Both announce
+      // the change, so this section (and any other open view of the song)
+      // re-reads by itself. Rethrown: the editor stays open with the reason.
       try {
-        await saveInfoValue({ typeId: "lyrics", entity, value: { text: p.text, kind: p.kind } });
+        if (p.local) {
+          const value = await saveLocalLyrics(entity, p.text);
+          // The file holds the edit now: a cache failure must not report a
+          // failed save (a retry would only rewrite the file). The next daily
+          // re-probe of the file brings the cache in line.
+          try {
+            await saveInfoValue({ typeId: "lyrics", entity, value, provider: CORE_LOCAL_LYRICS_PROVIDER });
+          } catch (cacheErr) {
+            console.error("Saved the lyrics file but couldn't update the cached copy:", cacheErr);
+          }
+        } else {
+          await saveInfoValue({ typeId: "lyrics", entity, value: { text: p.text, kind: p.kind } });
+        }
       } catch (e) {
         console.error("Failed to save lyrics:", e);
         throw e;

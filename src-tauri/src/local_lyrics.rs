@@ -1,7 +1,10 @@
 //! Local lyrics discovery (issue #131): lyrics that live with the user's own
-//! files rather than on a lyrics service. Three sources, probed in the order
-//! the issue asks for — embedded tag lyrics, a sidecar `.lrc`/`.txt` named
-//! like the audio file, and the same files inside a `Lyrics/` subfolder.
+//! files rather than on a lyrics service. Three sources, probed in this
+//! order — lyrics embedded in the audio file's tags, a sidecar `.lrc`/`.txt`
+//! named like the audio file, and the same files inside a `Lyrics/`
+//! subfolder. A synced answer beats a plain one wherever it comes from. The
+//! in-app editor saves an edit back into whichever source answered
+//! (`save_and_verify`).
 //!
 //! Everything here is probed live on every lookup and deliberately never
 //! cached: the file is the source of truth, re-reading it costs a stat or one
@@ -20,6 +23,14 @@ pub struct LocalLyrics {
     pub kind: &'static str,
     /// Which probe answered: "embedded" | "sidecar" | "folder".
     pub source: &'static str,
+    /// The audio file whose lyrics these are. Never sent to the webview: the
+    /// save path takes it from its own probe rather than from the caller.
+    #[serde(skip)]
+    pub audio: PathBuf,
+    /// The lyrics file that answered (sidecar / folder); `None` for lyrics
+    /// embedded in the audio file.
+    #[serde(skip)]
+    pub file: Option<PathBuf>,
 }
 
 /// True when any line opens with an LRC timestamp (`[m:ss` / `[mm:ss.xx` …).
@@ -73,13 +84,47 @@ fn embedded_lyrics(path: &Path) -> Option<String> {
         .or_else(|| tagged_file.tags().iter().find_map(lyrics_from_tag))
 }
 
+/// Replace the lyrics embedded in `path`'s tags with `text`: in the tag and
+/// under the key they were read from (`embedded_lyrics`' order — the primary
+/// tag first, `ItemKey::Lyrics` before `UnsyncLyrics`), so the edit lands
+/// exactly where the probe will read it. Writes through `read_tagged_file`'s
+/// relaxed read, the same as the Edit Properties write.
+fn write_embedded_lyrics(path: &Path, text: &str) -> Result<(), String> {
+    use lofty::config::WriteOptions;
+    use lofty::prelude::*;
+    use lofty::tag::ItemKey;
+
+    let mut tagged = crate::tag_writer::read_tagged_file(path)
+        .map_err(|e| format!("Couldn't read the tags of {}: {}", path.display(), e))?;
+    let primary = tagged.primary_tag_type();
+    let mut order = vec![primary];
+    order.extend(tagged.tags().iter().map(|t| t.tag_type()).filter(|t| *t != primary));
+    for tag_type in order {
+        let Some(tag) = tagged.tag_mut(tag_type) else { continue };
+        let key = [ItemKey::Lyrics, ItemKey::UnsyncLyrics]
+            .into_iter()
+            .find(|k| tag.get_string(*k).is_some_and(|s| !s.trim().is_empty()));
+        if let Some(key) = key {
+            if !tag.insert_text(key, text.to_string()) {
+                return Err(format!("{} can't hold lyrics in its tags", path.display()));
+            }
+            return tagged
+                .save_to_path(path, WriteOptions::default())
+                .map_err(|e| format!("Couldn't save the tags of {}: {}", path.display(), e));
+        }
+    }
+    Err(format!("The lyrics are no longer in the tags of {}", path.display()))
+}
+
 /// `<stem>.lrc` preferred over `<stem>.txt` — when both exist the synced file
-/// is the richer one.
-fn lyrics_file_in(dir: &Path, stem: &str) -> Option<PathBuf> {
-    ["lrc", "txt"]
-        .iter()
-        .map(|ext| dir.join(format!("{stem}.{ext}")))
-        .find(|p| p.is_file())
+/// is the richer one. An empty or unreadable file is skipped, so an empty
+/// `.lrc` can't hide the `.txt` beside it.
+fn lyrics_file_in(dir: &Path, stem: &str) -> Option<(PathBuf, String)> {
+    ["lrc", "txt"].iter().find_map(|ext| {
+        let file = dir.join(format!("{stem}.{ext}"));
+        let text = read_text_file(&file)?;
+        Some((file, text))
+    })
 }
 
 /// Non-empty file text, BOM stripped, read lossily — `.lrc` files from the
@@ -120,15 +165,24 @@ pub fn probe_local_lyrics(audio_path: &Path) -> Option<LocalLyrics> {
     }
     let dir = audio_path.parent()?;
     let stem = audio_path.file_stem()?.to_str()?;
+    let from_file = |(file, text): (PathBuf, String), source: &'static str| LocalLyrics {
+        kind: kind_of(&text),
+        text,
+        source,
+        audio: audio_path.to_path_buf(),
+        file: Some(file),
+    };
 
     let embedded = std::iter::once_with(|| {
-        embedded_lyrics(audio_path).map(|text| LocalLyrics { kind: kind_of(&text), text, source: "embedded" })
+        embedded_lyrics(audio_path).map(|text| LocalLyrics {
+            kind: kind_of(&text),
+            text,
+            source: "embedded",
+            audio: audio_path.to_path_buf(),
+            file: None,
+        })
     });
-    let sidecar = std::iter::once_with(|| {
-        lyrics_file_in(dir, stem)
-            .and_then(|f| read_text_file(&f))
-            .map(|text| LocalLyrics { kind: kind_of(&text), text, source: "sidecar" })
-    });
+    let sidecar = std::iter::once_with(|| lyrics_file_in(dir, stem).map(|hit| from_file(hit, "sidecar")));
     // Both casings probed literally: on a case-sensitive filesystem they are
     // different folders; on macOS's default they resolve to the same one, so
     // one hit is kept (the same file would otherwise answer twice).
@@ -138,12 +192,146 @@ pub fn probe_local_lyrics(audio_path: &Path) -> Option<LocalLyrics> {
             if !sub.is_dir() {
                 return None;
             }
-            lyrics_file_in(&sub, stem).and_then(|f| read_text_file(&f))
+            lyrics_file_in(&sub, stem).map(|hit| from_file(hit, "folder"))
         })
-        .map(|text| LocalLyrics { kind: kind_of(&text), text, source: "folder" })
     });
 
     prefer_synced(embedded.chain(sidecar).chain(folder).flatten())
+}
+
+/// Largest lyrics text the editor may save (the assistant's
+/// `write_lyrics_file` has the same cap).
+pub const MAX_LYRICS_BYTES: usize = 200_000;
+
+/// Save an edit of `found` into the source it came from — the one the probe
+/// gave priority to (owner decision, 2026-11-19): back into the tag and key
+/// that held embedded lyrics, back into the sidecar or `Lyrics/` folder file
+/// otherwise, whatever its extension (the kind is read from the text, so a
+/// `.txt` with timestamps reads as synced).
+///
+/// A file is replaced without ever being missing: the text goes to a temp
+/// file, the old file is copied out to a temp folder, the temp file is
+/// renamed over the old one (a replace, atomic on the same volume), and only
+/// then is the copy handed to `displace` (the Trash, in production — the copy
+/// keeps the file's name, so it reads right there). Any failure before the
+/// rename leaves the old file as it was.
+pub fn save_local_lyrics_edit(
+    found: &LocalLyrics,
+    text: &str,
+    displace: &dyn Fn(&Path) -> Result<(), String>,
+) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err("The lyrics are empty. To remove them, delete them where they're stored".to_string());
+    }
+    if text.len() > MAX_LYRICS_BYTES {
+        return Err(format!("The lyrics are over the {} KB limit", MAX_LYRICS_BYTES / 1000));
+    }
+    match &found.file {
+        None => write_embedded_lyrics(&found.audio, text),
+        Some(file) => replace_text_file(file, text, displace),
+    }
+}
+
+/// `save_local_lyrics_edit`, then read the same audio file back and check the
+/// edit is what it shows. It may not be: synced beats plain across sources, so
+/// a plain edit loses to synced lyrics elsewhere for this file, and a plain
+/// edit of a file loses to plain lyrics in the tags. The edit is then on disk
+/// but invisible, which must not look like a save that worked — the error
+/// names what wins instead. Only `found.audio` is read back, never other
+/// library copies of the song: their lyrics say nothing about this edit.
+pub fn save_and_verify(
+    found: &LocalLyrics,
+    text: &str,
+    displace: &dyn Fn(&Path) -> Result<(), String>,
+) -> Result<LocalLyrics, String> {
+    save_local_lyrics_edit(found, text, displace)?;
+    let saved_to = describe_source(found);
+    match probe_local_lyrics(&found.audio) {
+        Some(now) if now.source == found.source && now.file == found.file => Ok(now),
+        Some(now) => Err(format!(
+            "Saved to {saved_to}, but the {} lyrics in {} take priority, so they still show. Remove them to use this edit",
+            now.kind,
+            describe_source(&now),
+        )),
+        None => Err(format!("Saved to {saved_to}, but couldn't read it back")),
+    }
+}
+
+/// Where lyrics live, for a message: "the tags of song.mp3", "song.lrc",
+/// "Lyrics/song.lrc".
+fn describe_source(lyrics: &LocalLyrics) -> String {
+    match &lyrics.file {
+        None => format!("the tags of {}", file_name_of(&lyrics.audio)),
+        Some(file) if lyrics.source == "folder" => format!("Lyrics/{}", file_name_of(file)),
+        Some(file) => file_name_of(file),
+    }
+}
+
+fn file_name_of(path: &Path) -> String {
+    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string())
+}
+
+fn replace_text_file(target: &Path, text: &str, displace: &dyn Fn(&Path) -> Result<(), String>) -> Result<(), String> {
+    let name = target
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "The lyrics file has no name".to_string())?;
+    // No media or lyrics extension, so neither the scanner nor the probe can
+    // pick up a temp file a crash left behind.
+    let tmp = target.with_file_name(format!(".{name}.viboplr-save"));
+    fs::write(&tmp, text).map_err(|e| format!("Couldn't write next to {}: {}", target.display(), e))?;
+
+    let backup = if target.exists() {
+        let kept = keep_copy(target, name);
+        if kept.is_err() {
+            let _ = fs::remove_file(&tmp); // our own temp copy; the error below is what the user needs
+        }
+        Some(kept?)
+    } else {
+        None
+    };
+
+    if let Err(e) = fs::rename(&tmp, target) {
+        let _ = fs::remove_file(&tmp); // our own temp copy; the old file is untouched
+        if let Some(dir) = &backup {
+            let _ = fs::remove_dir_all(dir); // the copy isn't needed: nothing was replaced
+        }
+        return Err(format!("Couldn't save {}: {}", target.display(), e));
+    }
+    if let Some(dir) = backup {
+        // The save has happened; losing the Trash copy only costs the undo.
+        if let Err(e) = displace(&dir.join(name)) {
+            log::warn!("Saved {}, but couldn't move the previous version to the Trash: {}", target.display(), e);
+        }
+        let _ = fs::remove_dir_all(&dir); // our own temp folder, empty once the copy is in the Trash
+    }
+    Ok(())
+}
+
+/// Copy `target` into a fresh folder under the system temp dir, keeping its
+/// name. Returns the folder.
+fn keep_copy(target: &Path, name: &str) -> Result<PathBuf, String> {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("viboplr-lyrics-{}-{nanos}-{seq}", std::process::id()));
+    fs::create_dir_all(&dir).map_err(|e| format!("Couldn't keep a copy of the old lyrics: {}", e))?;
+    if let Err(e) = fs::copy(target, dir.join(name)) {
+        let _ = fs::remove_dir_all(&dir); // our own temp folder
+        return Err(format!("Couldn't keep a copy of the old {}: {}", target.display(), e));
+    }
+    Ok(dir)
+}
+
+/// Production `displace` for `save_local_lyrics_edit`: the Trash, quietly (no
+/// Finder sound on every save). The copy it is handed lives in the system temp
+/// folder, so a lyrics file on a network share still gets a recoverable
+/// previous version.
+pub fn displace_lyrics_file(path: &Path) -> Result<(), String> {
+    crate::plugins::trash_quietly(path)
 }
 
 #[cfg(test)]
@@ -242,7 +430,7 @@ mod tests {
     }
 
     fn found(kind: &'static str, source: &'static str) -> LocalLyrics {
-        LocalLyrics { text: format!("{kind} from {source}"), kind, source }
+        LocalLyrics { text: format!("{kind} from {source}"), kind, source, audio: PathBuf::new(), file: None }
     }
 
     #[test]
@@ -295,5 +483,159 @@ mod tests {
         let found = probe_local_lyrics(&audio).unwrap();
         assert!(found.text.starts_with("[ar:"));
         assert_eq!(found.kind, "synced");
+    }
+
+    #[test]
+    fn test_probe_reports_the_file_that_answered() {
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path().join("song.mp3");
+        fs::write(&audio, b"x").unwrap();
+        let sub = dir.path().join("Lyrics");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("song.lrc"), LRC).unwrap();
+
+        let found = probe_local_lyrics(&audio).unwrap();
+        assert_eq!(found.audio, audio);
+        assert_eq!(found.file, Some(sub.join("song.lrc")));
+    }
+
+    #[test]
+    fn test_an_empty_lrc_does_not_hide_the_txt_beside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path().join("song.mp3");
+        fs::write(&audio, b"x").unwrap();
+        fs::write(dir.path().join("song.lrc"), "").unwrap();
+        fs::write(dir.path().join("song.txt"), PLAIN).unwrap();
+
+        let found = probe_local_lyrics(&audio).unwrap();
+        assert_eq!(found.file, Some(dir.path().join("song.txt")));
+        assert_eq!(found.text, PLAIN);
+    }
+
+    /// An MP3 whose tag carries `lyrics` (ID3v2 USLT).
+    fn mp3_with_lyrics(path: &Path, lyrics: &str) {
+        use lofty::config::WriteOptions;
+        use lofty::prelude::*;
+        use lofty::tag::ItemKey;
+        fs::write(path, crate::tag_writer::mp3_with_malformed_date("Song", "Band")).unwrap();
+        let mut file = crate::tag_writer::read_tagged_file(path).unwrap();
+        assert!(file.primary_tag_mut().unwrap().insert_text(ItemKey::UnsyncLyrics, lyrics.to_string()));
+        file.save_to_path(path, WriteOptions::default()).unwrap();
+    }
+
+    /// A test Trash: moves what it's handed into `bin`, so a test can see the
+    /// previous version was kept.
+    fn trash_into(bin: &Path) -> impl Fn(&Path) -> Result<(), String> + '_ {
+        move |p: &Path| fs::rename(p, bin.join(p.file_name().unwrap())).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn test_tag_lyrics_come_first_among_plain_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path().join("song.mp3");
+        mp3_with_lyrics(&audio, PLAIN);
+        fs::write(dir.path().join("song.txt"), "Other words\n").unwrap();
+
+        let found = probe_local_lyrics(&audio).unwrap();
+        assert_eq!((found.source, found.text.as_str()), ("embedded", PLAIN));
+
+        // ...but a synced file still beats plain tag lyrics.
+        fs::write(dir.path().join("song.lrc"), LRC).unwrap();
+        assert_eq!(probe_local_lyrics(&audio).unwrap().source, "sidecar");
+    }
+
+    #[test]
+    fn test_an_edit_of_tag_lyrics_goes_back_into_the_tag() {
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path().join("song.mp3");
+        mp3_with_lyrics(&audio, PLAIN);
+        let bin = tempfile::tempdir().unwrap();
+
+        let found = probe_local_lyrics(&audio).unwrap();
+        let now = save_and_verify(&found, LRC, &trash_into(bin.path())).unwrap();
+        assert_eq!((now.source, now.kind, now.text.as_str()), ("embedded", "synced", LRC));
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1, "no sidecar was written");
+    }
+
+    #[test]
+    fn test_an_edit_of_a_file_goes_back_into_that_file_and_keeps_the_old_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path().join("song.mp3");
+        fs::write(&audio, b"x").unwrap();
+        let sub = dir.path().join("Lyrics");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("song.txt"), PLAIN).unwrap();
+        let bin = tempfile::tempdir().unwrap();
+
+        let found = probe_local_lyrics(&audio).unwrap();
+        // Timestamps added to a .txt stay in the .txt: the kind is read from
+        // the text, so it reads back as synced.
+        let now = save_and_verify(&found, LRC, &trash_into(bin.path())).unwrap();
+        assert_eq!((now.source, now.kind), ("folder", "synced"));
+        assert_eq!(fs::read_to_string(sub.join("song.txt")).unwrap(), LRC);
+        assert_eq!(fs::read_to_string(bin.path().join("song.txt")).unwrap(), PLAIN, "the previous version went to the Trash");
+        assert_eq!(fs::read_dir(&sub).unwrap().count(), 1, "no temp file is left behind");
+    }
+
+    #[test]
+    fn test_an_edit_that_something_else_outranks_is_reported_not_shown_as_saved() {
+        // Plain lyrics in the tags + a synced .lrc: the .lrc shows. Stripping
+        // its timestamps saves a plain .lrc — which the tag's plain lyrics
+        // then outrank.
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path().join("song.mp3");
+        mp3_with_lyrics(&audio, PLAIN);
+        fs::write(dir.path().join("song.lrc"), LRC).unwrap();
+        let bin = tempfile::tempdir().unwrap();
+
+        let found = probe_local_lyrics(&audio).unwrap();
+        assert_eq!(found.source, "sidecar");
+        let err = save_and_verify(&found, "Edited words\n", &trash_into(bin.path())).unwrap_err();
+        assert!(err.contains("Saved to song.lrc"), "{err}");
+        assert!(err.contains("the tags of song.mp3"), "{err}");
+        assert_eq!(fs::read_to_string(dir.path().join("song.lrc")).unwrap(), "Edited words\n", "the edit is on disk");
+    }
+
+    #[test]
+    fn test_empty_or_oversized_text_is_refused_and_nothing_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path().join("song.mp3");
+        fs::write(&audio, b"x").unwrap();
+        fs::write(dir.path().join("song.lrc"), LRC).unwrap();
+        let bin = tempfile::tempdir().unwrap();
+        let found = probe_local_lyrics(&audio).unwrap();
+
+        assert!(save_and_verify(&found, "  \n", &trash_into(bin.path())).is_err());
+        assert!(save_and_verify(&found, &"x".repeat(MAX_LYRICS_BYTES + 1), &trash_into(bin.path())).is_err());
+        assert_eq!(fs::read_to_string(dir.path().join("song.lrc")).unwrap(), LRC);
+    }
+
+    #[test]
+    fn test_a_failed_trash_still_saves() {
+        // The Trash copy is only the undo; the save itself has happened.
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path().join("song.mp3");
+        fs::write(&audio, b"x").unwrap();
+        fs::write(dir.path().join("song.lrc"), LRC).unwrap();
+        let found = probe_local_lyrics(&audio).unwrap();
+
+        let refuse = |_: &Path| -> Result<(), String> { Err("no trash here".to_string()) };
+        let now = save_and_verify(&found, "[00:02.00]x\n", &refuse).unwrap();
+        assert_eq!(now.text, "[00:02.00]x\n");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2, "only the audio and the .lrc remain");
+    }
+
+    #[test]
+    fn test_a_failed_replace_leaves_the_old_file_in_place() {
+        // The target is a directory, so the rename over it fails: the old
+        // "file" must still be there and no temp file left behind.
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("song.lrc");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("keep"), "x").unwrap();
+        let bin = tempfile::tempdir().unwrap();
+        assert!(replace_text_file(&target, LRC, &trash_into(bin.path())).is_err());
+        assert!(target.join("keep").exists());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 }

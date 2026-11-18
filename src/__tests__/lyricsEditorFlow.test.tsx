@@ -28,7 +28,7 @@ describe("LyricsRenderer editing", () => {
     expect(screen.getByText(/Saves as plain text · 2 lines/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    await waitFor(() => expect(onAction).toHaveBeenCalledWith("save-lyrics", { text: "First\nSecond", kind: "plain" }));
+    await waitFor(() => expect(onAction).toHaveBeenCalledWith("save-lyrics", { text: "First\nSecond", kind: "plain", local: false }));
     await waitFor(() => expect(screen.queryByLabelText("Lyrics")).toBeNull());
   });
 
@@ -46,7 +46,7 @@ describe("LyricsRenderer editing", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(screen.getByText(/Couldn't save the lyrics: disk full/)).toBeTruthy());
-    expect(onAction).toHaveBeenCalledWith("save-lyrics", { text: "[00:01.00]A", kind: "synced" });
+    expect(onAction).toHaveBeenCalledWith("save-lyrics", { text: "[00:01.00]A", kind: "synced", local: false });
     expect(screen.getByLabelText("Lyrics")).toBeTruthy();
   });
 
@@ -87,10 +87,26 @@ describe("LyricsRenderer editing", () => {
       await waitFor(() => expect(onAction).toHaveBeenCalledWith("save-lyrics", {
         text: "[00:03.20]First\n[00:07.40]Second",
         kind: "synced",
+        local: false,
       }));
     } finally {
       window.removeEventListener("keydown", windowKeys);
     }
+  });
+
+  it("edits lyrics from the track's own files and says they came from there", async () => {
+    // These used to have no editor at all (a cache-only edit would be undone
+    // by the next re-read of the file); now the save carries `local` so the
+    // host writes it back into the file.
+    const onAction = vi.fn(async () => undefined);
+    render(<LyricsRenderer data={{ text: "[00:01.00]A", kind: "synced", local: true }} onAction={onAction} />);
+
+    expect(screen.getByText("From file")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText("Lyrics"), { target: { value: "[00:02.00]A" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onAction).toHaveBeenCalledWith("save-lyrics", { text: "[00:02.00]A", kind: "synced", local: true }));
   });
 
   it("seeks when a synced line is clicked", () => {

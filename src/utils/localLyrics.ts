@@ -27,11 +27,20 @@ export function localLyricsProviderName(source: LocalLyricsRow["source"]): strin
   }
 }
 
+function localLyricsValue(found: LocalLyricsRow): Record<string, unknown> {
+  return {
+    text: found.text,
+    kind: found.kind,
+    local: true,
+    _meta: { providerName: localLyricsProviderName(found.source) },
+  };
+}
+
 /** LyricsData-shaped value for the lyrics renderers, or null when the track
  *  has no local lyrics. `local: true` marks it for surfaces that treat a
- *  file-backed value differently — the in-app editor hides, because an edit
- *  saved to the cache would be overwritten by the next re-probe of the file
- *  it can't change. */
+ *  file-backed value differently — the in-app editor saves an edit of it back
+ *  to the file (`saveLocalLyrics`), since an edit saved only to the cache
+ *  would be overwritten by the next re-probe of the file. */
 export async function fetchLocalLyrics(
   entity: Pick<InfoEntity, "kind" | "name" | "artistName" | "albumTitle">,
   path?: string | null,
@@ -44,15 +53,30 @@ export async function fetchLocalLyrics(
       albumName: entity.albumTitle || null,
       path: path ?? null,
     });
-    if (!found?.text) return null;
-    return {
-      text: found.text,
-      kind: found.kind,
-      local: true,
-      _meta: { providerName: localLyricsProviderName(found.source) },
-    };
+    return found?.text ? localLyricsValue(found) : null;
   } catch (e) {
     console.error("Failed to read local lyrics:", e);
     return null;
   }
+}
+
+/** Save an edit of file-backed lyrics into the track's files
+ *  (`save_local_lyrics`: back into the source that answered — the audio
+ *  file's tags, or the sidecar / Lyrics-folder file; a replaced file's old
+ *  version goes to the Trash). The backend finds the source itself — the same
+ *  lookup `fetchLocalLyrics` runs — so nothing here names a destination.
+ *  Resolves with the value as it now reads from disk; rejects with the
+ *  backend's reason, including "saved, but X still takes priority". */
+export async function saveLocalLyrics(
+  entity: Pick<InfoEntity, "name" | "artistName" | "albumTitle" | "path">,
+  text: string,
+): Promise<Record<string, unknown>> {
+  const saved = await invoke<LocalLyricsRow>("save_local_lyrics", {
+    title: entity.name,
+    artistName: entity.artistName || null,
+    albumName: entity.albumTitle || null,
+    path: entity.path ?? null,
+    text,
+  });
+  return localLyricsValue(saved);
 }

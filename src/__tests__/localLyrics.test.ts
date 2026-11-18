@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 let invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invokeMock(...args) }));
 
-import { fetchLocalLyrics, localLyricsProviderName } from "../utils/localLyrics";
+import { fetchLocalLyrics, localLyricsProviderName, saveLocalLyrics } from "../utils/localLyrics";
 
 describe("fetchLocalLyrics", () => {
   beforeEach(() => { invokeMock = vi.fn(); });
@@ -67,5 +67,31 @@ describe("fetchLocalLyrics", () => {
     expect(localLyricsProviderName("embedded")).toBe("Embedded in file");
     expect(localLyricsProviderName("sidecar")).toBe("Lyrics file");
     expect(localLyricsProviderName("folder")).toBe("Lyrics folder");
+  });
+});
+
+describe("saveLocalLyrics", () => {
+  beforeEach(() => { invokeMock = vi.fn(); });
+
+  it("names the track, never a destination, and returns what the file now says", async () => {
+    // An edit of embedded lyrics comes back from a new sidecar.
+    invokeMock.mockResolvedValue({ text: "[00:02]new", kind: "synced", source: "sidecar" });
+    const value = await saveLocalLyrics(
+      { name: "Jóga", artistName: "Björk", albumTitle: "Homogenic", path: "file:///music/Jóga.flac" },
+      "[00:02]new",
+    );
+    expect(invokeMock).toHaveBeenCalledWith("save_local_lyrics", {
+      title: "Jóga",
+      artistName: "Björk",
+      albumName: "Homogenic",
+      path: "file:///music/Jóga.flac",
+      text: "[00:02]new",
+    });
+    expect(value).toEqual({ text: "[00:02]new", kind: "synced", local: true, _meta: { providerName: "Lyrics file" } });
+  });
+
+  it("rejects with the backend's reason, so the editor can show it", async () => {
+    invokeMock.mockRejectedValue("The track's lyrics file is gone");
+    await expect(saveLocalLyrics({ name: "Song" }, "x")).rejects.toBe("The track's lyrics file is gone");
   });
 });

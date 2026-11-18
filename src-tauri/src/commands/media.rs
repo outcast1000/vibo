@@ -1032,31 +1032,92 @@ pub async fn get_local_lyrics(
     path: Option<String>,
 ) -> Result<Option<crate::local_lyrics::LocalLyrics>, String> {
     with_db(&state, move |db| -> Result<_, std::convert::Infallible> {
-        let mut candidates: Vec<std::path::PathBuf> = Vec::new();
-        if let Some(bare) = path.as_deref().and_then(|p| p.strip_prefix("file://")) {
-            candidates.push(std::path::PathBuf::from(bare));
-        }
-        if let Ok(tracks) =
-            db.find_tracks_by_metadata(&title, artist_name.as_deref(), album_name.as_deref())
-        {
-            let wanted_artist = artist_name.as_deref().map(|a| crate::db::likes::norm_segment(Some(a)));
-            for t in tracks {
-                if let Some(wanted) = &wanted_artist {
-                    if &crate::db::likes::norm_segment(t.artist_name.as_deref()) != wanted {
-                        continue;
-                    }
+        Ok(find_local_lyrics(db, &title, artist_name.as_deref(), album_name.as_deref(), path.as_deref()))
+    })
+    .await
+}
+
+/// The lookup behind `get_local_lyrics` and `save_local_lyrics`: the caller's
+/// path first, then every local library copy of the metadata match whose
+/// artist matches (see `get_local_lyrics` for why the artist check).
+fn find_local_lyrics(
+    db: &crate::db::Database,
+    title: &str,
+    artist_name: Option<&str>,
+    album_name: Option<&str>,
+    path: Option<&str>,
+) -> Option<crate::local_lyrics::LocalLyrics> {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(bare) = path.and_then(|p| p.strip_prefix("file://")) {
+        candidates.push(std::path::PathBuf::from(bare));
+    }
+    if let Ok(tracks) = db.find_tracks_by_metadata(title, artist_name, album_name) {
+        let wanted_artist = artist_name.map(|a| crate::db::likes::norm_segment(Some(a)));
+        for t in tracks {
+            if let Some(wanted) = &wanted_artist {
+                if &crate::db::likes::norm_segment(t.artist_name.as_deref()) != wanted {
+                    continue;
                 }
-                if let Some(bare) = t.path.strip_prefix("file://") {
-                    let pb = std::path::PathBuf::from(bare);
-                    if !candidates.contains(&pb) {
-                        candidates.push(pb);
-                    }
+            }
+            if let Some(bare) = t.path.strip_prefix("file://") {
+                let pb = std::path::PathBuf::from(bare);
+                if !candidates.contains(&pb) {
+                    candidates.push(pb);
                 }
             }
         }
-        Ok(crate::local_lyrics::prefer_synced(
-            candidates.iter().filter_map(|p| crate::local_lyrics::probe_local_lyrics(p)),
-        ))
+    }
+    crate::local_lyrics::prefer_synced(
+        candidates.iter().filter_map(|p| crate::local_lyrics::probe_local_lyrics(p)),
+    )
+}
+
+/// The in-app lyrics editor saving lyrics that came from the track's own
+/// files. Runs the same lookup as `get_local_lyrics` and saves into the source
+/// that answered — the tag and key that held embedded lyrics, or the sidecar /
+/// `Lyrics/` folder file (`local_lyrics::save_and_verify`; a replaced file's
+/// previous version goes to the Trash). Answers with the lyrics as that audio
+/// file now reads, for the caller to put in the cache — or an error when the
+/// edit was saved but something else for that file still outranks it.
+///
+/// **Only lyrics of a library or queue file are written.** The lookup's
+/// candidates are library rows, plus the caller's `path` hint; a hint that is
+/// neither a library file nor in the saved queue (`main_playlist::track_paths`)
+/// is refused, so webview code can't point this at an arbitrary file on disk.
+/// The same gate as `trash_queue_files` — and, as there, it bounds accidents
+/// and casual misuse rather than being a security boundary, since
+/// `main_playlist_write` is itself webview-callable.
+///
+/// `async` + `run_blocking`: disk I/O and a tag write, possibly on a network
+/// mount.
+#[tauri::command]
+pub async fn save_local_lyrics(
+    state: State<'_, AppState>,
+    title: String,
+    artist_name: Option<String>,
+    album_name: Option<String>,
+    path: Option<String>,
+    text: String,
+) -> Result<crate::local_lyrics::LocalLyrics, String> {
+    let db = state.db.clone();
+    let app_dir = state.app_dir.clone();
+    run_blocking(move || -> Result<_, String> {
+        let found = find_local_lyrics(&db, &title, artist_name.as_deref(), album_name.as_deref(), path.as_deref())
+            .ok_or_else(|| {
+                "The track's lyrics are gone from its files, so there is nothing to save into. Reopen the track to see what it has now"
+                    .to_string()
+            })?;
+        if !crate::scanner::is_media_file(&found.audio) {
+            return Err(format!("{} isn't a music or video file", found.audio.display()));
+        }
+        let uri = format!("file://{}", found.audio.to_string_lossy());
+        let in_library = db.library_paths_among(std::slice::from_ref(&uri)).map_err(|e| e.to_string())?;
+        if !in_library.contains(&uri) && !crate::main_playlist::track_paths(&app_dir).contains(&uri) {
+            return Err("Only lyrics of a file in your library or your queue can be edited".to_string());
+        }
+        let now = crate::local_lyrics::save_and_verify(&found, &text, &crate::local_lyrics::displace_lyrics_file)?;
+        log::info!("Saved edited lyrics for {} ({})", found.audio.display(), found.source);
+        Ok(now)
     })
     .await
 }

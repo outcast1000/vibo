@@ -244,6 +244,17 @@ describe("saveInfoValue — a value put in place by hand", () => {
     expect(w.deletes.map((d) => d.informationTypeId)).toContain(20);
   });
 
+  it("lands under a named provider — the local row, after an edit was saved into the file", async () => {
+    const { upserts, deletes } = recordWrites([[21, "lyrics", "{}", "ok", NOW - 60]]);
+    await saveInfoValue({ typeId: "lyrics", entity: song, value: lrc, provider: "core:local-lyrics" });
+    expect(upserts).toEqual([expect.objectContaining({ informationTypeId: 20 })]);
+    expect(deletes.map((d) => d.informationTypeId)).toEqual([21, 22]);
+
+    recordWrites([]);
+    await expect(saveInfoValue({ typeId: "lyrics", entity: song, value: lrc, provider: "nope" }))
+      .rejects.toBeInstanceOf(InfoFetchRequestError);
+  });
+
   it("tells open views", async () => {
     recordWrites([]);
     const seen: string[] = [];

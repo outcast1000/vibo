@@ -298,9 +298,13 @@ export async function resolveInfoEntityId(entity: Omit<InfoEntity, "id">): Promi
  * value overnight. So it reuses the entity's current row when that's a web
  * provider's, else the first web provider in the chain — and only falls back
  * to a core row when the type has nothing else.
+ *
+ * `provider` names the row outright. The lyrics editor passes the local-lyrics
+ * row after saving an edit into the track's own file: the value then *is* the
+ * file's, and its daily re-probe reads back what was just written.
  */
-export async function saveInfoValue(opts: { typeId: string; entity: InfoEntity; value: unknown }): Promise<void> {
-  const { typeId, entity, value } = opts;
+export async function saveInfoValue(opts: { typeId: string; entity: InfoEntity; value: unknown; provider?: string }): Promise<void> {
+  const { typeId, entity, value, provider } = opts;
   const entityKey = buildEntityKey(entity);
   const types = await invoke<InfoTypeRow[]>("info_get_types_for_entity", { entity: entity.kind });
   const row = types.find(([id]) => id === typeId);
@@ -311,8 +315,13 @@ export async function saveInfoValue(opts: { typeId: string; entity: InfoEntity; 
   const isCore = (id: number) => providers.some(([pid, pidId]) => pidId === id && pid.startsWith("core:"));
   const cached = await invoke<InfoValueRow[]>("info_get_values_for_entity", { entityKey });
   const current = cached.find(([, id]) => id === typeId)?.[0];
-  const target =
-    current !== undefined && !isCore(current)
+  const named = provider !== undefined ? providers.find(([pid]) => pid === provider) : undefined;
+  if (provider !== undefined && !named) {
+    throw new InfoFetchRequestError(`"${provider}" is not a provider of "${typeId}"`);
+  }
+  const target = named
+    ? named[1]
+    : current !== undefined && !isCore(current)
       ? current
       : (providers.find(([pid]) => !pid.startsWith("core:")) ?? providers[0])[1];
   await invoke("info_upsert_value", { informationTypeId: target, entityKey, value: JSON.stringify(value), status: "ok" });
