@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CORE_LOCAL_LYRICS_PROVIDER, saveInfoValue } from "../utils/infoFetchChain";
 import { saveLocalLyrics } from "../utils/localLyrics";
+import { emitInfoValueChanged } from "../utils/infoValueEvents";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { buildEntityKey } from "../types/informationTypes";
 import type { QueueTrack } from "../types";
@@ -203,8 +204,9 @@ export function InformationSections({
         if (p.local) {
           const value = await saveLocalLyrics(entity, p.text);
           // The file holds the edit now: a cache failure must not report a
-          // failed save (a retry would only rewrite the file). The next daily
-          // re-probe of the file brings the cache in line.
+          // failed save (a retry would only rewrite the file). The backend has
+          // already dropped the stale cached copy (save_local_lyrics →
+          // set_track_lyrics), so the next look reads the saved lyrics.
           try {
             await saveInfoValue({ typeId: "lyrics", entity, value, provider: CORE_LOCAL_LYRICS_PROVIDER });
           } catch (cacheErr) {
@@ -215,6 +217,10 @@ export function InformationSections({
         }
       } catch (e) {
         console.error("Failed to save lyrics:", e);
+        // A refused file save may have recorded what the files hold now (they
+        // changed since the last scan) and dropped the stale cached copy: make
+        // the open views re-read, so closing the editor shows the current text.
+        if (p.local) emitInfoValueChanged(buildEntityKey(entity), "lyrics");
         throw e;
       }
       return;

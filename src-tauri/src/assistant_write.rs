@@ -407,12 +407,22 @@ pub fn write_lyrics_file(
         displace_existing(&dest)?;
     }
     std::fs::write(&dest, content).map_err(|e| format!("failed to write {}: {}", dest.display(), e))?;
+    // A library track's lyrics are read from what the scan stored, so record
+    // the new file there (as the in-app editor does) — otherwise it would stay
+    // invisible until a Full Rescan. This also drops the song's stale cached
+    // copy. `shownFrom` is what the track's files now answer: tag lyrics come
+    // first, and synced beats plain, so it need not be the file just written.
+    let now = crate::local_lyrics::probe_local_lyrics(&audio_path);
+    if let Err(e) = db.set_track_lyrics(track_id, now.as_ref().map(|l| (l.text.as_str(), l.source))) {
+        log::warn!("Wrote {} but couldn't record it as the track's lyrics: {}", dest.display(), e);
+    }
     Ok(serde_json::json!({
         "path": dest.to_string_lossy(),
         "kind": if ext == "lrc" { "synced" } else { "plain" },
         "bytes": content.len(),
         "replaced": replaced,
-        "note": "cached lyrics refresh within a day; fetch with pluginId=core:local-lyrics to see the new file immediately",
+        "shownFrom": now.as_ref().map(|l| l.source),
+        "note": "the next lyrics lookup for this track shows what its files now hold (shownFrom); a synced copy another provider saved for the song still outranks it — fetch with pluginId=core:local-lyrics to replace that",
     }))
 }
 
@@ -1661,6 +1671,11 @@ mod tests {
         assert_eq!(out["kind"], json!("synced"));
         let lrc = root.path().join("a.lrc");
         assert!(lrc.exists());
+        // Recorded as the track's lyrics, so a library lookup — which reads
+        // what the scan stored — shows it without a Full Rescan.
+        let stored = db.get_track_lyrics(track_id).unwrap().expect("recorded");
+        assert_eq!(stored.text.as_deref(), Some(synced));
+        assert_eq!(out["shownFrom"], json!("sidecar"));
 
         // Existing file without overwrite is refused…
         let err = write_lyrics_file(&db, track_id, synced, "synced", false).unwrap_err();

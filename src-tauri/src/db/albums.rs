@@ -285,6 +285,7 @@ mod tests {
             tag_names: Vec::new(),
             extra_tags: None,
             write_extra_tags: false,
+            lyrics: None,
         }
     }
 

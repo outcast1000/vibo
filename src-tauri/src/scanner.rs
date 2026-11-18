@@ -203,15 +203,22 @@ where
 }
 
 fn read_tags(path: &Path) -> ParsedTags {
+    read_tags_and_lyrics(path).0
+}
+
+/// `read_tags`, plus the lyrics embedded in the tags — from the same parse,
+/// so the scan reads each file's tags once.
+fn read_tags_and_lyrics(path: &Path) -> (ParsedTags, Option<String>) {
     if let Ok(tagged_file) = crate::tag_writer::read_tagged_file(path) {
         let duration_secs = tagged_duration(&tagged_file);
+        let lyrics = crate::local_lyrics::embedded_lyrics_in(&tagged_file);
         if let Some(parsed) = parsed_from_tagged(&tagged_file, duration_secs) {
-            return parsed;
+            return (parsed, lyrics);
         }
         // No tag, or a tag with no title — fall through to filename parsing
-        return fallback_from_filename(path, duration_secs);
+        return (fallback_from_filename(path, duration_secs), lyrics);
     }
-    fallback_from_filename(path, None)
+    (fallback_from_filename(path, None), None)
 }
 
 fn tagged_duration(tagged_file: &lofty::file::TaggedFile) -> Option<f64> {
@@ -251,6 +258,13 @@ const TAGGED_VIDEO_EXTENSIONS: &[&str] = &["mp4", "m4v"];
 /// carries a title, else the filename as the title with no artist or album.
 /// The second value says whether the tag was used.
 fn read_video_meta(path: &Path) -> (ParsedTags, bool) {
+    let (tags, used, _) = read_video_meta_and_lyrics(path);
+    (tags, used)
+}
+
+/// `read_video_meta`, plus the lyrics in an MP4's tags (`©lyr`) from the same
+/// parse; other containers' tags aren't read, so they have none.
+fn read_video_meta_and_lyrics(path: &Path) -> (ParsedTags, bool, Option<String>) {
     let tagged = crate::tag_writer::read_tagged_file(path).ok();
     let duration_secs = tagged.as_ref().and_then(tagged_duration);
     let reads_tags = path
@@ -258,8 +272,19 @@ fn read_video_meta(path: &Path) -> (ParsedTags, bool) {
         .and_then(|e| e.to_str())
         .map(|e| TAGGED_VIDEO_EXTENSIONS.contains(&e.to_lowercase().as_str()))
         .unwrap_or(false);
+    let lyrics = if reads_tags { tagged.as_ref().and_then(crate::local_lyrics::embedded_lyrics_in) } else { None };
+    let (tags, used) = video_meta_from(path, tagged.as_ref(), duration_secs, reads_tags);
+    (tags, used, lyrics)
+}
+
+fn video_meta_from(
+    path: &Path,
+    tagged: Option<&lofty::file::TaggedFile>,
+    duration_secs: Option<f64>,
+    reads_tags: bool,
+) -> (ParsedTags, bool) {
     if reads_tags {
-        if let Some(parsed) = tagged.as_ref().and_then(|f| parsed_from_tagged(f, duration_secs)) {
+        if let Some(parsed) = tagged.and_then(|f| parsed_from_tagged(f, duration_secs)) {
             return (parsed, true);
         }
     }
@@ -492,6 +517,7 @@ pub fn scan_folder(
     let mut scanned: u64 = 0;
     let mut seen_paths: HashSet<String> = HashSet::with_capacity(total as usize);
     let mut pending: Vec<crate::db::ScannedFileMeta> = Vec::with_capacity(INGEST_CHUNK);
+    let mut lyrics_index = crate::local_lyrics::LyricsIndex::default();
     for entry in WalkDir::new(&root)
         .into_iter()
         .filter_map(|e| e.ok())
@@ -500,7 +526,7 @@ pub fn scan_folder(
         let path = entry.path();
         let relative = path.strip_prefix(&root).unwrap_or(path).to_string_lossy().to_string();
         seen_paths.insert(relative);
-        if let Some(meta) = prepare_media_file(db, path, collection_id, Some(folder_path), force) {
+        if let Some(meta) = prepare_media_file(db, path, collection_id, Some(folder_path), force, Some(&mut lyrics_index)) {
             pending.push(meta);
             if pending.len() >= INGEST_CHUNK {
                 if let Err(e) = db.ingest_scanned_files(&pending, collection_id) {
@@ -543,7 +569,7 @@ pub fn scan_folder(
 /// Single-file entry point (downloads, watch paths) — the folder scan goes
 /// through `prepare_media_file` + chunked `ingest_scanned_files` instead.
 pub fn process_media_file(db: &Arc<Database>, path: &Path, collection_id: Option<i64>, collection_root: Option<&str>) -> Option<i64> {
-    let meta = prepare_media_file(db, path, collection_id, collection_root, false)?;
+    let meta = prepare_media_file(db, path, collection_id, collection_root, false, None)?;
     match db.ingest_scanned_files(std::slice::from_ref(&meta), collection_id) {
         Ok(ids) => ids.into_iter().next().flatten(),
         Err(e) => {
@@ -590,7 +616,7 @@ pub fn native_relative_path(rel: &str) -> String {
 }
 
 pub fn reprocess_media_file(db: &Arc<Database>, path: &Path, collection_id: Option<i64>, collection_root: Option<&str>) -> Option<i64> {
-    let meta = prepare_media_file(db, path, collection_id, collection_root, true)?;
+    let meta = prepare_media_file(db, path, collection_id, collection_root, true, None)?;
     match db.ingest_scanned_files(std::slice::from_ref(&meta), collection_id) {
         Ok(ids) => ids.into_iter().next().flatten(),
         Err(e) => {
@@ -605,7 +631,14 @@ pub fn reprocess_media_file(db: &Arc<Database>, path: &Path, collection_id: Opti
 /// `None` when the file should be skipped. The DB is only touched for the
 /// one scan-state read; the writes happen in `Database::ingest_scanned_files`
 /// so a folder scan can batch them into chunked transactions.
-fn prepare_media_file(db: &Arc<Database>, path: &Path, collection_id: Option<i64>, collection_root: Option<&str>, force: bool) -> Option<crate::db::ScannedFileMeta> {
+fn prepare_media_file(
+    db: &Arc<Database>,
+    path: &Path,
+    collection_id: Option<i64>,
+    collection_root: Option<&str>,
+    force: bool,
+    lyrics_index: Option<&mut crate::local_lyrics::LyricsIndex>,
+) -> Option<crate::db::ScannedFileMeta> {
     // Compute relative path by stripping collection root
     let relative_path = match collection_root {
         Some(root) => stored_relative_path(path, root),
@@ -657,7 +690,7 @@ fn prepare_media_file(db: &Arc<Database>, path: &Path, collection_id: Option<i64
     // Video: an MP4 with a titled tag is read like an audio file; anything else
     // takes its title from the filename (see `read_video_meta`).
     if is_video_file(path) {
-        let (tags, embedded) = read_video_meta(path);
+        let (tags, embedded, video_lyrics) = read_video_meta_and_lyrics(path);
         let mut tag_names = tags.genres;
         for t in extract_video_tags(path, collection_root) {
             if !tag_names.iter().any(|n| n.eq_ignore_ascii_case(&t)) {
@@ -679,10 +712,12 @@ fn prepare_media_file(db: &Arc<Database>, path: &Path, collection_id: Option<i64
             tag_names,
             extra_tags: tags.extra_tags,
             write_extra_tags: embedded,
+            lyrics: scanned_lyrics(path, video_lyrics, lyrics_index),
         });
     }
 
-    let tags = read_tags(path);
+    let (tags, embedded_lyrics) = read_tags_and_lyrics(path);
+    let lyrics = scanned_lyrics(path, embedded_lyrics, lyrics_index);
     Some(crate::db::ScannedFileMeta {
         relative_path,
         title: tags.title,
@@ -698,7 +733,27 @@ fn prepare_media_file(db: &Arc<Database>, path: &Path, collection_id: Option<i64
         tag_names: tags.genres,
         extra_tags: tags.extra_tags,
         write_extra_tags: true,
+        lyrics,
     })
+}
+
+/// A file's lyrics as the scan stores them (`track_lyrics`): the same probe
+/// and priority as `local_lyrics::probe_local_lyrics`, with the tag lyrics
+/// already read. This is the only place the scan reads lyrics, and it runs
+/// only for a file whose tags are being read (new, changed, or a Full Rescan).
+/// A folder scan passes its `LyricsIndex`, so each folder is listed once
+/// instead of trying up to six file names per track (a round trip each on a
+/// network share); a single-file ingest probes the names directly.
+fn scanned_lyrics(
+    path: &Path,
+    embedded: Option<String>,
+    index: Option<&mut crate::local_lyrics::LyricsIndex>,
+) -> Option<(String, &'static str)> {
+    let found = match index {
+        Some(index) => index.probe(path, embedded),
+        None => crate::local_lyrics::probe_with_embedded(path, embedded),
+    };
+    found.map(|l| (l.text, l.source))
 }
 
 /// Metadata for a file being added straight to the queue via a file-manager
@@ -833,6 +888,112 @@ mod tests {
         let removed = scan_folder(&db, root.to_str().unwrap(), Some(collection.id), false, |_| {});
         assert_eq!(removed, 1);
         assert_eq!(db.get_track_count_for_collection(collection.id).unwrap(), 129);
+    }
+
+    /// Lyrics files are read only when the scan reads the file's tags: a new
+    /// file stores its lyrics, an unchanged one is left alone on an ordinary
+    /// rescan (a deleted .lrc goes unnoticed), and a Full Rescan re-reads them
+    /// and drops the song's cached lyrics when they changed.
+    #[test]
+    fn test_lyrics_are_stored_by_the_scan_and_refreshed_by_a_full_rescan() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("Wipers - Dream.mp3"), b"not really audio").unwrap();
+        std::fs::write(root.join("Wipers - Dream.lrc"), "[00:46.40]Just a dream\n").unwrap();
+        let db = Arc::new(Database::new_in_memory().unwrap());
+        let collection = db
+            .add_collection("local", "t", Some(root.to_str().unwrap()), None, None, None, None, None)
+            .unwrap();
+        let scan = |force| scan_folder(&db, root.to_str().unwrap(), Some(collection.id), force, |_| {});
+
+        scan(false);
+        let track = db.find_track_by_metadata("Dream", Some("Wipers"), None).unwrap().unwrap();
+        let stored = db.get_track_lyrics(track.id).unwrap().expect("probed");
+        assert_eq!(stored.text.as_deref(), Some("[00:46.40]Just a dream\n"));
+        assert_eq!(stored.source.as_deref(), Some("sidecar"));
+
+        // What a view cached from the file.
+        let types = db.info_get_types_for_entity("track").unwrap();
+        let core_id = types.iter().find(|t| t.0 == "lyrics").unwrap().5[0].1;
+        db.info_upsert_value(core_id, "track:Wipers:Dream", r#"{"text":"x","kind":"synced"}"#, "ok").unwrap();
+
+        // This stand-in file has no tags, so its extra_tags stays NULL and the
+        // backfill rule would re-read it on every scan; a real tagged file's
+        // row carries them. Set them, so the mtime fast path applies.
+        db.set_track_extra_tags(track.id, Some("{}")).unwrap();
+        std::fs::remove_file(root.join("Wipers - Dream.lrc")).unwrap();
+        scan(false);
+        assert!(db.get_track_lyrics(track.id).unwrap().unwrap().text.is_some(), "an ordinary rescan doesn't read lyrics");
+        assert_eq!(db.info_get_values_for_entity("track:Wipers:Dream").unwrap().len(), 1);
+
+        scan(true);
+        assert_eq!(db.get_track_lyrics(track.id).unwrap().unwrap().text, None, "a Full Rescan notices the .lrc is gone");
+        assert!(db.info_get_values_for_entity("track:Wipers:Dream").unwrap().is_empty(), "the stale cached copy is dropped");
+    }
+
+    /// A change the scan finds drops the local-files row, misses and plain
+    /// answers — never a synced copy another provider holds, which is where an
+    /// edit or an import lives.
+    #[test]
+    fn test_a_lyrics_change_keeps_another_providers_synced_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("Wipers - Dream.mp3"), b"not really audio").unwrap();
+        std::fs::write(root.join("Wipers - Dream.txt"), "Just a dream\n").unwrap();
+        let db = Arc::new(Database::new_in_memory().unwrap());
+        db.info_sync_types(&[
+            ("lyrics".into(), "Lyrics".into(), "track".into(), "lyrics".into(), "lrclib".into(), 7776000, 200, 100, String::new()),
+            ("lyrics".into(), "Lyrics".into(), "track".into(), "lyrics".into(), "lyrics-ovh".into(), 7776000, 200, 300, String::new()),
+        ])
+        .unwrap();
+        let ids: Vec<i64> = db.info_get_types_for_entity("track").unwrap().into_iter()
+            .find(|t| t.0 == "lyrics").unwrap().5.into_iter().map(|(_, id)| id).collect();
+        let (core, lrclib, ovh) = (ids[0], ids[1], ids[2]);
+        let collection = db
+            .add_collection("local", "t", Some(root.to_str().unwrap()), None, None, None, None, None)
+            .unwrap();
+        let key = "track:Wipers:Dream";
+        // The user's hand-saved synced edit, and a plain web answer.
+        db.info_upsert_value(lrclib, key, r#"{"text":"[00:46.40]Just a dream","kind":"synced"}"#, "ok").unwrap();
+        db.info_upsert_value(ovh, key, r#"{"text":"Just a dream","kind":"plain"}"#, "ok").unwrap();
+        db.info_upsert_value(core, key, r#"{"text":"old","kind":"plain","local":true}"#, "ok").unwrap();
+
+        // First probe finds lyrics: a change.
+        scan_folder(&db, root.to_str().unwrap(), Some(collection.id), false, |_| {});
+        let left: Vec<i64> = db.info_get_values_for_entity(key).unwrap().into_iter().map(|r| r.0).collect();
+        assert_eq!(left, vec![lrclib], "only the synced copy another provider saved is kept");
+    }
+
+    /// The scan's folder listing finds what the direct probe finds: a name in
+    /// another case, a `Lyrics/` folder file, and an empty `.lrc` skipped.
+    #[test]
+    fn test_lyrics_index_finds_what_the_direct_probe_finds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let a = root.join("a.mp3");
+        let b = root.join("b.mp3");
+        let c = root.join("c.mp3");
+        for p in [&a, &b, &c] {
+            std::fs::write(p, b"x").unwrap();
+        }
+        std::fs::write(root.join("A.LRC"), "[00:01.00]a\n").unwrap();
+        std::fs::create_dir(root.join("Lyrics")).unwrap();
+        std::fs::write(root.join("Lyrics").join("b.txt"), "b words\n").unwrap();
+        std::fs::write(root.join("c.lrc"), "").unwrap();
+        std::fs::write(root.join("c.txt"), "c words\n").unwrap();
+
+        let mut index = crate::local_lyrics::LyricsIndex::default();
+        for p in [&a, &b, &c] {
+            let listed = index.probe(p, None).map(|l| (l.text, l.source));
+            let direct = crate::local_lyrics::probe_with_embedded(p, None).map(|l| (l.text, l.source));
+            assert!(listed.is_some(), "{} has lyrics", p.display());
+            if p != &a {
+                // `A.LRC` is found by the direct probe only on a case-insensitive volume.
+                assert_eq!(listed, direct, "{}", p.display());
+            }
+        }
+        assert_eq!(index.probe(&b, None).unwrap().source, "folder");
+        assert_eq!(index.probe(&c, None).unwrap().text, "c words\n");
     }
 
     /// Offline Full Rescan of a REAL profile DB — no app, no webview. For

@@ -53,6 +53,70 @@ pub struct ScannedFileMeta {
     /// `write_extra_tags` — a video row touches it only when its tag was read.
     pub extra_tags: Option<String>,
     pub write_extra_tags: bool,
+    /// The lyrics found in the file's own files, as `(text, source)` —
+    /// `source` being `local_lyrics::LocalLyrics::source`. `None` = probed,
+    /// none found. Every prepared file is probed, so this is always written
+    /// (`track_lyrics`).
+    pub lyrics: Option<(String, &'static str)>,
+}
+
+/// A track's row in `track_lyrics`: what the scanner found in its files.
+/// `text` None = probed, none found.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredLyrics {
+    pub text: Option<String>,
+    pub source: Option<String>,
+}
+
+/// Store what the scanner (or the lyrics editor) found for a track, and when
+/// it changed, drop the song's cached lyrics rows that the change can make
+/// wrong (key `track:{artist}:{title}`) so the next look walks the chain again:
+/// the local-files provider's row, misses, and plain answers (a synced local
+/// file outranks them). A synced row another provider holds is kept — that is
+/// where an edit or an import lives, and it never expires on purpose; the
+/// chain would not have put a local answer above it anyway. A first probe
+/// that found nothing drops nothing: whatever was cached didn't come from
+/// these files.
+pub(super) fn write_track_lyrics_conn(conn: &Connection, track_id: i64, found: Option<(&str, &str)>) -> SqlResult<()> {
+    let previous: Option<Option<String>> = conn
+        .prepare_cached("SELECT text FROM track_lyrics WHERE track_id = ?1")?
+        .query_row(params![track_id], |row| row.get::<_, Option<String>>(0))
+        .optional()?;
+    let (text, source) = match found {
+        Some((t, s)) => (Some(t), Some(s)),
+        None => (None, None),
+    };
+    conn.prepare_cached(
+        "INSERT INTO track_lyrics (track_id, text, source) VALUES (?1, ?2, ?3)
+         ON CONFLICT(track_id) DO UPDATE SET text = excluded.text, source = excluded.source",
+    )?
+    .execute(params![track_id, text, source])?;
+    let changed = match &previous {
+        None => text.is_some(),
+        Some(prev) => prev.as_deref() != text,
+    };
+    if changed {
+        let key: Option<String> = conn
+            .prepare_cached(
+                "SELECT 'track:' || COALESCE(ar.name, '') || ':' || t.title
+                 FROM tracks t LEFT JOIN artists ar ON ar.id = t.artist_id WHERE t.id = ?1",
+            )?
+            .query_row(params![track_id], |row| row.get(0))
+            .optional()?;
+        if let Some(key) = key {
+            conn.prepare_cached(
+                "DELETE FROM information_values WHERE entity_key = ?1
+                 AND information_type_id IN (SELECT id FROM information_types WHERE type_id = 'lyrics')
+                 AND (information_type_id IN (SELECT id FROM information_types
+                                              WHERE type_id = 'lyrics' AND plugin_id LIKE 'core:%')
+                      OR status != 'ok'
+                      OR json_valid(value) = 0
+                      OR COALESCE(json_extract(value, '$.kind'), '') != 'synced')",
+            )?
+            .execute(params![key])?;
+        }
+    }
+    Ok(())
 }
 
 impl Database {
@@ -176,6 +240,7 @@ impl Database {
                     tx.prepare_cached("UPDATE tracks SET extra_tags = ?1 WHERE id = ?2")?
                         .execute(params![f.extra_tags, track_id])?;
                 }
+                write_track_lyrics_conn(&tx, track_id, f.lyrics.as_ref().map(|(t, s)| (t.as_str(), *s)))?;
                 Ok(track_id)
             })();
             match result {
@@ -188,6 +253,24 @@ impl Database {
         }
         tx.commit()?;
         Ok(ids)
+    }
+
+    /// What the scanner stored for a track's lyrics; `None` = never probed.
+    pub fn get_track_lyrics(&self, track_id: i64) -> SqlResult<Option<StoredLyrics>> {
+        let conn = self.reader();
+        conn.query_row(
+            "SELECT text, source FROM track_lyrics WHERE track_id = ?1",
+            params![track_id],
+            |row| Ok(StoredLyrics { text: row.get(0)?, source: row.get(1)? }),
+        )
+        .optional()
+    }
+
+    /// Record a track's lyrics outside a scan (the lyrics editor saved into
+    /// its files). Same write — and cache drop on change — as the scan's.
+    pub fn set_track_lyrics(&self, track_id: i64, found: Option<(&str, &str)>) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        write_track_lyrics_conn(&conn, track_id, found)
     }
 
     /// Store the JSON catch-all of file tags that have no dedicated column

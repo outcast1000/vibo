@@ -1,13 +1,16 @@
 // Local lyrics (issue #131): embedded tag lyrics, a sidecar `.lrc`/`.txt`
-// named like the audio file, or the same inside a `Lyrics/` subfolder — read
-// live by the backend (`get_local_lyrics`). This is the fetch behind the
+// named like the audio file, or the same inside a `Lyrics/` subfolder —
+// answered by the backend (`get_local_lyrics`): for a library track from what
+// the last scan stored (the library scan reads lyrics files, not this), for a
+// file outside the library by reading its files. This is the fetch behind the
 // built-in `core:local-lyrics` provider row in the lyrics chain (answered in
 // usePlugins.invokeInfoFetch), seeded ahead of the web plugins by DB
 // `ensure_builtin_rows` (db/mod.rs). Its answers ride the ordinary info-value cache — which is
 // what makes local lyrics reachable by the lyrics full-text search
 // (`search_information_values`) — but expire after a day instead of the web
-// TTL (`cacheTtlForRow` in infoFetchChain.ts), since the answer can change on
-// the user's own disk.
+// TTL (`cacheTtlForRow` in infoFetchChain.ts): a file outside the library has
+// no scan to notice it changed, and for a library track the re-check is a
+// database read.
 import { invoke } from "@tauri-apps/api/core";
 import type { InfoEntity } from "../types/informationTypes";
 
@@ -40,7 +43,7 @@ function localLyricsValue(found: LocalLyricsRow): Record<string, unknown> {
  *  has no local lyrics. `local: true` marks it for surfaces that treat a
  *  file-backed value differently — the in-app editor saves an edit of it back
  *  to the file (`saveLocalLyrics`), since an edit saved only to the cache
- *  would be overwritten by the next re-probe of the file. */
+ *  would be overwritten by the next scan of the file. */
 export async function fetchLocalLyrics(
   entity: Pick<InfoEntity, "kind" | "name" | "artistName" | "albumTitle">,
   path?: string | null,

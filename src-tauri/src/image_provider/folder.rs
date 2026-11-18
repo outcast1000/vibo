@@ -502,6 +502,7 @@ mod tests {
             tag_names: Vec::new(),
             extra_tags: None,
             write_extra_tags: false,
+            lyrics: None,
         };
         db.ingest_scanned_files(
             &[
@@ -587,6 +588,7 @@ mod tests {
             tag_names: Vec::new(),
             extra_tags: None,
             write_extra_tags: false,
+            lyrics: None,
         };
         let solo = |name: &str| format!("Solo{}{}", std::path::MAIN_SEPARATOR, name);
         db.ingest_scanned_files(
@@ -687,6 +689,7 @@ mod tests {
                 tag_names: Vec::new(),
                 extra_tags: None,
                 write_extra_tags: false,
+                lyrics: None,
             })
             .collect();
         db.ingest_scanned_files(&scanned, Some(collection.id)).unwrap();

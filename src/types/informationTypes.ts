@@ -111,7 +111,7 @@ export interface LyricsData {
    *  sidecar .lrc/.txt, Lyrics folder — the `core:local-lyrics` provider, see
    *  utils/localLyrics.ts) rather than a web provider. The in-app editor
    *  saves an edit of these back into the track's files (`saveLocalLyrics`):
-   *  a cache-only edit would be overwritten by the next re-probe of the file. */
+   *  a cache-only edit would be overwritten by the next scan of the file. */
   local?: boolean;
 }
 

@@ -75,9 +75,14 @@ pub fn lyrics_from_tag(tag: &lofty::tag::Tag) -> Option<String> {
 }
 
 fn embedded_lyrics(path: &Path) -> Option<String> {
-    use lofty::prelude::*;
-
     let tagged_file = crate::tag_writer::read_tagged_file(path).ok()?;
+    embedded_lyrics_in(&tagged_file)
+}
+
+/// The lyrics in an already-read file's tags: the primary tag first, then any
+/// other (the scanner passes its own parse, so tags are read once).
+pub fn embedded_lyrics_in(tagged_file: &lofty::file::TaggedFile) -> Option<String> {
+    use lofty::prelude::*;
     tagged_file
         .primary_tag()
         .and_then(lyrics_from_tag)
@@ -163,8 +168,43 @@ pub fn probe_local_lyrics(audio_path: &Path) -> Option<LocalLyrics> {
     if !audio_path.is_file() {
         return None;
     }
+    probe_with_embedded(audio_path, embedded_lyrics(audio_path))
+}
+
+/// `probe_local_lyrics` with the tag lyrics already read (`None` = the tags
+/// hold none, or weren't read — a video container). For the scanner, which
+/// has just parsed the file's tags.
+pub fn probe_with_embedded(audio_path: &Path, embedded: Option<String>) -> Option<LocalLyrics> {
     let dir = audio_path.parent()?;
     let stem = audio_path.file_stem()?.to_str()?;
+    probe_parts(
+        audio_path,
+        embedded,
+        || lyrics_file_in(dir, stem),
+        // Both casings probed literally: on a case-sensitive filesystem they
+        // are different folders; on macOS's default they resolve to the same
+        // one, so one hit is kept (the same file would otherwise answer twice).
+        || {
+            ["Lyrics", "lyrics"].iter().find_map(|name| {
+                let sub = dir.join(name);
+                if !sub.is_dir() {
+                    return None;
+                }
+                lyrics_file_in(&sub, stem)
+            })
+        },
+    )
+}
+
+/// The probe's order and rule with the file lookups supplied: tag lyrics,
+/// then the sidecar, then the `Lyrics/` folder file, each asked only when no
+/// synced answer was found before it.
+fn probe_parts(
+    audio_path: &Path,
+    embedded: Option<String>,
+    sidecar: impl FnOnce() -> Option<(PathBuf, String)>,
+    folder: impl FnOnce() -> Option<(PathBuf, String)>,
+) -> Option<LocalLyrics> {
     let from_file = |(file, text): (PathBuf, String), source: &'static str| LocalLyrics {
         kind: kind_of(&text),
         text,
@@ -172,31 +212,94 @@ pub fn probe_local_lyrics(audio_path: &Path) -> Option<LocalLyrics> {
         audio: audio_path.to_path_buf(),
         file: Some(file),
     };
-
-    let embedded = std::iter::once_with(|| {
-        embedded_lyrics(audio_path).map(|text| LocalLyrics {
-            kind: kind_of(&text),
-            text,
-            source: "embedded",
-            audio: audio_path.to_path_buf(),
-            file: None,
-        })
-    });
-    let sidecar = std::iter::once_with(|| lyrics_file_in(dir, stem).map(|hit| from_file(hit, "sidecar")));
-    // Both casings probed literally: on a case-sensitive filesystem they are
-    // different folders; on macOS's default they resolve to the same one, so
-    // one hit is kept (the same file would otherwise answer twice).
-    let folder = std::iter::once_with(|| {
-        ["Lyrics", "lyrics"].iter().find_map(|name| {
-            let sub = dir.join(name);
-            if !sub.is_dir() {
-                return None;
-            }
-            lyrics_file_in(&sub, stem).map(|hit| from_file(hit, "folder"))
-        })
-    });
-
+    let embedded = std::iter::once(embedded.filter(|t| !t.trim().is_empty()).map(|text| LocalLyrics {
+        kind: kind_of(&text),
+        text,
+        source: "embedded",
+        audio: audio_path.to_path_buf(),
+        file: None,
+    }));
+    let sidecar = std::iter::once_with(|| sidecar().map(|hit| from_file(hit, "sidecar")));
+    let folder = std::iter::once_with(|| folder().map(|hit| from_file(hit, "folder")));
     prefer_synced(embedded.chain(sidecar).chain(folder).flatten())
+}
+
+/// One folder scan's view of where lyrics files are: each folder is listed
+/// once (and its `Lyrics/` subfolder, if it has one), and a track's lyrics
+/// files are looked up in those listings — so a folder of 20 tracks costs two
+/// directory reads, not up to 120 failed opens. Names match case-insensitively,
+/// as a default macOS or Windows volume would. Lives for one scan.
+#[derive(Default)]
+pub struct LyricsIndex {
+    dirs: std::collections::HashMap<PathBuf, DirListing>,
+}
+
+#[derive(Default)]
+struct DirListing {
+    /// Lowercased file name → the name on disk.
+    names: std::collections::HashMap<String, String>,
+    /// `Lyrics/` then `lyrics/`, those present, with their own listings.
+    lyrics_dirs: Vec<(PathBuf, std::collections::HashMap<String, String>)>,
+}
+
+fn list_names(dir: &Path) -> std::collections::HashMap<String, String> {
+    let mut names = std::collections::HashMap::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            names.entry(name.to_lowercase()).or_insert(name);
+        }
+    }
+    names
+}
+
+fn find_listed(dir: &Path, names: &std::collections::HashMap<String, String>, stem: &str) -> Option<(PathBuf, String)> {
+    ["lrc", "txt"].iter().find_map(|ext| {
+        let on_disk = names.get(&format!("{stem}.{ext}").to_lowercase())?;
+        let file = dir.join(on_disk);
+        let text = read_text_file(&file)?;
+        Some((file, text))
+    })
+}
+
+impl LyricsIndex {
+    /// `probe_with_embedded`, with the files looked up in this index.
+    pub fn probe(&mut self, audio_path: &Path, embedded: Option<String>) -> Option<LocalLyrics> {
+        let dir = audio_path.parent()?;
+        let stem = audio_path.file_stem()?.to_str()?;
+        let listing = self.dirs.entry(dir.to_path_buf()).or_insert_with(|| {
+            let names = list_names(dir);
+            let lyrics_dirs = ["Lyrics", "lyrics"]
+                .iter()
+                .filter_map(|n| names.get(&n.to_lowercase()).filter(|on_disk| on_disk.as_str() == *n))
+                .map(|n| dir.join(n))
+                .filter(|p| p.is_dir())
+                .map(|p| {
+                    let names = list_names(&p);
+                    (p, names)
+                })
+                .collect();
+            DirListing { names, lyrics_dirs }
+        });
+        probe_parts(
+            audio_path,
+            embedded,
+            || find_listed(dir, &listing.names, stem),
+            || listing.lyrics_dirs.iter().find_map(|(sub, names)| find_listed(sub, names, stem)),
+        )
+    }
+}
+
+/// Lyrics the scan stored (`track_lyrics`) as a `LocalLyrics` for `audio`.
+/// The kind is read from the text, as the probe does; the lyrics file isn't
+/// recorded, since only the editor needs it and it reads the files itself.
+pub fn from_stored(audio: PathBuf, text: String, source: Option<&str>) -> LocalLyrics {
+    let source = match source {
+        Some("embedded") => "embedded",
+        Some("folder") => "folder",
+        _ => "sidecar",
+    };
+    LocalLyrics { kind: kind_of(&text), text, source, audio, file: None }
 }
 
 /// Largest lyrics text the editor may save (the assistant's

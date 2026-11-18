@@ -664,6 +664,18 @@ impl Database {
                 UNIQUE(track_id, tag_id)
             );
 
+            -- Lyrics the scanner found in a local track's own files (its tags, a
+            -- sidecar .lrc/.txt, a Lyrics/ folder file) — read only when the scan
+            -- reads the file's tags (new or changed file, or a Full Rescan), so
+            -- showing lyrics never touches the disk. A row with NULL text was
+            -- probed and has none; no row means never probed, and the lookup then
+            -- reads the files itself (see commands::get_local_lyrics).
+            CREATE TABLE IF NOT EXISTS track_lyrics (
+                track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+                text     TEXT,
+                source   TEXT
+            );
+
             -- HTTP conditional-fetch cache for manifest collections (skip re-ingest
             -- of unchanged manifests). Keyed by collection; rows are orphaned when a
             -- collection is removed (harmless).

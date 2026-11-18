@@ -57,7 +57,7 @@ export function LyricsRenderer({ data, onAction, context }: RendererProps) {
 
   // `local` tells the host the lyrics came from the track's own files, so the
   // edit is saved back into that file rather than only into the app's copy —
-  // which the next re-probe of the file would overwrite.
+  // which the next scan of the file would overwrite.
   const local = !!d?.local;
   const handleSave = useCallback(async (text: string, kind: LyricsKind) => {
     if (!onAction) throw new Error("This page can't save lyrics");
