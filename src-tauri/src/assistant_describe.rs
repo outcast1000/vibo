@@ -365,6 +365,15 @@ pub fn describe(route: &str, path: &str, req: &Value, names: &Names) -> Option<S
             str_of(req, "title").map(quote).unwrap_or_default(),
             plural(as_i64_list(&req["trackIds"]).len(), "track", "tracks")
         ),
+        // A save names its song and how much text it carries; the GET (a
+        // provider fetch) names the song, or nothing when it is what's playing.
+        "/v1/lyrics" => {
+            let song = titled(req, "title")?;
+            match str_of(req, "text") {
+                Some(t) => format!("{} · {}", song, plural(t.lines().filter(|l| !l.trim().is_empty()).count(), "line", "lines")),
+                None => song,
+            }
+        }
         "/v1/cues" => {
             let song = titled(req, "title").or_else(|| titled(&req["track"], "title"))?;
             match req["sheet"]["cues"].as_array().or_else(|| req["cues"].as_array()) {
@@ -422,6 +431,14 @@ pub fn describe_result(route: &str, res: &Value) -> Option<String> {
                 d => format!("added {}, skipped {} {}", added, d, if d == 1 { "duplicate" } else { "duplicates" }),
             }
         }
+        "/v1/lyrics" if res["saved"].as_bool() == Some(true) => match res["kind"].as_str()? {
+            "synced" => format!(
+                "saved synced lyrics, {} of {} lines timed",
+                res["timedLines"].as_i64()?,
+                res["lines"].as_i64()?
+            ),
+            _ => format!("saved plain lyrics, {}", plural(res["lines"].as_u64()? as usize, "line", "lines")),
+        },
         "/v1/queue/play" | "/v1/radio" => format!("queued {}", res["queued"].as_i64()?),
         "/v1/queue/randomize" => format!("{} in the queue", res["queueLength"].as_i64()?),
         "/v1/queue/jump" => format!("playing {}", quote(res["title"].as_str()?)),
@@ -477,6 +494,18 @@ mod tests {
         assert_eq!(d.as_deref(), Some("Disliked artist “Björk”"));
         let d = describe("/v1/likes", "/v1/likes", &json!({"kind":"tag","name":"jazz","likeState":0}), &n);
         assert_eq!(d.as_deref(), Some("Cleared the like on tag “jazz”"));
+    }
+
+    #[test]
+    fn test_a_lyrics_save_names_the_song_and_what_was_saved() {
+        let n = Names::default();
+        let req = json!({"title":"Hunter","artistName":"Björk","text":"[00:01.00]a\n\n[00:03.00]b\n"});
+        let d = describe("/v1/lyrics", "/v1/lyrics", &req, &n);
+        assert_eq!(d.as_deref(), Some("“Hunter” – Björk · 2 lines"));
+        let r = describe_result("/v1/lyrics", &json!({"saved":true,"kind":"synced","lines":2,"timedLines":2}));
+        assert_eq!(r.as_deref(), Some("saved synced lyrics, 2 of 2 lines timed"));
+        let r = describe_result("/v1/lyrics", &json!({"saved":true,"kind":"plain","lines":1,"timedLines":0}));
+        assert_eq!(r.as_deref(), Some("saved plain lyrics, 1 line"));
     }
 
     #[test]

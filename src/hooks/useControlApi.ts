@@ -44,7 +44,7 @@ import type { AssistantInstallOutcome, AssistantInstallTarget } from "./useAssis
 import type { InfoEntity } from "../types/informationTypes";
 import { buildEntityKey } from "../types/informationTypes";
 import {
-  cacheTtlForRow, decideCacheAction, fetchInfoValue, resolveInfoEntityId, InfoFetchRequestError,
+  cacheTtlForRow, decideCacheAction, fetchInfoValue, resolveInfoEntityId, saveInfoValue, InfoFetchRequestError,
   type InvokeInfoFetch, type InfoTypeRow, type InfoValueRow,
 } from "../utils/infoFetchChain";
 import { resolveShelfPlayAction } from "../utils/homeShelfPlay";
@@ -56,6 +56,7 @@ import { trackToQueueTrack, playlistTrackToQueueTrack, pluginTrackToQueueTrack, 
 import { toPlaylistTrackPayload } from "../utils/playlistPayload";
 import { cueCountBucket, cueErrorField, cueText, cueWriteSong, sameCueSong, splitSheetMeta, type CueSheetRow, type CueSheetTrack } from "../utils/cueSheet";
 import { saveCueSheet, type CueOpsDeps } from "../utils/cueOps";
+import { checkLyricsForSave } from "../utils/lyricsEditor";
 import { track } from "../telemetry";
 import { contextImageTypeIds, gatherCueContext } from "../utils/cueContext";
 import { typesSpokenForByProviders, type OrderedContextImageProvider } from "../utils/contextImages";
@@ -907,6 +908,62 @@ export function useControlApi(deps: ControlApiDeps) {
           // Optional provider pin rides through (e.g. force LRCLIB vs local).
           pluginId: payload.pluginId,
         });
+      }
+
+      case "lyrics.set": {
+        // What the lyrics editor's Save does for lyrics that aren't the
+        // track's own file (InformationSections "save-lyrics"): the text goes
+        // into the lyrics cache, every open view re-reads. Like cues.set it
+        // names its song and never defaults to what's playing — a save that
+        // took a minute to write must not land on the song that started
+        // meanwhile. The kind comes off the text (LRC timestamps = synced).
+        const title = optionalString(payload.title) ?? bad("title is required — lyrics.set never defaults to what's playing");
+        const artistName = optionalString(payload.artistName) ?? bad("artistName is required");
+        const text = typeof payload.text === "string" ? payload.text : bad("text is required (LRC with [mm:ss.xx] timestamps, or plain lines)");
+        // Throws the reason; every dispatcher error answers 400.
+        const check = checkLyricsForSave(text);
+        // Saved under the song's own spelling — the library copy's, else the
+        // playing entry's — because the cache is keyed by the exact names
+        // (buildEntityKey): "Bjork / Joga" would land on a row the
+        // "Björk / Jóga" page never reads. The caller's spelling only for a
+        // song neither knows.
+        const row = await invoke<Track | null>("find_track_by_metadata", {
+          title, artistName, albumName: optionalString(payload.albumTitle) ?? null,
+        });
+        const current = d.playback.currentTrack;
+        const playing = current && sameCueSong({ title: current.title, artistName: current.artist_name }, { title, artistName })
+          ? current : null;
+        const song = row
+          ? { title: row.title, artistName: row.artist_name ?? artistName, albumTitle: row.album_title ?? undefined }
+          : playing
+            ? { title: playing.title, artistName: playing.artist_name ?? artistName, albumTitle: playing.album_title ?? undefined }
+            : { title, artistName, albumTitle: optionalString(payload.albumTitle) };
+        const entity = await resolveInfoEntity({ kind: "track", ...song });
+        // Lyrics read from the track's own files win the chain and are
+        // re-probed daily, so a cached save would be overwritten — the
+        // editor writes those back into the file, which is a file write
+        // this verb doesn't make. The playing entry's path covers a queue
+        // file outside the library. Asked directly (not fetchLocalLyrics,
+        // which reads a failure as "none"): a probe that fails refuses.
+        const fromFile = await invoke<{ text: string } | null>("get_local_lyrics", {
+          title: entity.name,
+          artistName: entity.artistName ?? null,
+          albumName: entity.albumTitle ?? null,
+          path: playing?.path ?? row?.path ?? null,
+        });
+        if (fromFile?.text) {
+          bad("this song's lyrics come from its own file (embedded tags or a .lrc/.txt next to it), which would override a saved copy — save into the file instead: manage_files action=write_lyrics (Manage files permission), or the app's lyrics editor");
+        }
+        await saveInfoValue({ typeId: "lyrics", entity, value: { text, kind: check.kind } });
+        return {
+          saved: true,
+          title: entity.name,
+          artistName: entity.artistName ?? null,
+          kind: check.kind,
+          lines: check.stats.lines,
+          timedLines: check.stats.timed,
+          ...(check.warnings.length ? { warnings: check.warnings } : {}),
+        };
       }
 
       // --- Now Playing cue sheets (cue_sheets.rs, utils/cueSheet.ts) ---

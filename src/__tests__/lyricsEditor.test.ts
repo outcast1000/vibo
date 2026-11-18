@@ -13,6 +13,7 @@ import {
   nextSyncable,
   prevSyncable,
   syncableIndices,
+  checkLyricsForSave,
 } from "../utils/lyricsEditor";
 
 const PLAIN = "First line\nSecond line\n\nThird line";
@@ -78,13 +79,15 @@ describe("stamping", () => {
 describe("stats and kind", () => {
   it("counts timed and out-of-order lines", () => {
     const lines = parseEditorLines("[00:05.00]A\n[00:03.00]B\nC\n[00:09.00]D");
-    expect(lyricsStats(lines)).toEqual({ lines: 4, timed: 3, outOfOrder: 1 });
+    expect(lyricsStats(lines)).toEqual({ lines: 4, timed: 3, outOfOrder: 1, firstOutOfOrder: 1 });
   });
 
   it("detects the kind from the text", () => {
     expect(detectLyricsKind(PLAIN)).toBe("plain");
     expect(detectLyricsKind("A\n[00:01.00]B")).toBe("synced");
     expect(detectLyricsKind("[ar:X]\nA")).toBe("plain");
+    // A timed blank stanza break alone is not a synced lyric.
+    expect(detectLyricsKind("[00:30.00]\nA\nB")).toBe("plain");
   });
 });
 
@@ -102,5 +105,28 @@ describe("cursor", () => {
     expect(nextSyncable(lines, 3)).toBe(-1);
     expect(prevSyncable(lines, 3)).toBe(1);
     expect(prevSyncable(lines, 0)).toBe(-1);
+  });
+});
+
+describe("checkLyricsForSave", () => {
+  it("reads the kind off the text", () => {
+    expect(checkLyricsForSave("one\ntwo").kind).toBe("plain");
+    const synced = checkLyricsForSave("[ar:X]\n[00:01.00]one\n\n[00:05.50]two");
+    expect(synced.kind).toBe("synced");
+    expect(synced.stats).toMatchObject({ lines: 2, timed: 2 });
+    expect(synced.warnings).toEqual([]);
+  });
+
+  it("warns about untimed lines in a synced text but saves", () => {
+    const r = checkLyricsForSave("[00:01.00]one\ntwo");
+    expect(r.kind).toBe("synced");
+    expect(r.warnings[0]).toMatch(/1 of 2 lines have no timestamp/);
+  });
+
+  it("refuses empty text and lines out of order, naming the first", () => {
+    expect(() => checkLyricsForSave("  \n ")).toThrow(/empty/);
+    expect(() => checkLyricsForSave("a".repeat(200_001))).toThrow(/longer than/);
+    expect(() => checkLyricsForSave("[00:01.00]\n[ar:X]")).toThrow(/no lyric lines/);
+    expect(() => checkLyricsForSave("[00:05.00]a\n[00:09.00]b\n[00:07.00]c")).toThrow(/line 3 "\[00:07.00\]c"/);
   });
 });

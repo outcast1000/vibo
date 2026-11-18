@@ -94,6 +94,10 @@
 
     { "tool": "get_entity_info", "args": { "kind": "artist", "name": "Bjork" },
       "requests": [{ "method": "GET", "path": "/v1/info/entity?kind=artist&name=Bjork" }], "verb": "info.get" },
+    { "tool": "save_lyrics", "args": { "title": "Hunter", "artistName": "Bjork", "text": "[00:01.00]la" },
+      "requests": [{ "method": "PUT", "path": "/v1/lyrics", "body": { "title": "Hunter", "artistName": "Bjork", "text": "[00:01.00]la" } }], "verb": "lyrics.set" },
+    { "tool": "save_lyrics", "args": { "text": "[00:01.00]la" }, "throws": "\"title\" is required" },
+    { "tool": "save_lyrics", "args": { "title": "Hunter", "text": "[00:01.00]la" }, "throws": "\"artistName\" is required" },
     { "tool": "get_entity_info", "args": { "kind": "track", "title": "Hunter", "artistName": "Bjork", "typeId": "lyrics" },
       "requests": [{ "method": "POST", "path": "/v1/info/fetch", "body": { "kind": "track", "title": "Hunter", "artistName": "Bjork", "typeId": "lyrics" } }], "verb": "info.fetch" },
 

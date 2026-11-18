@@ -531,6 +531,27 @@ export const TOOLS = [
     run: (args, ctx) => ctx.request("GET", `/v1/lyrics${qs(args)}`, undefined, { timeoutMs: SLOW_MS }),
   },
   {
+    name: "save_lyrics",
+    readOnly: false,
+    categories: ["info"],
+    description:
+      "Save lyrics for a song into Vibo — what the app's own lyrics editor saves: they replace whatever a provider had cached and every open lyrics view shows them at once. Synced lyrics are LRC: one line per sung line, each starting with its time, e.g. \"[01:02.35]Line text\" (minutes:seconds.hundredths); the kind is read off the text — any timestamp makes it synced, none makes it plain. A timed line earlier than one before it is a 400 naming the line; untimed lines in a synced text are saved but come back in `warnings`. Start from get_lyrics' text, keep its wording, and only add or correct timestamps the user gave or confirmed — never invent timings, you cannot hear the song. Must name the song with title + artistName (never defaults to what's playing); it is saved under the library copy's spelling (or the playing entry's), which the response returns. Refused when the song's lyrics come from its own file (embedded or a .lrc/.txt beside it) — those are written with manage_files action=write_lyrics. Saved in the app's profile, no music file touched, no permission switch.",
+    inputSchema: obj(
+      {
+        title: str("Track title (as get_lyrics / get_status name it)"),
+        artistName: str("Artist"),
+        albumTitle: str("Album (optional; files a compilation track correctly)"),
+        text: str("The lyrics: LRC lines like \"[00:12.50]First line\" for synced, plain lines otherwise"),
+      },
+      ["title", "artistName", "text"],
+    ),
+    run: (args, ctx) => {
+      need(args, ["title", "artistName", "text"], "save_lyrics — a save never defaults to what's playing");
+      const { title, artistName, albumTitle, text } = args;
+      return ctx.request("PUT", "/v1/lyrics", { title, artistName, albumTitle, text });
+    },
+  },
+  {
     name: "get_entity_info",
     readOnly: true,
     categories: ["info"],

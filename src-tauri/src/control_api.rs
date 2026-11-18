@@ -489,7 +489,11 @@ pub(crate) fn build_router(state: ServerState) -> Router {
         .route("/v1/images/{kind}", get(handle_image).post(handle_image_fetch))
         .route("/v1/info/entity", get(|s, q| handle_bridge_query(s, "info.get", q)))
         .route("/v1/info/fetch", post(|s, b| handle_bridge_body_slow(s, "info.fetch", b)))
-        .route("/v1/lyrics", get(|s, q| handle_bridge_query_slow(s, "lyrics.get", q)))
+        // PUT saves lyrics into the lyrics cache — what the in-app editor's
+        // Save does for lyrics that aren't the track's own file. Profile DB
+        // only, no library file touched, so no write scope (as /v1/cues).
+        .route("/v1/lyrics", get(|s, q| handle_bridge_query_slow(s, "lyrics.get", q))
+            .put(|s, b| handle_bridge_body(s, "lyrics.set", json!({}), b)))
         // Now Playing cue sheets (cue_sheets.rs). Bridged so a missing
         // title defaults to what's playing and the open view reloads; stored
         // in the profile dir (no library file touched), so no write scope —

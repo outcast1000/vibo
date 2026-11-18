@@ -105,31 +105,38 @@ export interface LyricsStats {
   /** Sung lines (what Sync offers). */
   lines: number;
   timed: number;
-  /** Timed lines whose time is earlier than the timed line before them —
+  /** Timed lines whose time is earlier than a timed line before them —
    *  they would play out of order. */
   outOfOrder: number;
+  /** Index (into the parsed lines) of the first of those, or -1. */
+  firstOutOfOrder: number;
 }
 
 export function lyricsStats(lines: EditorLine[]): LyricsStats {
   let timed = 0;
   let outOfOrder = 0;
+  let firstOutOfOrder = -1;
   let last = -Infinity;
   const idx = syncableIndices(lines);
   for (const i of idx) {
     const t = lines[i].time;
     if (t == null) continue;
     timed++;
-    if (t < last) outOfOrder++;
+    if (t < last) {
+      outOfOrder++;
+      if (firstOutOfOrder < 0) firstOutOfOrder = i;
+    }
     last = Math.max(last, t);
   }
-  return { lines: idx.length, timed, outOfOrder };
+  return { lines: idx.length, timed, outOfOrder, firstOutOfOrder };
 }
 
 /** The kind to save as, read off the text — never a separate choice. A text
- *  with any timed line is synced; that's what LRC means. (A dropdown used to
- *  decide, and "Synced" on plain text rendered an empty panel.) */
+ *  with any timed SUNG line is synced; that's what LRC means. A timed blank
+ *  stanza break alone doesn't count: saved as synced, that rendered an empty
+ *  panel (as did the Plain/Synced dropdown that used to decide). */
 export function detectLyricsKind(text: string): LyricsKind {
-  return parseEditorLines(text).some(l => l.time != null) ? "synced" : "plain";
+  return parseEditorLines(text).some(l => l.time != null && !l.meta && l.text) ? "synced" : "plain";
 }
 
 /** Where Sync's cursor should start: the first sung line without a time, or
@@ -150,4 +157,41 @@ export function prevSyncable(lines: EditorLine[], index: number): number {
   const idx = syncableIndices(lines);
   for (let k = idx.length - 1; k >= 0; k--) if (idx[k] < index) return idx[k];
   return -1;
+}
+
+/** The longest lyrics text a save from outside the editor accepts (a plugin's
+ *  `api.lyrics.save`, the control API's `lyrics.set`) — far past any song,
+ *  short of a pasted web page. */
+export const MAX_LYRICS_CHARS = 200_000;
+
+export interface LyricsSaveCheck {
+  kind: LyricsKind;
+  stats: LyricsStats;
+  /** Saved anyway, but worth telling the caller (untimed lines in a synced
+   *  text never highlight). */
+  warnings: string[];
+}
+
+/** The checks behind a lyrics save from outside the editor (the control
+ *  API's `lyrics.set`): the kind comes off the text, as in the editor, and a
+ *  text that would render wrong is refused with the reason. Throws on empty
+ *  or oversized text and on timed lines out of order. */
+export function checkLyricsForSave(text: string): LyricsSaveCheck {
+  if (!text.trim()) throw new Error("text is empty");
+  if (text.length > MAX_LYRICS_CHARS) throw new Error(`text is longer than ${MAX_LYRICS_CHARS} characters`);
+  const lines = parseEditorLines(text);
+  const stats = lyricsStats(lines);
+  if (stats.lines === 0) throw new Error("text has no lyric lines");
+  if (stats.firstOutOfOrder >= 0) {
+    const i = stats.firstOutOfOrder;
+    throw new Error(
+      `${stats.outOfOrder} timed line(s) are earlier than a line before them — first: line ${i + 1} "${lines[i].raw}"`,
+    );
+  }
+  const kind = detectLyricsKind(text);
+  const warnings: string[] = [];
+  if (kind === "synced" && stats.timed < stats.lines) {
+    warnings.push(`${stats.lines - stats.timed} of ${stats.lines} lines have no timestamp and won't highlight`);
+  }
+  return { kind, stats, warnings };
 }

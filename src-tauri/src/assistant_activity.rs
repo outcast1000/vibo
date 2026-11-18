@@ -114,6 +114,7 @@ pub fn classify(method: &str, route: &str) -> Classified {
         ("POST", "/v1/collections/{id}/rescan") => c("Rescan a collection", Write),
         ("POST", "/v1/history/rename") => c("Rename history", Write),
         ("POST", "/v1/logs") => c("Change logging", Write),
+        ("PUT", "/v1/lyrics") => c("Save lyrics", Write),
         ("PUT", "/v1/cues") => c("Save a cue sheet", Write),
         ("DELETE", "/v1/cues") => c("Delete a cue sheet", Write),
         ("POST", "/v1/queue/play-search") => c("Play a search", Write),

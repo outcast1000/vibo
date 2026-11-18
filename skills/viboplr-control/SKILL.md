@@ -141,6 +141,7 @@ External results have no library ids — they are addressed only via `searchId` 
 | `get_entity_info` (no `typeId`) | `GET /info/entity` |
 | `get_entity_info` (with `typeId`, `pluginId`) | `POST /info/fetch` |
 | `get_lyrics` (`pluginId`) | `GET /lyrics` |
+| `save_lyrics` | `PUT /lyrics` |
 | `get_entity_image` (`resolve`, `pluginId`) | `POST /images/{kind}` (without `resolve`: `GET /images/{kind}`) |
 | `search_info` | `GET /info/search` |
 | `home_shelves` (`action=list` / `fetch` / `play`) | `GET /home/shelves` / `POST /home/shelf` / `POST /home/play` |
@@ -154,6 +155,7 @@ External results have no library ids — they are addressed only via `searchId` 
 | Endpoint | Notes |
 |---|---|
 | `GET /lyrics?title=…&artistName=…&pluginId=…` | lyrics for a track — **omit title to use what's playing**. Serves fresh cache instantly; otherwise walks the lyrics provider chain (slow — use a 90s curl timeout). Optional `pluginId` pins the fetch to one provider (e.g. `lyrics/lrclib` over local files — the bare `lrclib` works too) and bypasses the cache. Value shape: `{text, kind: "plain"\|"synced", lines?: [{time, text}]}` |
+| `PUT /lyrics` | `{title, artistName, albumTitle?, text}` — save lyrics for a song, what the app's lyrics editor saves: replaces the cached value, open views re-read. LRC lines (`[mm:ss.xx]Line`) make it synced, none make it plain. Names its song (never defaults to what's playing). 400 on timed lines out of order (names the first), and when the song's lyrics come from its own file — write those with `POST /tracks/{id}/lyrics-file`. Untimed lines in a synced text come back in `warnings`. No permission switch. Never invent timings |
 | `GET /info/entity?kind=track\|artist\|album\|tag&title=…&artistName=…` | the registered info types for that entity + every cached value (`sections: [{typeId, name, displayKind, providers: [{id, name}], status, fresh, value}]`). `providers` is each type's chain in the user's order — the ids `pluginId` takes on `/info/fetch` and `/lyrics`. For an artist/album/tag it also lists `imageProviders: [{id, name}]`, the ids `POST /images/{kind}` takes as `pluginId`. Read-only, instant |
 | `POST /info/fetch` | `{kind, title\|name, artistName?, typeId, pluginId?}` — one info type, live: fresh cache served as-is, else fetched through the plugin provider chain and cached (slow; 90s timeout). typeIds come from `/info/entity` (e.g. `lyrics`, `artist_bio`, `similar_artists`). Optional `pluginId` **pins the fetch to that one plugin's provider** (bypasses the cache — pinning means "I want this plugin's answer"); a plugin that doesn't provide the type is a 400 naming the ones that do |
 | `GET /info/search?q=…&typeId=&displayKind=&entity=&limit=20` | substring search across the cached store — cached only, never triggers a live fetch |

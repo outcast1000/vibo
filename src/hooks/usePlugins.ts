@@ -96,6 +96,7 @@ import { buildEntityKey } from "../types/informationTypes";
 import {
   CORE_LOCAL_LYRICS_PROVIDER, fetchInfoValue, resolveInfoEntityId, saveInfoValue, saveOwnInfoValue, sectionDataRequest, type InvokeInfoFetch,
 } from "../utils/infoFetchChain";
+import { MAX_LYRICS_CHARS } from "../utils/lyricsEditor";
 import { CallGraph, callableProblem, describePlugins } from "../utils/crossPluginCalls";
 import { sanitizeSeekMarkers, type SeekMarker } from "../utils/seekMarkers";
 import { coerceScrobbleReport, type ScrobbleReport } from "../utils/scrobblers";
@@ -208,9 +209,6 @@ export const DEFAULT_INFO_TYPE_ORDER: Record<string, number> = {
   track_tags: 400,
   similar_tracks: 500,
 };
-
-/** Longest lyrics text a plugin may save (api.lyrics.save) — far past any song. */
-const MAX_PLUGIN_LYRICS_CHARS = 200_000;
 
 export const DEFAULT_INFO_TYPE_PRIORITY: Record<string, Record<string, number>> = {
   // "core:local-lyrics" (50, ahead of every web provider) is seeded by DB
@@ -1902,8 +1900,8 @@ export function usePlugins(
             if (typeof lyrics.text !== "string" || !lyrics.text.trim()) {
               throw new Error("lyrics.save: text is required");
             }
-            if (lyrics.text.length > MAX_PLUGIN_LYRICS_CHARS) {
-              throw new Error(`lyrics.save: text is longer than ${MAX_PLUGIN_LYRICS_CHARS} characters`);
+            if (lyrics.text.length > MAX_LYRICS_CHARS) {
+              throw new Error(`lyrics.save: text is longer than ${MAX_LYRICS_CHARS} characters`);
             }
             const entity: InfoEntity = { kind: "track", name: title, id: 0 };
             if (track.artistName) entity.artistName = track.artistName;
