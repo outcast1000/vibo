@@ -180,6 +180,24 @@ pub async fn build_radio_station(
     with_db(&state, move |db| db.build_radio_station(&seed_title, seed_artist.as_deref(), target_count, &options)).await
 }
 
+/// `Database::build_radio_from_hints`: the fallback `startRadio` runs when
+/// `build_radio_station` found neither the seed nor its artist — a station
+/// from the library built on names a provider gave (the split artist credit,
+/// similar artists, community tags). The frontend fetches the hints; this only
+/// matches them.
+#[tauri::command]
+pub async fn build_radio_from_hints(
+    state: State<'_, AppState>,
+    seed_artists: Vec<String>,
+    similar_artists: Vec<String>,
+    tags: Vec<String>,
+    target_count: u32,
+    options: Option<RadioOptions>,
+) -> Result<Vec<Track>, String> {
+    let options = options.unwrap_or_default();
+    with_db(&state, move |db| db.build_radio_from_hints(&seed_artists, &similar_artists, &tags, target_count, &options)).await
+}
+
 #[tauri::command]
 pub async fn pick_radio_seeds(
     state: State<'_, AppState>,

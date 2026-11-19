@@ -58,6 +58,15 @@ const RADIO_SEED_ARTIST_LIKE_CAP: u32 = 5;
 /// for anything the user has already heard.
 const RADIO_DISCOVERY_UNPLAYED_WEIGHT: f64 = 4.0;
 
+/// The most names `build_radio_from_hints` reads from each hint list.
+const RADIO_HINT_NAME_CAP: usize = 50;
+
+/// Row ids as an inline SQL list. Integers only, so nothing a caller sends
+/// can reach the statement text.
+fn id_list(ids: &[i64]) -> String {
+    ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",")
+}
+
 /// Coin flips for `build_radio_for_track`, seeded from one SQLite `RANDOM()`
 /// so the station needs no `rand` crate and no per-slot round-trip.
 struct Xorshift64(u64);
@@ -632,14 +641,103 @@ impl Database {
         let rng_seed: i64 = conn.query_row("SELECT RANDOM()", [], |row| row.get(0))?;
         drop(conn);
 
-        let mut rng = Xorshift64::new(rng_seed as u64);
-        let cap = if opts.spread_artists { Some(RADIO_SPREAD_MAX_PER_ARTIST) } else { None };
-        let mut result: Vec<Track> = Vec::with_capacity(target_count as usize);
-        let mut picked: HashSet<i64> = HashSet::new();
         // A seed the library lacks still takes the first slot — the caller
         // plays it — so the station it gets back is one shorter.
         let fill_to = if seed_in_library { target_count as usize } else { target_count as usize - 1 };
-        if let Some(seed) = seed {
+        let tracks = Self::mix_radio_pools(seed, &artist_pool, &neighbour_pool, share, opts.spread_artists, fill_to, rng_seed);
+        Ok(RadioStation { seed_in_library, tracks })
+    }
+
+    /// A station for a seed whose song **and** artist the library lacks
+    /// (`build_radio_station` came back empty), built from what a provider
+    /// knows about it — the names it is credited to (`seed_artists`, a
+    /// combined credit split up: "Goat, MC Yallah"), artists like it
+    /// (`similar_artists`) and its community tags (`tags`). All names, matched
+    /// accent- and case-insensitively against the library; nothing here is
+    /// fetched.
+    ///
+    /// The same two pools and the same Settings → Radio knobs as a library
+    /// station: the **artist pool** is the credited artists' own tracks (the
+    /// seed-artist share governs it), the **neighbour pool** is tracks by the
+    /// similar artists or carrying any hint tag — or any tag the credited
+    /// artists already have here — excluding the credited artists. Returns up
+    /// to `target_count` tracks; the caller plays the seed ahead of them.
+    /// Audio only, never a disliked track. Empty when no name matched.
+    pub fn build_radio_from_hints(
+        &self,
+        seed_artists: &[String],
+        similar_artists: &[String],
+        tags: &[String],
+        target_count: u32,
+        opts: &RadioOptions,
+    ) -> SqlResult<Vec<Track>> {
+        if target_count == 0 {
+            return Ok(Vec::new());
+        }
+        let conn = self.reader();
+        let seed_ids = Self::ids_by_folded_name(&conn, "artists", seed_artists)?;
+        let mut similar_ids = Self::ids_by_folded_name(&conn, "artists", similar_artists)?;
+        similar_ids.retain(|id| !seed_ids.contains(id));
+        let mut tag_ids = Self::ids_by_folded_name(&conn, "tags", tags)?;
+        if !seed_ids.is_empty() {
+            // The credited artists' own tags reach their neighbourhood the
+            // way a library seed's artist does.
+            let sql = format!(
+                "SELECT DISTINCT tt.tag_id FROM track_tags tt JOIN tracks t2 ON tt.track_id = t2.id WHERE t2.artist_id IN ({})",
+                id_list(&seed_ids),
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            for id in stmt.query_map([], |row| row.get::<_, i64>(0))? {
+                let id = id?;
+                if !tag_ids.contains(&id) {
+                    tag_ids.push(id);
+                }
+            }
+        }
+        if seed_ids.is_empty() && similar_ids.is_empty() && tag_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let format_clause = AUDIO_FORMAT_CLAUSE.as_str();
+        let slots = target_count as i64;
+        let share = opts.artist_share.min(100) as u64;
+        let artist_pool = if share > 0 && !seed_ids.is_empty() {
+            Self::radio_artists_pool(&conn, &seed_ids, format_clause, opts.taste, slots)?
+        } else {
+            Vec::new()
+        };
+        let hint_limit = if opts.spread_artists { slots * 3 } else { slots };
+        let neighbour_pool = if similar_ids.is_empty() && tag_ids.is_empty() {
+            Vec::new()
+        } else {
+            Self::radio_hint_pool(&conn, &seed_ids, &similar_ids, &tag_ids, format_clause, opts.taste, hint_limit)?
+        };
+        let rng_seed: i64 = conn.query_row("SELECT RANDOM()", [], |row| row.get(0))?;
+        drop(conn);
+
+        Ok(Self::mix_radio_pools(None, &artist_pool, &neighbour_pool, share, opts.spread_artists, target_count as usize, rng_seed))
+    }
+
+    /// Fill a station from the two pools: `head` (a library seed) first, then
+    /// per slot a coin weighted by `share` picks which pool to try first,
+    /// falling back to the other, until `fill_to` tracks or both run dry. The
+    /// artist pool is the seed's own artist, which the share governs and the
+    /// spread cap never touches; the neighbour pool excludes that artist, so
+    /// the cap applies to all of it.
+    fn mix_radio_pools(
+        head: Option<Track>,
+        artist_pool: &[Track],
+        neighbour_pool: &[Track],
+        share: u64,
+        spread_artists: bool,
+        fill_to: usize,
+        rng_seed: i64,
+    ) -> Vec<Track> {
+        let mut rng = Xorshift64::new(rng_seed as u64);
+        let cap = if spread_artists { Some(RADIO_SPREAD_MAX_PER_ARTIST) } else { None };
+        let mut result: Vec<Track> = Vec::with_capacity(fill_to);
+        let mut picked: HashSet<i64> = HashSet::new();
+        if let Some(seed) = head {
             picked.insert(seed.id);
             result.push(seed);
         }
@@ -648,16 +746,13 @@ impl Database {
         let mut neighbour_cursor = 0usize;
 
         while result.len() < fill_to {
-            // The artist pool is the seed's own artist, which the share
-            // governs and the spread cap never touches; the neighbour pool
-            // excludes that artist, so the cap applies to all of it.
             let prefer_artist = rng.next() % 100 < share;
             let mut pick = None;
             for try_artist in if prefer_artist { [true, false] } else { [false, true] } {
                 pick = if try_artist {
-                    Self::take_radio_candidate(&artist_pool, &mut artist_cursor, &picked, &mut per_artist, None)
+                    Self::take_radio_candidate(artist_pool, &mut artist_cursor, &picked, &mut per_artist, None)
                 } else {
-                    Self::take_radio_candidate(&neighbour_pool, &mut neighbour_cursor, &picked, &mut per_artist, cap)
+                    Self::take_radio_candidate(neighbour_pool, &mut neighbour_cursor, &picked, &mut per_artist, cap)
                 };
                 if pick.is_some() {
                     break;
@@ -671,8 +766,77 @@ impl Database {
                 None => break,
             }
         }
+        result
+    }
 
-        Ok(RadioStation { seed_in_library, tracks: result })
+    /// Ids of the `artists` / `tags` rows whose folded name matches any of
+    /// `names` (first `RADIO_HINT_NAME_CAP`), through the name expression
+    /// index — the expression must stay verbatim.
+    fn ids_by_folded_name(conn: &Connection, table: &str, names: &[String]) -> SqlResult<Vec<i64>> {
+        let mut folded: Vec<String> = Vec::new();
+        for n in names.iter().take(RADIO_HINT_NAME_CAP) {
+            let f = strip_diacritics(&n.trim().to_lowercase());
+            if !f.is_empty() && !folded.contains(&f) {
+                folded.push(f);
+            }
+        }
+        if folded.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = vec!["?"; folded.len()].join(",");
+        let sql = format!(
+            "SELECT id FROM {table} WHERE strip_diacritics(unicode_lower(name)) IN ({placeholders})",
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(folded.iter()), |row| row.get::<_, i64>(0))?;
+        rows.collect()
+    }
+
+    /// Up to `limit` tracks by any of `artist_ids`, best sample key first.
+    fn radio_artists_pool(conn: &Connection, artist_ids: &[i64], format_clause: &str, taste: RadioTaste, limit: i64) -> SqlResult<Vec<Track>> {
+        let (join, group, order) = Self::radio_pool_order(taste);
+        let sql = format!(
+            "{select} {join} WHERE t.artist_id IN ({ids}) AND t.liked != -1 {enabled}{format} {group} {order} LIMIT ?1",
+            select = TRACK_SELECT, join = join, ids = id_list(artist_ids), enabled = ENABLED_COLLECTION_FILTER,
+            format = format_clause, group = group, order = order,
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![limit], |row| track_from_row(row))?;
+        rows.collect()
+    }
+
+    /// Up to `limit` tracks by a similar artist or carrying any of `tag_ids`,
+    /// by artists other than `exclude_artist_ids`, best sample key first.
+    fn radio_hint_pool(
+        conn: &Connection,
+        exclude_artist_ids: &[i64],
+        similar_artist_ids: &[i64],
+        tag_ids: &[i64],
+        format_clause: &str,
+        taste: RadioTaste,
+        limit: i64,
+    ) -> SqlResult<Vec<Track>> {
+        let (join, group, order) = Self::radio_pool_order(taste);
+        let mut matches: Vec<String> = Vec::new();
+        if !similar_artist_ids.is_empty() {
+            matches.push(format!("t.artist_id IN ({})", id_list(similar_artist_ids)));
+        }
+        if !tag_ids.is_empty() {
+            matches.push(format!("t.id IN (SELECT DISTINCT track_id FROM track_tags WHERE tag_id IN ({}))", id_list(tag_ids)));
+        }
+        let exclude = if exclude_artist_ids.is_empty() {
+            String::new()
+        } else {
+            format!(" AND (t.artist_id IS NULL OR t.artist_id NOT IN ({}))", id_list(exclude_artist_ids))
+        };
+        let sql = format!(
+            "{select} {join} WHERE t.liked != -1{exclude} {enabled}{format} AND ({matches}) {group} {order} LIMIT ?1",
+            select = TRACK_SELECT, join = join, exclude = exclude, enabled = ENABLED_COLLECTION_FILTER,
+            format = format_clause, matches = matches.join(" OR "), group = group, order = order,
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![limit], |row| track_from_row(row))?;
+        rows.collect()
     }
 
     /// Advance `cursor` through a pre-sampled pool to the next track that is
@@ -763,7 +927,6 @@ impl Database {
     /// hand the seed's artist a slot the coin had given to the neighbourhood.
     fn radio_neighbour_pool(conn: &Connection, seed_id: i64, seed_artist_id: Option<i64>, tag_pool: &[i64], format_clause: &str, taste: RadioTaste, limit: i64) -> SqlResult<Vec<Track>> {
         let (join, group, order) = Self::radio_pool_order(taste);
-        let tag_list: Vec<String> = tag_pool.iter().map(|id| id.to_string()).collect();
         let sql = format!(
             "{select} {join} WHERE t.liked != -1 AND t.id != ?1 \
              AND (t.artist_id IS NULL OR ?2 IS NULL OR t.artist_id != ?2) \
@@ -771,7 +934,7 @@ impl Database {
                 SELECT DISTINCT track_id FROM track_tags WHERE tag_id IN ({tags})\
              ) {group} {order} LIMIT ?3",
             select = TRACK_SELECT, join = join, enabled = ENABLED_COLLECTION_FILTER, format = format_clause,
-            tags = tag_list.join(","), group = group, order = order,
+            tags = id_list(tag_pool), group = group, order = order,
         );
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params![seed_id, seed_artist_id, limit], |row| track_from_row(row))?;

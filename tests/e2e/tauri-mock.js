@@ -410,6 +410,9 @@ window.__TAURI_INTERNALS__.invoke = async function (cmd, args) {
     case 'pick_radio_seeds':
       // Home hero carousel: return a few seed tracks (count defaults to 7).
       return TEST_TRACKS.slice(0, (args && args.count) || 7);
+    case 'build_radio_from_hints':
+      // The radio fallback for a seed the library lacks: nothing matches.
+      return [];
     case 'find_artist_by_name':
       return TEST_ARTISTS.find(a => a.name === (args && args.name)) || null;
     case 'find_album_by_name': {

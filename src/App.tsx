@@ -2273,6 +2273,8 @@ function App() {
     getTagImage: tagImageCache.getImage,
     notify,
     radioOptions,
+    invokeInfoFetch: plugins.invokeInfoFetch,
+    pluginNames: plugins.pluginNames,
   });
   useAssignRef(playWithBackfillRef, playActions.playWithBackfill);
 

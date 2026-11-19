@@ -3456,6 +3456,52 @@ fn test_build_radio_station_is_empty_when_neither_seed_nor_artist_is_in_the_libr
 }
 
 #[test]
+fn test_build_radio_from_hints_draws_from_similar_artists_and_tags() {
+    // "Nimerudi" by "Goat, MC Yallah": neither the song nor the combined
+    // credit is in the library, so `build_radio_station` is empty — but a
+    // credited artist, a similar artist and a hint tag all are.
+    let db = test_db();
+    let cid = test_collection(&db);
+    let goat = db.get_or_create_artist("Goat").unwrap();
+    let similar = db.get_or_create_artist("Gnoomes").unwrap();
+    let tagged = db.get_or_create_artist("Someone Psychedelic").unwrap();
+    let stranger = db.get_or_create_artist("Unrelated").unwrap();
+    db.upsert_track("file://goat.mp3", "Run To Your Mama", Some(goat), None, None, Some(180.0), Some("mp3"), Some(1), None, Some(cid), None).unwrap();
+    for i in 0..3 {
+        db.upsert_track(&format!("file://sim-{i}.mp3"), &format!("Sim {i}"), Some(similar), None, None, Some(180.0), Some("mp3"), Some(1), None, Some(cid), None).unwrap();
+    }
+    let tagged_id = db.upsert_track("file://tag.mp3", "Tagged", Some(tagged), None, None, Some(180.0), Some("mp3"), Some(1), None, Some(cid), None).unwrap();
+    let psych = db.get_or_create_tag("Psychedelic Rock").unwrap();
+    db.add_track_tag(tagged_id, psych).unwrap();
+    db.upsert_track("file://x.mp3", "Elsewhere", Some(stranger), None, None, Some(180.0), Some("mp3"), Some(1), None, Some(cid), None).unwrap();
+
+    let opts = RadioOptions::default();
+    assert!(db.build_radio_station("Nimerudi", Some("Goat, MC Yallah"), 30, &opts).unwrap().tracks.is_empty());
+
+    let station = db.build_radio_from_hints(
+        &["Goat".into(), "MC Yallah".into()],
+        &["gnoomes".into(), "Not Here".into()],
+        &["psychedelic rock".into()],
+        29,
+        &opts,
+    ).unwrap();
+    let artists: std::collections::HashSet<Option<i64>> = station.iter().map(|t| t.artist_id).collect();
+    assert_eq!(station.len(), 5, "every matching track, nothing else");
+    assert!(artists.contains(&Some(goat)), "the credited artist's own tracks");
+    assert!(artists.contains(&Some(similar)), "the similar artist, matched case-insensitively");
+    assert!(artists.contains(&Some(tagged)), "a track carrying a hint tag");
+    assert!(!artists.contains(&Some(stranger)));
+
+    // Seed-artist share 0 keeps the credited artist out, as it does for a library seed.
+    let no_seed = RadioOptions { artist_share: 0, ..RadioOptions::default() };
+    let station = db.build_radio_from_hints(&["Goat".into()], &["Gnoomes".into()], &[], 29, &no_seed).unwrap();
+    assert!(station.iter().all(|t| t.artist_id == Some(similar)));
+
+    // Nothing matches → empty.
+    assert!(db.build_radio_from_hints(&["Nobody".into()], &[], &["no such tag".into()], 29, &opts).unwrap().is_empty());
+}
+
+#[test]
 fn test_build_radio_station_with_a_library_seed_matches_build_radio_for_track() {
     let db = test_db();
     let cid = test_collection(&db);

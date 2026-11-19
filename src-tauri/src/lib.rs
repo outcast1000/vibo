@@ -193,6 +193,7 @@ macro_rules! invoke_handler {
             commands::get_track_play_stats,
             commands::get_auto_continue_track,
             commands::build_radio_station,
+            commands::build_radio_from_hints,
             commands::pick_radio_seeds,
             commands::save_playlist_entries,
             commands::load_playlist,

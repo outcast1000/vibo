@@ -9,6 +9,8 @@ import type { RadioOptions } from "../utils/radioOptions";
 import type { Notify } from "./useToasts";
 import type { BackfillOpts } from "../utils/queueOps";
 import { errorText } from "../utils/errorKind";
+import type { InvokeInfoFetch } from "../utils/infoFetchChain";
+import { gatherRadioHints, hasRadioHints } from "../utils/radioHints";
 
 interface PlayActionsArgs {
   // Raw `Track`s are fine — useQueue converts at the door (`toQueueTracks`).
@@ -33,6 +35,10 @@ interface PlayActionsArgs {
   notify: Notify;
   /** Settings → Playback → Radio; forwarded verbatim to `build_radio_station`. */
   radioOptions: RadioOptions;
+  /** The info providers (`usePlugins`), asked what a seed the library lacks is
+   *  like (`utils/radioHints.ts`). Absent: such a seed starts no station. */
+  invokeInfoFetch?: InvokeInfoFetch;
+  pluginNames?: Map<string, string>;
 }
 
 export type InfoRow = [number, string, string, string, number];
@@ -209,6 +215,8 @@ export function usePlayActions({
   getTagImage,
   notify,
   radioOptions,
+  invokeInfoFetch,
+  pluginNames,
 }: PlayActionsArgs) {
   const playAlbum = useCallback(async (albumId: number, opts?: { tracks?: Track[]; startIndex?: number }) => {
     const tracks = opts?.tracks ?? await invoke<Track[]>("get_tracks", { opts: { albumId } });
@@ -365,11 +373,89 @@ export function usePlayActions({
   // A seed the library lacks still works when its artist is in the library
   // (`build_radio_station`): the seed opens the station metadata-only — the
   // stream resolvers find it at play time — and the rest is that artist's
-  // tracks and tag neighbourhood. Resolves with the station's track count, or
-  // null when nothing started (neither seed nor artist in the library, or the
-  // build failed) — UI callers ignore it; the control API reports it.
+  // tracks and tag neighbourhood. With neither in the library, the station is
+  // built from hints the info providers give (`startRadioFromHints`). Resolves
+  // with the station's track count, or null when nothing started — UI callers
+  // ignore it; the control API reports it.
   const startRadio = useCallback(async (seed: { title: string; artistName: string | null; coverPath: string | null; albumTitle?: string | null }): Promise<number | null> => {
     if (!seed.title) return null;
+    const contextName = `Radio: ${seed.title}`;
+    const notInLibrary = () => notify(`Couldn't start radio — "${seed.title}" isn't in your library.`, { kind: "warning" });
+    // Play whatever we found (even just the seed), but let the user know when
+    // the station is small rather than silently playing one or two tracks.
+    // A full station needs no toast — the music starting is the feedback.
+    const started = (count: number, coverSeed: Pick<Track, "album_title" | "album_artist_name" | "artist_name"> | undefined): number => {
+      // Anonymous: a station was started. Radio is always track-seeded here,
+      // so there's no meaningful seed_kind to send.
+      trackTelemetry("radio_started");
+      // Resolve the queue banner's cover *after* playback starts and patch it
+      // in, the way enrichDescription does — it's decoration, and two
+      // get_entity_image round-trips ahead of the first note is latency the
+      // user hears. Callers may pass one (the queue track's image_url, a Home
+      // station's resolved cover); when they don't (library track context
+      // menu), derive it from the seed track's album image, falling back to the
+      // artist image — same chain Home uses.
+      if (!seed.coverPath) void enrichRadioCover(coverSeed, contextName, setPlaylistContext);
+      if (count < 10) {
+        notify(`Radio: only found ${count} ${count === 1 ? "track" : "tracks"} similar to "${seed.title}".`);
+      }
+      return count;
+    };
+
+    // Neither the song nor its artist is here: ask the info providers what
+    // the song is like (its split credit, similar artists, community tags)
+    // and build the station from library tracks matching that. The lookup
+    // takes seconds, so it is a switch: what is playing keeps playing, the
+    // queue shows "Starting Radio: X", and the station replaces it on landing.
+    const startRadioFromHints = async (): Promise<number | null> => {
+      if (!invokeInfoFetch || !seed.artistName) {
+        notInLibrary();
+        return null;
+      }
+      // The seed opens the station metadata-only, as for a seed whose artist
+      // is in the library; the stream resolvers find it at play time.
+      const externalSeed = buildExternalQueueTrack(seed.title, seed.artistName, { albumTitle: seed.albumTitle });
+      // Set inside resolveTail; `as` keeps TS from narrowing it to "found".
+      let outcome = "found" as "found" | "nothing" | "failed";
+      const landed = await playWithBackfill({
+        head: [],
+        context: { name: contextName, imagePath: seed.coverPath ?? null, source: "radio" },
+        // Failures are reported below, not by the backfill: an empty list is
+        // "nothing like it here" (a warning), not a load error.
+        resolveTail: async () => {
+          try {
+            const hints = await gatherRadioHints({ title: seed.title, artistName: seed.artistName, invokeInfoFetch, pluginNames });
+            const rest = hasRadioHints(hints)
+              ? await invoke<Track[]>("build_radio_from_hints", {
+                seedArtists: hints.seedArtists,
+                similarArtists: hints.similarArtists,
+                tags: hints.tags,
+                targetCount: 29,
+                options: radioOptions,
+              })
+              : [];
+            if (rest.length === 0) {
+              outcome = "nothing";
+              return [];
+            }
+            return [externalSeed, ...rest.map(trackToQueueTrack)];
+          } catch (e) {
+            console.error("Failed to build a radio station from hints:", e);
+            outcome = "failed";
+            return [];
+          }
+        },
+      });
+      if (landed.length > 0) return started(landed.length, externalSeed);
+      // Empty with neither flag set: cancelled, or replaced by another play.
+      if (outcome === "nothing") {
+        notify(`Couldn't start radio — nothing like "${seed.title}" is in your library.`, { kind: "warning" });
+      } else if (outcome === "failed") {
+        notify("Failed to start radio.", { kind: "error" });
+      }
+      return null;
+    };
+
     try {
       const station = await invoke<{ seedInLibrary: boolean; tracks: Track[] }>("build_radio_station", {
         seedTitle: seed.title,
@@ -378,15 +464,7 @@ export function usePlayActions({
         options: radioOptions,
       });
       const tracks = station?.tracks ?? [];
-      if (tracks.length === 0) {
-        // Neither the seed nor its artist has anything in the library to
-        // build from (a seed alone is no station).
-        notify(`Couldn't start radio — "${seed.title}" isn't in your library.`, { kind: "warning" });
-        return null;
-      }
-      // Anonymous: a station was started. Radio is always track-seeded here,
-      // so there's no meaningful seed_kind to send.
-      trackTelemetry("radio_started");
+      if (tracks.length === 0) return await startRadioFromHints();
       // A seed the library lacks carries its album along (when the caller
       // knows it), so its queue thumbnail and the banner cover are its own.
       const externalSeed: QueueTrack | null = station?.seedInLibrary
@@ -396,36 +474,19 @@ export function usePlayActions({
         ? [externalSeed, ...tracks.map(trackToQueueTrack)]
         : tracks.map(trackToQueueTrack);
       playTracks(queueTracks, 0, {
-        name: `Radio: ${seed.title}`,
+        name: contextName,
         imagePath: seed.coverPath ?? null,
         source: "radio",
       });
-      // Resolve the queue banner's cover *after* playback starts and patch it
-      // in, the way enrichDescription does — it's decoration, and two
-      // get_entity_image round-trips ahead of the first note is latency the
-      // user hears. Callers may pass one (the queue track's image_url, a Home
-      // station's resolved cover); when they don't (library track context
-      // menu), derive it from the seed track's album image, falling back to the
-      // artist image — same chain Home uses.
-      if (!seed.coverPath) {
-        // The seed's own art: tracks[0] is the seed only when the library has
-        // it — otherwise it is the station's first *other* track.
-        void enrichRadioCover(externalSeed ?? tracks[0], `Radio: ${seed.title}`, setPlaylistContext);
-      }
-      // Play whatever we found (even just the seed), but let the user know when
-      // the station is small rather than silently playing one or two tracks.
-      // A full station needs no toast — the music starting is the feedback.
-      const count = queueTracks.length;
-      if (count < 10) {
-        notify(`Radio: only found ${count} ${count === 1 ? "track" : "tracks"} similar to "${seed.title}".`);
-      }
-      return count;
+      // The seed's own art: tracks[0] is the seed only when the library has
+      // it — otherwise it is the station's first *other* track.
+      return started(queueTracks.length, externalSeed ?? tracks[0]);
     } catch (e) {
       console.error("Failed to start radio:", e);
       notify("Failed to start radio.", { kind: "error" });
       return null;
     }
-  }, [playTracks, setPlaylistContext, notify, radioOptions]);
+  }, [playTracks, playWithBackfill, setPlaylistContext, notify, radioOptions, invokeInfoFetch, pluginNames]);
 
   return { playAlbum, playArtist, playTag, enqueueAlbum, enqueueArtist, enqueueTag, startRadio, playWithBackfill };
 }
