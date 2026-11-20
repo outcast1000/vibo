@@ -14,8 +14,9 @@ import { AlbumCardArt } from "./AlbumCardArt";
 import { EntityArtFallback } from "./EntityArtFallback";
 import { LikeDislikeButtons } from "./LikeDislikeButtons";
 import { TrackList, type MissingTrackRow } from "./TrackList";
-import { DetailTrackFilter } from "./DetailTrackFilter";
-import { filterDetailRows, showDetailFilter } from "../utils/detailTrackFilter";
+import { DetailTrackFilter, DetailTrackToolbar } from "./DetailTrackFilter";
+import { filterDetailRows, orderedDetailRows, showDetailFilter, withoutDisliked } from "../utils/detailTrackFilter";
+import { useTrackLikeStore } from "../contexts/TrackLikeContext";
 import { InformationSections } from "./InformationSections";
 import { TitleLineInfo } from "./TitleLineInfo";
 import { DetailHero } from "./DetailHero";
@@ -32,6 +33,8 @@ import { withHostTabs } from "../utils/hostTabs";
 
 /** The Top Songs table has no library rows — only provider rows. */
 const NO_LIBRARY_TRACKS: Track[] = [];
+/** The "Not in library" rows while the user has them switched off. */
+const NO_MISSING_ROWS: MissingTrackRow[] = [];
 
 interface ArtistDetailProps {
   name: string;
@@ -142,13 +145,6 @@ export function ArtistDetail({ name }: ArtistDetailProps) {
         ? [artistImageUrl]
         : [];
 
-  const handlePlayAll = useCallback(() => {
-    actions.playEntityAll("artist", name, undefined, {
-      tracks: sortedTracks.filter(t => t.liked !== -1),
-      entityId: artist?.id,
-    });
-  }, [actions.playEntityAll, name, sortedTracks, artist]);
-
   const handleRefreshImage = useCallback(() => {
     actions.requestFetchImage("artist", name);
   }, [actions.requestFetchImage, name]);
@@ -185,10 +181,6 @@ export function ArtistDetail({ name }: ArtistDetailProps) {
   }, [name]);
 
 
-  const handleEnqueueAll = useCallback(() => {
-    actions.enqueueTracks(sortedTracks.filter(t => t.liked !== -1));
-  }, [actions.enqueueTracks, sortedTracks]);
-
   // The artist's Top Songs the user doesn't own, merged into the track list as
   // read-only "Not in library" rows (see MissingTrackRow). A ranked list has no
   // album position: sorted by popularity they fall in by listener count, so the
@@ -218,13 +210,24 @@ export function ArtistDetail({ name }: ArtistDetailProps) {
     return sortProviderRows(rows, sortField, sortDir);
   }, [topSongsTable, rankedTracks, rankedValues, sortField, sortDir]);
 
-  // The list's local filter, over library and "Not in library" rows alike (or
-  // the Top Songs table). Hero Play / Enqueue keep acting on the whole list.
-  const listRowCount = topSongsTable ? topSongRows.length : sortedTracks.length + missingRows.length;
-  const filterable = showDetailFilter(listRowCount);
+  // The merged "Not in library" rows can be switched off (one setting shared
+  // with the album page, default on). The Top Songs table is nothing but such
+  // rows, so the switch doesn't apply there.
+  const showMissing = state.showMissingTracks;
+  const shownMissingRows = showMissing ? missingRows : NO_MISSING_ROWS;
+  const missingToggle = missingRows.length > 0
+    ? { show: showMissing, count: missingRows.length, onChange: actions.setShowMissingTracks }
+    : undefined;
+
+  // The list's local filter, over library and shown "Not in library" rows
+  // alike (or the Top Songs table). The box's presence is decided over every
+  // row, hidden ones included, so the switch can't take the box away while a
+  // query is still narrowing the list.
+  const listRowCount = topSongsTable ? topSongRows.length : sortedTracks.length + shownMissingRows.length;
+  const filterable = showDetailFilter(topSongsTable ? topSongRows.length : sortedTracks.length + missingRows.length);
   const visible = useMemo(
-    () => filterable ? filterDetailRows(sortedTracks, missingRows, filterQuery) : { tracks: sortedTracks, missingRows },
-    [filterable, sortedTracks, missingRows, filterQuery],
+    () => filterable ? filterDetailRows(sortedTracks, shownMissingRows, filterQuery) : { tracks: sortedTracks, missingRows: shownMissingRows },
+    [filterable, sortedTracks, shownMissingRows, filterQuery],
   );
   const visibleTopSongRows = useMemo(
     () => filterable ? filterDetailRows([], topSongRows, filterQuery).missingRows : topSongRows,
@@ -260,20 +263,42 @@ export function ArtistDetail({ name }: ArtistDetailProps) {
   }, [navigateToTrackByName]);
 
   // Top Songs play under the artist's banner. A row plays the table as shown
-  // (sorted, filtered) from that row; hero Play / Enqueue take all of them in
-  // rank order.
+  // (sorted, filtered) from that row.
   const topSongsContext = useMemo(() => ({ name, source: "artist", imagePath: artistImagePath }), [name, artistImagePath]);
   const playTopSongFrom = useCallback((t: QueueTrack) => {
     const list = visibleTopSongRows.map(r => r.track);
     playExternal(list, Math.max(0, list.indexOf(t)), topSongsContext);
   }, [playExternal, visibleTopSongRows, topSongsContext]);
-  const canPlayTopSongs = topSongsTable && rankedTracks.length > 0;
-  const playAllTopSongs = useCallback(() => {
-    playExternal(rankedTracks, 0, topSongsContext);
-  }, [playExternal, rankedTracks, topSongsContext]);
-  const enqueueAllTopSongs = useCallback(() => {
-    enqueueExternal(rankedTracks);
-  }, [enqueueExternal, rankedTracks]);
+
+  // Hero Play / Enqueue / Radio act on what the list shows: the filter and the
+  // "Not in library" switch narrow them too, in the order drawn. Disliked songs
+  // stay out of Play / Enqueue — asked at click time, since a provider-only
+  // row's like lives in the track-like store, which re-renders nothing here.
+  const hasLibraryTracks = sortedTracks.length > 0;
+  const heroTracks = useMemo<Array<Track | QueueTrack>>(() => {
+    if (hasLibraryTracks) {
+      return orderedDetailRows<Track, MissingTrackRow, QueueTrack>(visible.tracks, visible.missingRows);
+    }
+    return topSongsTable ? visibleTopSongRows.map(r => r.track) : [];
+  }, [hasLibraryTracks, topSongsTable, visible, visibleTopSongRows]);
+  const likeStore = useTrackLikeStore();
+  const heroTracksToQueue = useCallback(
+    () => withoutDisliked(heroTracks, (title, artist) => likeStore?.lookup(title, artist, 0) ?? 0),
+    [heroTracks, likeStore],
+  );
+  const { playEntityAll, enqueueTracks } = actions;
+  const handlePlayAll = useCallback(() => {
+    const tracks = heroTracksToQueue();
+    if (tracks.length === 0) return;
+    if (hasLibraryTracks) playEntityAll("artist", name, undefined, { tracks, entityId: artist?.id });
+    else playExternal(tracks as QueueTrack[], 0, topSongsContext);
+  }, [hasLibraryTracks, playEntityAll, playExternal, name, heroTracksToQueue, artist, topSongsContext]);
+  const handleEnqueueAll = useCallback(() => {
+    const tracks = heroTracksToQueue();
+    if (tracks.length === 0) return;
+    if (hasLibraryTracks) enqueueTracks(tracks);
+    else enqueueExternal(tracks as QueueTrack[]);
+  }, [hasLibraryTracks, enqueueTracks, enqueueExternal, heroTracksToQueue]);
 
   const meta: Array<string | { label: string; onClick: () => void }> = [];
   // Both counts are already omitted at 0 — an album-artist-only artist (0 own
@@ -295,7 +320,7 @@ export function ArtistDetail({ name }: ArtistDetailProps) {
       name: "All Tracks",
       content: (
         <>
-          {filterBar}
+          <DetailTrackToolbar filter={filterBar} missing={missingToggle} />
           <TrackList
             tracks={visible.tracks}
             currentTrack={state.currentTrack}
@@ -374,12 +399,12 @@ export function ArtistDetail({ name }: ArtistDetailProps) {
   const tabOrder = withHostTabs(belowTabOrder, customTabs.map(t => t.id));
 
   // Hero: Radio takes Enqueue's place; Enqueue moves into the ⋯ menu. The seed
-  // is a weighted-random pick over every song the page lists (useEntityRadio).
-  const heroEnqueue = sortedTracks.length > 0 ? handleEnqueueAll : canPlayTopSongs ? enqueueAllTopSongs : undefined;
+  // is a weighted-random pick over the songs the list shows (useEntityRadio).
+  const heroEnqueue = heroTracks.length > 0 ? handleEnqueueAll : undefined;
   const radioCandidates = useMemo(() => topSongsTable
-    ? seedCandidates([], {}, rankedTracks.map((track, i) => ({ track, popularity: rankedValues[i] })))
-    : seedCandidates(sortedTracks, trackPopularity, missingRows),
-  [topSongsTable, rankedTracks, rankedValues, sortedTracks, trackPopularity, missingRows]);
+    ? seedCandidates([], {}, visibleTopSongRows)
+    : seedCandidates(visible.tracks, trackPopularity, visible.missingRows),
+  [topSongsTable, visibleTopSongRows, visible, trackPopularity]);
   const handleRadio = useEntityRadio(radioCandidates);
   const overflowItems: HeroOverflowItem[] = buildHeroOverflowItems({
     enqueue: heroEnqueue,
@@ -418,7 +443,7 @@ export function ArtistDetail({ name }: ArtistDetailProps) {
         onToggleDislike={isLibrary || loaded ? handleToggleArtistDislike : undefined}
         entityLabel="artist"
         meta={meta}
-        onPlay={sortedTracks.length > 0 ? handlePlayAll : canPlayTopSongs ? playAllTopSongs : undefined}
+        onPlay={heroTracks.length > 0 ? handlePlayAll : undefined}
         radio={{ onClick: handleRadio }}
         overflowItems={overflowItems}
         titleLine={placeholder ? undefined : <TitleLineInfo entity={infoEntity} invokeInfoFetch={actions.invokeInfoFetch} />}

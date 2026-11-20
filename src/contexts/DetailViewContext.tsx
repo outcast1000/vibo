@@ -18,9 +18,9 @@ export interface DetailViewActions {
   canGoBack: boolean;
 
   playTracks: (tracks: Track[], index: number, context?: PlaylistContext | null) => void;
-  playEntityAll: (kind: "artist" | "album" | "tag", name: string, artistName?: string, opts?: { tracks?: Track[]; entityId?: number }) => void;
-  playAlbum: (albumId: number, opts?: { tracks?: Track[]; startIndex?: number }) => void;
-  enqueueTracks: (tracks: Track[]) => void;
+  playEntityAll: (kind: "artist" | "album" | "tag", name: string, artistName?: string, opts?: { tracks?: Array<Track | QueueTrack>; entityId?: number }) => void;
+  playAlbum: (albumId: number, opts?: { tracks?: Array<Track | QueueTrack>; startIndex?: number }) => void;
+  enqueueTracks: (tracks: Array<Track | QueueTrack>) => void;
   playExternal: (tracks: QueueTrack[], startIndex?: number, context?: PlaylistContext | null) => void;
   enqueueExternal: (tracks: QueueTrack[]) => void;
   /** Start a radio station seeded from a single track (overlay "radio" action). */
@@ -30,6 +30,8 @@ export interface DetailViewActions {
   /** Start radio from a track known only by name — one the library may lack
    *  (a "Not in library" row); the station then opens with it, metadata-only. */
   startRadioByName: (title: string, artistName: string | null, albumTitle?: string | null) => void;
+  /** Show or hide the artist / album pages' "Not in library" rows. */
+  setShowMissingTracks: (show: boolean) => void;
   /** Open a track's detail page by name (the name-only page when the library
    *  has no such track). */
   navigateToTrackByName: (name: string, artistName?: string, albumTitle?: string) => void;
@@ -84,10 +86,13 @@ export interface DetailViewState {
    *  (album/artist/title) and tag-only edits aren't captured by the in-place
    *  trackEvents patch, and moving a track to another album must drop it here. */
   bulkEditKey: number;
+  /** Whether artist / album pages list the provider's tracks the library
+   *  lacks ("Not in library" rows). Persisted as `detailShowMissingTracks`. */
+  showMissingTracks: boolean;
 }
 
 const ActionsContext = createContext<DetailViewActions | null>(null);
-const StateContext = createContext<DetailViewState>({ currentTrack: null, playing: false, bulkEditKey: 0 });
+const StateContext = createContext<DetailViewState>({ currentTrack: null, playing: false, bulkEditKey: 0, showMissingTracks: true });
 
 export function useDetailActions(): DetailViewActions {
   const ctx = useContext(ActionsContext);

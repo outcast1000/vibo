@@ -218,7 +218,7 @@ export function usePlayActions({
   invokeInfoFetch,
   pluginNames,
 }: PlayActionsArgs) {
-  const playAlbum = useCallback(async (albumId: number, opts?: { tracks?: Track[]; startIndex?: number }) => {
+  const playAlbum = useCallback(async (albumId: number, opts?: { tracks?: Array<Track | QueueTrack>; startIndex?: number }) => {
     const tracks = opts?.tracks ?? await invoke<Track[]>("get_tracks", { opts: { albumId } });
     if (tracks.length === 0) return;
     const album = albums.find(a => a.id === albumId);
@@ -232,7 +232,7 @@ export function usePlayActions({
   // Both resolve with whether anything was queued — an artist with no tracks of
   // their own (only an album artist) queues nothing, and a caller that must
   // say so (History) needs to know.
-  const playArtist = useCallback(async (artistId: number, opts?: { tracks?: Track[]; startIndex?: number }): Promise<boolean> => {
+  const playArtist = useCallback(async (artistId: number, opts?: { tracks?: Array<Track | QueueTrack>; startIndex?: number }): Promise<boolean> => {
     const tracks = opts?.tracks ?? await invoke<Track[]>("get_tracks_by_artist", { artistId });
     if (tracks.length === 0) return false;
     const artist = artists.find(a => a.id === artistId);
@@ -244,7 +244,7 @@ export function usePlayActions({
     return true;
   }, [playTracks, setPlaylistContext, artists, getArtistImage]);
 
-  const playTag = useCallback(async (tagId: number, opts?: { tracks?: Track[]; startIndex?: number }) => {
+  const playTag = useCallback(async (tagId: number, opts?: { tracks?: Array<Track | QueueTrack>; startIndex?: number }) => {
     const tracks = opts?.tracks ?? await invoke<Track[]>("get_tracks", { opts: { tagId } });
     if (tracks.length === 0) return;
     const tag = tags.find(t => t.id === tagId);

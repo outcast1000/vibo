@@ -63,3 +63,42 @@ export function filterDetailRows<T extends FilterableTrack, M extends { track: F
     .map(m => ({ ...m, before: keptBefore[Math.min(Math.max(m.before, 0), tracks.length)] }));
   return { tracks: kept, missingRows: keptMissing };
 }
+
+/**
+ * A detail page's rows in the order its TrackList draws them: each missing row
+ * before the library row at its `before` index (in the order given), the ones
+ * at `tracks.length` after the last. This is "what the user sees", which the
+ * hero Play / Enqueue / Radio act on.
+ */
+export function orderedDetailRows<T, M extends { track: Q; before: number }, Q>(
+  tracks: T[],
+  missingRows: M[],
+): Array<T | Q> {
+  if (missingRows.length === 0) return tracks.slice();
+  const byIndex = new Map<number, Q[]>();
+  for (const m of missingRows) {
+    const at = Math.min(Math.max(m.before, 0), tracks.length);
+    const list = byIndex.get(at);
+    if (list) list.push(m.track); else byIndex.set(at, [m.track]);
+  }
+  const out: Array<T | Q> = [];
+  for (let i = 0; i <= tracks.length; i++) {
+    const before = byIndex.get(i);
+    if (before) out.push(...before);
+    if (i < tracks.length) out.push(tracks[i]);
+  }
+  return out;
+}
+
+/**
+ * A hero Play / Enqueue list without the disliked songs. A library row (it has
+ * an `id`) answers by its own `liked` mirror; a provider-only row has none, so
+ * it is asked of `likeOf` — the track-like store, keyed by song — the same
+ * answer the hero Radio's seed pick uses.
+ */
+export function withoutDisliked<T extends { title: string; artist_name: string | null }>(
+  list: T[],
+  likeOf: (title: string, artistName: string | null) => number,
+): T[] {
+  return list.filter(t => ("id" in t ? (t as { liked?: number | null }).liked : likeOf(t.title, t.artist_name)) !== -1);
+}

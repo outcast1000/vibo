@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { filterDetailRows, showDetailFilter, trackMatches, normalizeFilterQuery } from "../utils/detailTrackFilter";
+import { filterDetailRows, orderedDetailRows, showDetailFilter, trackMatches, normalizeFilterQuery, withoutDisliked } from "../utils/detailTrackFilter";
 
 const t = (title: string, artist_name: string | null = "Artist", album_title: string | null = "Album") =>
   ({ title, artist_name, album_title });
@@ -56,5 +56,40 @@ describe("filterDetailRows", () => {
     const r = filterDetailRows(tracks, [], "gamma");
     expect(r.tracks.map(x => x.title)).toEqual(["Gamma"]);
     expect(r.missingRows).toEqual([]);
+  });
+});
+
+describe("orderedDetailRows", () => {
+  it("interleaves missing rows before their library row, as the TrackList draws them", () => {
+    const lib = ["A", "B", "C"];
+    const missing = [
+      { track: "x", before: 0 },
+      { track: "y", before: 2 },
+      { track: "z", before: 3 },
+      { track: "w", before: 2 },
+    ];
+    expect(orderedDetailRows(lib, missing)).toEqual(["x", "A", "B", "y", "w", "C", "z"]);
+  });
+
+  it("clamps out-of-range positions and copies a list with no missing rows", () => {
+    const lib = ["A"];
+    expect(orderedDetailRows(lib, [{ track: "x", before: 9 }, { track: "y", before: -1 }])).toEqual(["y", "A", "x"]);
+    const out = orderedDetailRows(lib, []);
+    expect(out).toEqual(["A"]);
+    expect(out).not.toBe(lib);
+  });
+});
+
+describe("withoutDisliked", () => {
+  it("drops library rows by their own mirror and provider rows by the store", () => {
+    const list = [
+      { id: 1, title: "Owned liked", artist_name: "A", liked: 1 },
+      { id: 2, title: "Owned disliked", artist_name: "A", liked: -1 },
+      { title: "Missing disliked", artist_name: "A" },
+      { title: "Missing neutral", artist_name: "A" },
+    ];
+    const likeOf = (title: string) => (title === "Missing disliked" || title === "Owned liked" ? -1 : 0);
+    // A library row answers by its mirror, never the store; a provider row by the store.
+    expect(withoutDisliked(list, likeOf).map(t => t.title)).toEqual(["Owned liked", "Missing neutral"]);
   });
 });

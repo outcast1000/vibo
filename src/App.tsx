@@ -468,6 +468,10 @@ function App() {
   // Playing theater, and fullscreen. The store key stays the legacy
   // `videoLyricsOverlay` so existing saved preferences carry over.
   const [videoSubtitlesOn, setVideoSubtitlesOn] = usePersistedSetting("videoLyricsOverlay", true, restoredRef);
+  // Artist / album pages: list the provider's tracks the library lacks ("Not
+  // in library" rows). One switch for both pages, default on. Owned here and
+  // restored once at startup, so a page never shows the default first.
+  const [showMissingTracks, setShowMissingTracks] = usePersistedSetting("detailShowMissingTracks", true, restoredRef);
   // Plugin `split` view node widths the user dragged, `<pluginId>:<persistKey>`
   // → px (utils/pluginSplit.ts). Written once per drag, on release.
   const [pluginSplitSizes, setPluginSplitSizes] = usePersistedSetting<Record<string, number>>(
@@ -4637,7 +4641,7 @@ function App() {
   function handlePluginViewModeChange(mode: PluginViewMode) {
     setPluginViewMode(mode); // persistence: usePersistedSetting
   }
-  const handlePlayEntityAll = useCallback((kind: "artist" | "album" | "tag", name: string, entityArtistName?: string, opts?: { tracks?: Track[]; entityId?: number }) => {
+  const handlePlayEntityAll = useCallback((kind: "artist" | "album" | "tag", name: string, entityArtistName?: string, opts?: { tracks?: Array<Track | QueueTrack>; entityId?: number }) => {
     if (kind === "artist") {
       const id = opts?.entityId ?? library.artists.find(a => a.name === name)?.id;
       if (id) {
@@ -4741,7 +4745,9 @@ function App() {
     retrieve: {
       openInfo: openRetrieveInfo,
     },
+    setShowMissingTracks,
   }), [
+    setShowMissingTracks,
     library.handleArtistClick, library.handleAlbumClick, library.handleTagClick, library.navigateToTagByName,
     library.handleTrackClick, library.navigateToTrackByName, contextMenuActions.startRadio,
     goBack, canGoBack,
@@ -4884,7 +4890,8 @@ function App() {
     currentTrack: playback.currentTrack,
     playing: playback.playing,
     bulkEditKey: searchBulkEditKey,
-  }), [playback.currentTrack, playback.playing, searchBulkEditKey]);
+    showMissingTracks,
+  }), [playback.currentTrack, playback.playing, searchBulkEditKey, showMissingTracks]);
 
   // Interactive (plugin_view) information sections: their actions go to the
   // plugin that drew them, exactly like a click in its sidebar view.
