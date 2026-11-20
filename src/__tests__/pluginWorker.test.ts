@@ -148,6 +148,10 @@ describe("permissions", () => {
     expect(() => checkPermission("p", ["library:write"], "lyrics.save", [{ title: "Song" }, { text: "x", kind: "plain" }])).toThrow(/lyrics:write/);
     expect(() => checkPermission("p", ["lyrics:write"], "lyrics.save", [{ title: "Song" }, { text: "x", kind: "plain" }])).not.toThrow();
     expect(describePermission("lyrics:write").label).toBe("Change song lyrics");
+    // lyrics:files only changes where lyrics.save writes; it is never enough
+    // to call it, and it is flagged on the consent screen.
+    expect(() => checkPermission("p", ["lyrics:files"], "lyrics.save", [{ title: "Song" }, { text: "x", kind: "plain" }])).toThrow(/lyrics:write/);
+    expect(describePermission("lyrics:files")).toMatchObject({ label: "Write lyrics into your music files", sensitive: true });
   });
 
   it("keeps only reasons for permissions the manifest requests", () => {

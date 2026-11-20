@@ -4,8 +4,7 @@ import { useInformationTypes } from "../hooks/useInformationTypes";
 import type { OpenInfoArgs } from "../hooks/useRetrieveModal";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CORE_LOCAL_LYRICS_PROVIDER, saveInfoValue } from "../utils/infoFetchChain";
-import { saveLocalLyrics } from "../utils/localLyrics";
+import { saveSongLyrics } from "../utils/localLyrics";
 import { emitInfoValueChanged } from "../utils/infoValueEvents";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { buildEntityKey } from "../types/informationTypes";
@@ -195,32 +194,21 @@ export function InformationSections({
     if (actionId === "save-lyrics" && entity) {
       const p = payload as { text: string; kind: string; local?: boolean } | undefined;
       if (!p) return;
-      // Lyrics from the track's own files are saved back into that file, then
-      // cached under the local-lyrics row as what the file now says. Anything
-      // else is the same write as a plugin's api.lyrics.save. Both announce
-      // the change, so this section (and any other open view of the song)
-      // re-reads by itself. Rethrown: the editor stays open with the reason.
+      // A track's lyrics are always saved into its files when it has a local
+      // one (owner decision, 2026-11-20), whichever provider the edited text
+      // came from; a song with no local file keeps them in the cache
+      // (saveSongLyrics, shared with the control API's lyrics.set). The save
+      // announces the change, so this section (and any other open view of the
+      // song) re-reads by itself. Rethrown: the editor stays open with the
+      // reason.
       try {
-        if (p.local) {
-          const value = await saveLocalLyrics(entity, p.text);
-          // The file holds the edit now: a cache failure must not report a
-          // failed save (a retry would only rewrite the file). The backend has
-          // already dropped the stale cached copy (save_local_lyrics →
-          // set_track_lyrics), so the next look reads the saved lyrics.
-          try {
-            await saveInfoValue({ typeId: "lyrics", entity, value, provider: CORE_LOCAL_LYRICS_PROVIDER });
-          } catch (cacheErr) {
-            console.error("Saved the lyrics file but couldn't update the cached copy:", cacheErr);
-          }
-        } else {
-          await saveInfoValue({ typeId: "lyrics", entity, value: { text: p.text, kind: p.kind } });
-        }
+        await saveSongLyrics(entity, p.text, p.kind);
       } catch (e) {
         console.error("Failed to save lyrics:", e);
         // A refused file save may have recorded what the files hold now (they
         // changed since the last scan) and dropped the stale cached copy: make
         // the open views re-read, so closing the editor shows the current text.
-        if (p.local) emitInfoValueChanged(buildEntityKey(entity), "lyrics");
+        if (entity.kind === "track") emitInfoValueChanged(buildEntityKey(entity), "lyrics");
         throw e;
       }
       return;

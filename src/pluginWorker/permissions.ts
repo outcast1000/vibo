@@ -17,6 +17,9 @@
 //   cues:read          reading the user's Now Playing cue sheets
 //   cues:write         adding, replacing or deleting cue sheets
 //   lyrics:write       putting lyrics in place for a song (like the lyrics editor)
+//   lyrics:files       with lyrics:write, lyrics.save writes into the song's
+//                      own files (tags or a .lrc/.txt) instead of Vibo only.
+//                      No method of its own: usePlugins reads it at the call
 //   system:open        opening URLs / files / folders with the OS
 //   env:<NAME>         reading one environment variable
 //   plugins:call       reaching other plugins (search, assistant tools, info chain)
@@ -361,6 +364,12 @@ export function describePermission(perm: string): PermissionDescription {
       };
     case "lyrics:write":
       return { label: "Change song lyrics", detail: "Replace the lyrics Vibo shows for a song, as editing them yourself would.", sensitive: false };
+    case "lyrics:files":
+      return {
+        label: "Write lyrics into your music files",
+        detail: "Saved lyrics go into the song's file (its tags, or a .lrc/.txt beside it) when it's on this computer.",
+        sensitive: true,
+      };
     case "system:open":
       return { label: "Open links and files", detail: "Hand them to your browser or other apps.", sensitive: false };
     case "plugins:call":

@@ -6,8 +6,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // on this shape).
 let invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invokeMock(...args) }));
+const saveInfoValueMock = vi.fn();
+vi.mock("../utils/infoFetchChain", () => ({
+  CORE_LOCAL_LYRICS_PROVIDER: "core:local-lyrics",
+  saveInfoValue: (...args: unknown[]) => saveInfoValueMock(...args),
+}));
 
-import { fetchLocalLyrics, localLyricsProviderName, saveLocalLyrics } from "../utils/localLyrics";
+import { fetchLocalLyrics, localLyricsProviderName, saveLocalLyrics, saveSongLyrics } from "../utils/localLyrics";
 
 describe("fetchLocalLyrics", () => {
   beforeEach(() => { invokeMock = vi.fn(); });
@@ -90,8 +95,45 @@ describe("saveLocalLyrics", () => {
     expect(value).toEqual({ text: "[00:02]new", kind: "synced", local: true, _meta: { providerName: "Lyrics file" } });
   });
 
+  it("resolves null when the song has no local file to write into", async () => {
+    // A stream or a name-only page: the caller keeps the lyrics in the cache.
+    invokeMock.mockResolvedValue(null);
+    await expect(saveLocalLyrics({ name: "Song", artistName: "Band" }, "words")).resolves.toBeNull();
+  });
+
   it("rejects with the backend's reason, so the editor can show it", async () => {
     invokeMock.mockRejectedValue("The track's lyrics file is gone");
     await expect(saveLocalLyrics({ name: "Song" }, "x")).rejects.toBe("The track's lyrics file is gone");
+  });
+});
+
+describe("saveSongLyrics", () => {
+  beforeEach(() => { invokeMock = vi.fn(); saveInfoValueMock.mockReset(); });
+  const song = { kind: "track" as const, name: "Hunter", artistName: "Björk", id: 0 };
+
+  it("writes into the song's files and caches what the file now says", async () => {
+    invokeMock.mockResolvedValue({ text: "[00:01.00]la", kind: "synced", source: "embedded" });
+    const saved = await saveSongLyrics(song, "[00:01.00]la", "synced");
+    expect(saved.savedTo).toBe("file");
+    expect(invokeMock).toHaveBeenCalledWith("save_local_lyrics", expect.objectContaining({ title: "Hunter", text: "[00:01.00]la" }));
+    expect(saveInfoValueMock).toHaveBeenCalledWith(expect.objectContaining({ provider: "core:local-lyrics" }));
+  });
+
+  it("keeps them in the app when the song has no local file", async () => {
+    invokeMock.mockResolvedValue(null);
+    const saved = await saveSongLyrics(song, "words", "plain");
+    expect(saved).toEqual({ savedTo: "app" });
+    expect(saveInfoValueMock).toHaveBeenCalledWith({ typeId: "lyrics", entity: song, value: { text: "words", kind: "plain" } });
+  });
+
+  it("never asks the files for anything but a track", async () => {
+    await saveSongLyrics({ kind: "artist", name: "Björk", id: 0 }, "x", "plain");
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("a failed file save is the caller's error, and nothing is cached", async () => {
+    invokeMock.mockRejectedValue("Couldn't save the tags of song.mp3");
+    await expect(saveSongLyrics(song, "x", "plain")).rejects.toBe("Couldn't save the tags of song.mp3");
+    expect(saveInfoValueMock).not.toHaveBeenCalled();
   });
 });

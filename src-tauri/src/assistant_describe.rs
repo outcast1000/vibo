@@ -431,14 +431,21 @@ pub fn describe_result(route: &str, res: &Value) -> Option<String> {
                 d => format!("added {}, skipped {} {}", added, d, if d == 1 { "duplicate" } else { "duplicates" }),
             }
         }
-        "/v1/lyrics" if res["saved"].as_bool() == Some(true) => match res["kind"].as_str()? {
-            "synced" => format!(
-                "saved synced lyrics, {} of {} lines timed",
-                res["timedLines"].as_i64()?,
-                res["lines"].as_i64()?
-            ),
-            _ => format!("saved plain lyrics, {}", plural(res["lines"].as_u64()? as usize, "line", "lines")),
-        },
+        "/v1/lyrics" if res["saved"].as_bool() == Some(true) => {
+            let what = match res["kind"].as_str()? {
+                "synced" => format!(
+                    "saved synced lyrics, {} of {} lines timed",
+                    res["timedLines"].as_i64()?,
+                    res["lines"].as_i64()?
+                ),
+                _ => format!("saved plain lyrics, {}", plural(res["lines"].as_u64()? as usize, "line", "lines")),
+            };
+            match res["savedTo"].as_str() {
+                Some("file") => format!("{what}, into the song's files"),
+                Some("app") => format!("{what}, in Vibo (no local file)"),
+                _ => what,
+            }
+        }
         "/v1/queue/play" | "/v1/radio" => format!("queued {}", res["queued"].as_i64()?),
         "/v1/queue/randomize" => format!("{} in the queue", res["queueLength"].as_i64()?),
         "/v1/queue/jump" => format!("playing {}", quote(res["title"].as_str()?)),
@@ -506,6 +513,10 @@ mod tests {
         assert_eq!(r.as_deref(), Some("saved synced lyrics, 2 of 2 lines timed"));
         let r = describe_result("/v1/lyrics", &json!({"saved":true,"kind":"plain","lines":1,"timedLines":0}));
         assert_eq!(r.as_deref(), Some("saved plain lyrics, 1 line"));
+        let r = describe_result("/v1/lyrics", &json!({"saved":true,"savedTo":"file","kind":"plain","lines":1,"timedLines":0}));
+        assert_eq!(r.as_deref(), Some("saved plain lyrics, 1 line, into the song's files"));
+        let r = describe_result("/v1/lyrics", &json!({"saved":true,"savedTo":"app","kind":"plain","lines":1,"timedLines":0}));
+        assert_eq!(r.as_deref(), Some("saved plain lyrics, 1 line, in Vibo (no local file)"));
     }
 
     #[test]

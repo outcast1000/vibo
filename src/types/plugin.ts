@@ -2712,13 +2712,16 @@ export interface PluginCueSheet {
  *  `set` runs the host's normalizer — what comes back is what will play. */
 /** Put lyrics in place for a song — permission `lyrics:write`. */
 export interface PluginLyricsAPI {
-  /** Make these the song's lyrics: the same write as the in-app lyrics editor,
-   *  replacing whatever a provider had cached; open views update at once.
+  /** Make these the song's lyrics, replacing whatever a provider had cached;
+   *  open views update at once. A plugin that also holds `lyrics:files` gets
+   *  the in-app editor's save: into the song's files when it has a local one
+   *  (its tags, or the .lrc/.txt its lyrics already come from). Resolves with
+   *  where they went — `"file"` or `"app"` (older hosts resolve nothing).
    *  Absent on hosts before 1.0.94 — feature-detect. */
   save(
     track: { title: string; artistName?: string | null; albumTitle?: string | null },
     lyrics: { text: string; kind: "synced" | "plain" },
-  ): Promise<void>;
+  ): Promise<{ savedTo: "file" | "app" }>;
 }
 
 /** What a waveform plugin is told about a track — see `TrackAudioFacts`. */

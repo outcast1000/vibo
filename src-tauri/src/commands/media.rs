@@ -1091,13 +1091,18 @@ fn local_lyrics_candidates(
 }
 
 
-/// The in-app lyrics editor saving lyrics that came from the track's own
-/// files. Runs the same lookup as `get_local_lyrics` and saves into the source
-/// that answered — the tag and key that held embedded lyrics, or the sidecar /
-/// `Lyrics/` folder file (`local_lyrics::save_and_verify`; a replaced file's
-/// previous version goes to the Trash). Answers with the lyrics as that audio
-/// file now reads, for the caller to put in the cache — or an error when the
-/// edit was saved but something else for that file still outranks it.
+/// The in-app lyrics editor saving a song's lyrics into its files — always,
+/// when the song has a local file (owner decision, 2026-11-20). Runs the same
+/// lookup as `get_local_lyrics` and saves into the source that answered — the
+/// tag and key that held embedded lyrics, or the sidecar / `Lyrics/` folder
+/// file (`local_lyrics::save_and_verify`; a replaced file's previous version
+/// goes to the Trash). When no file holds lyrics yet, they go into the tags of
+/// the first candidate file on disk, or a sidecar beside it when its format
+/// can't be tagged (`local_lyrics::new_lyrics_target`). Answers with the
+/// lyrics as that audio file now reads, for the caller to put in the cache;
+/// `None` when the song has no local file to write into (the caller then
+/// keeps them in the cache alone) — or an error when the edit was saved but
+/// something else for that file still outranks it.
 ///
 /// **Only lyrics of a library or queue file are written.** The lookup's
 /// candidates are library rows, plus the caller's `path` hint; a hint that is
@@ -1117,7 +1122,7 @@ pub async fn save_local_lyrics(
     album_name: Option<String>,
     path: Option<String>,
     text: String,
-) -> Result<crate::local_lyrics::LocalLyrics, String> {
+) -> Result<Option<crate::local_lyrics::LocalLyrics>, String> {
     let db = state.db.clone();
     let app_dir = state.app_dir.clone();
     run_blocking(move || -> Result<_, String> {
@@ -1148,10 +1153,15 @@ pub async fn save_local_lyrics(
                     .to_string(),
             );
         }
-        let found = crate::local_lyrics::prefer_synced(on_disk.into_iter().filter_map(|(_, l)| l)).ok_or_else(|| {
-            "The track's lyrics are gone from its files, so there is nothing to save into. Reopen the track to see what it has now"
-                .to_string()
-        })?;
+        let found = match crate::local_lyrics::prefer_synced(on_disk.into_iter().filter_map(|(_, l)| l)) {
+            Some(found) => found,
+            // No file holds lyrics yet: they go into the first file on disk
+            // (the caller's own path comes first).
+            None => match candidates.iter().find(|(audio, _)| audio.is_file()) {
+                Some((audio, _)) => crate::local_lyrics::new_lyrics_target(audio, &text),
+                None => return Ok(None),
+            },
+        };
         if !crate::scanner::is_media_file(&found.audio) {
             return Err(format!("{} isn't a music or video file", found.audio.display()));
         }
@@ -1175,7 +1185,7 @@ pub async fn save_local_lyrics(
         }
         let now = saved?;
         log::info!("Saved edited lyrics for {} ({})", found.audio.display(), found.source);
-        Ok(now)
+        Ok(Some(now))
     })
     .await
 }

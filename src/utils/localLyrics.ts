@@ -13,6 +13,7 @@
 // database read.
 import { invoke } from "@tauri-apps/api/core";
 import type { InfoEntity } from "../types/informationTypes";
+import { CORE_LOCAL_LYRICS_PROVIDER, saveInfoValue } from "./infoFetchChain";
 
 interface LocalLyricsRow {
   text: string;
@@ -63,23 +64,57 @@ export async function fetchLocalLyrics(
   }
 }
 
-/** Save an edit of file-backed lyrics into the track's files
- *  (`save_local_lyrics`: back into the source that answered — the audio
- *  file's tags, or the sidecar / Lyrics-folder file; a replaced file's old
- *  version goes to the Trash). The backend finds the source itself — the same
+/** Save a song's lyrics into its files (`save_local_lyrics`) — always, when
+ *  the song has a local file (owner decision, 2026-11-20): back into the
+ *  source that answered (the audio file's tags, or the sidecar /
+ *  Lyrics-folder file; a replaced file's old version goes to the Trash), and
+ *  for a file with no lyrics yet into its tags (a `.lrc`/`.txt` beside it when
+ *  its format can't be tagged). The backend finds the file itself — the same
  *  lookup `fetchLocalLyrics` runs — so nothing here names a destination.
- *  Resolves with the value as it now reads from disk; rejects with the
- *  backend's reason, including "saved, but X still takes priority". */
+ *  Resolves with the value as it now reads from disk, or `null` when the song
+ *  has no local file to write into; rejects with the backend's reason,
+ *  including "saved, but X still takes priority". */
 export async function saveLocalLyrics(
   entity: Pick<InfoEntity, "name" | "artistName" | "albumTitle" | "path">,
   text: string,
-): Promise<Record<string, unknown>> {
-  const saved = await invoke<LocalLyricsRow>("save_local_lyrics", {
+): Promise<Record<string, unknown> | null> {
+  const saved = await invoke<LocalLyricsRow | null>("save_local_lyrics", {
     title: entity.name,
     artistName: entity.artistName || null,
     albumName: entity.albumTitle || null,
     path: entity.path ?? null,
     text,
   });
-  return localLyricsValue(saved);
+  return saved ? localLyricsValue(saved) : null;
+}
+
+/** Where `saveSongLyrics` put the lyrics: into the song's files (`value` is
+ *  what the file now says) or only into Vibo's cache (no local file). */
+export type SongLyricsSave =
+  | { savedTo: "file"; value: Record<string, unknown> }
+  | { savedTo: "app" };
+
+/** Make `text` a song's lyrics — the one save behind the in-app lyrics editor
+ *  and the control API's `lyrics.set`. A track with a local file always gets
+ *  them in its files (`saveLocalLyrics`), then cached under the local-lyrics
+ *  row as what the file now says; anything else is a cache-only save (the
+ *  same write as a plugin's `api.lyrics.save`). Both announce the change, so
+ *  every open view of the song re-reads. Rejects with the file save's reason
+ *  (including "saved, but X still takes priority"). */
+export async function saveSongLyrics(entity: InfoEntity, text: string, kind: string): Promise<SongLyricsSave> {
+  const value = entity.kind === "track" ? await saveLocalLyrics(entity, text) : null;
+  if (!value) {
+    await saveInfoValue({ typeId: "lyrics", entity, value: { text, kind } });
+    return { savedTo: "app" };
+  }
+  // The file holds the edit now: a cache failure must not report a failed
+  // save (a retry would only rewrite the file). The backend has already
+  // dropped the stale cached copy (save_local_lyrics → set_track_lyrics), so
+  // the next look reads the saved lyrics.
+  try {
+    await saveInfoValue({ typeId: "lyrics", entity, value, provider: CORE_LOCAL_LYRICS_PROVIDER });
+  } catch (cacheErr) {
+    console.error("Saved the lyrics file but couldn't update the cached copy:", cacheErr);
+  }
+  return { savedTo: "file", value };
 }

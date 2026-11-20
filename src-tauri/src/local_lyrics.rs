@@ -4,7 +4,8 @@
 //! named like the audio file, and the same files inside a `Lyrics/`
 //! subfolder. A synced answer beats a plain one wherever it comes from. The
 //! in-app editor saves an edit back into whichever source answered
-//! (`save_and_verify`).
+//! (`save_and_verify`), and lyrics for a file that has none into its tags
+//! (`new_lyrics_target`).
 //!
 //! Everything here is probed live on every lookup and deliberately never
 //! cached: the file is the source of truth, re-reading it costs a stat or one
@@ -89,36 +90,80 @@ pub fn embedded_lyrics_in(tagged_file: &lofty::file::TaggedFile) -> Option<Strin
         .or_else(|| tagged_file.tags().iter().find_map(lyrics_from_tag))
 }
 
-/// Replace the lyrics embedded in `path`'s tags with `text`: in the tag and
-/// under the key they were read from (`embedded_lyrics`' order — the primary
-/// tag first, `ItemKey::Lyrics` before `UnsyncLyrics`), so the edit lands
-/// exactly where the probe will read it. Writes through `read_tagged_file`'s
-/// relaxed read, the same as the Edit Properties write.
+/// Write `text` as the lyrics embedded in `path`'s tags. Lyrics already there
+/// are replaced in the tag and under the key they were read from
+/// (`embedded_lyrics`' order — the primary tag first, `ItemKey::Lyrics` before
+/// `UnsyncLyrics`), so the edit lands exactly where the probe will read it.
+/// A file with none gets them in its primary tag (created if missing), under
+/// the first key that tag type can hold (`new_lyrics_key`). Writes through
+/// `read_tagged_file`'s relaxed read, the same as the Edit Properties write.
 fn write_embedded_lyrics(path: &Path, text: &str) -> Result<(), String> {
     use lofty::config::WriteOptions;
     use lofty::prelude::*;
-    use lofty::tag::ItemKey;
+    use lofty::tag::{ItemKey, Tag};
 
     let mut tagged = crate::tag_writer::read_tagged_file(path)
         .map_err(|e| format!("Couldn't read the tags of {}: {}", path.display(), e))?;
     let primary = tagged.primary_tag_type();
     let mut order = vec![primary];
     order.extend(tagged.tags().iter().map(|t| t.tag_type()).filter(|t| *t != primary));
-    for tag_type in order {
-        let Some(tag) = tagged.tag_mut(tag_type) else { continue };
-        let key = [ItemKey::Lyrics, ItemKey::UnsyncLyrics]
+    let existing = order.into_iter().find_map(|tag_type| {
+        let tag = tagged.tag(tag_type)?;
+        [ItemKey::Lyrics, ItemKey::UnsyncLyrics]
             .into_iter()
-            .find(|k| tag.get_string(*k).is_some_and(|s| !s.trim().is_empty()));
-        if let Some(key) = key {
-            if !tag.insert_text(key, text.to_string()) {
-                return Err(format!("{} can't hold lyrics in its tags", path.display()));
+            .find(|k| tag.get_string(*k).is_some_and(|s| !s.trim().is_empty()))
+            .map(|key| (tag_type, key))
+    });
+    let (tag_type, key) = match existing {
+        Some(found) => found,
+        None => {
+            let key = new_lyrics_key(primary).ok_or_else(|| format!("{} can't hold lyrics in its tags", path.display()))?;
+            if tagged.tag(primary).is_none() {
+                tagged.insert_tag(Tag::new(primary));
             }
-            return tagged
-                .save_to_path(path, WriteOptions::default())
-                .map_err(|e| format!("Couldn't save the tags of {}: {}", path.display(), e));
+            (primary, key)
         }
+    };
+    let tag = tagged.tag_mut(tag_type).ok_or_else(|| format!("Couldn't open the tags of {}", path.display()))?;
+    if !tag.insert_text(key, text.to_string()) {
+        return Err(format!("{} can't hold lyrics in its tags", path.display()));
     }
-    Err(format!("The lyrics are no longer in the tags of {}", path.display()))
+    tagged
+        .save_to_path(path, WriteOptions::default())
+        .map_err(|e| format!("Couldn't save the tags of {}: {}", path.display(), e))
+}
+
+/// The key new lyrics go under in a tag of `tag_type`: `ItemKey::Lyrics`
+/// where the format has one (Vorbis `LYRICS`, MP4 `©lyr`, APE), else
+/// `UnsyncLyrics` — ID3v2's only lyrics frame is USLT, which takes LRC text
+/// as is (the probe reads it back, as do the players that show synced lyrics
+/// from tags). `None` when the tag type holds neither.
+fn new_lyrics_key(tag_type: lofty::tag::TagType) -> Option<lofty::tag::ItemKey> {
+    use lofty::tag::{ItemKey, Tag};
+    [ItemKey::Lyrics, ItemKey::UnsyncLyrics]
+        .into_iter()
+        .find(|key| Tag::new(tag_type).insert_text(*key, "x".to_string()))
+}
+
+/// Where lyrics for `audio`, whose files hold none, are saved: its own tags
+/// when lofty can read the file and its tag type holds lyrics, else a sidecar
+/// named like it — `.lrc` for synced text, `.txt` for plain — for the
+/// containers lofty can't tag (dsf, mka, mkv, …). Either way the lyrics live
+/// in the user's files (owner decision, 2026-11-20). Pass the result to
+/// `save_and_verify`.
+pub fn new_lyrics_target(audio: &Path, text: &str) -> LocalLyrics {
+    use lofty::prelude::*;
+    let taggable = crate::tag_writer::read_tagged_file(audio)
+        .ok()
+        .is_some_and(|f| new_lyrics_key(f.primary_tag_type()).is_some());
+    let kind = kind_of(text);
+    if taggable {
+        return LocalLyrics { text: String::new(), kind, source: "embedded", audio: audio.to_path_buf(), file: None };
+    }
+    let stem = audio.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let ext = if kind == "synced" { "lrc" } else { "txt" };
+    let file = audio.with_file_name(format!("{stem}.{ext}"));
+    LocalLyrics { text: String::new(), kind, source: "sidecar", audio: audio.to_path_buf(), file: Some(file) }
 }
 
 /// `<stem>.lrc` preferred over `<stem>.txt` — when both exist the synced file
@@ -658,6 +703,97 @@ mod tests {
         let now = save_and_verify(&found, LRC, &trash_into(bin.path())).unwrap();
         assert_eq!((now.source, now.kind, now.text.as_str()), ("embedded", "synced", LRC));
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1, "no sidecar was written");
+    }
+
+    #[test]
+    fn test_new_lyrics_go_into_the_tags_of_a_file_that_has_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path().join("song.mp3");
+        fs::write(&audio, crate::tag_writer::mp3_with_malformed_date("Song", "Band")).unwrap();
+        assert!(probe_local_lyrics(&audio).is_none());
+        let bin = tempfile::tempdir().unwrap();
+
+        for text in [LRC, PLAIN] {
+            let target = new_lyrics_target(&audio, text);
+            assert_eq!((target.source, target.file.as_ref()), ("embedded", None));
+            let now = save_and_verify(&target, text, &trash_into(bin.path())).unwrap();
+            assert_eq!((now.source, now.text.as_str()), ("embedded", text));
+        }
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1, "no sidecar was written");
+        // The rest of the tag is untouched.
+        let file = crate::tag_writer::read_tagged_file(&audio).unwrap();
+        use lofty::prelude::*;
+        assert_eq!(file.primary_tag().unwrap().title().as_deref(), Some("Song"));
+    }
+
+    #[test]
+    fn test_new_lyrics_create_the_tag_of_an_untagged_file() {
+        use lofty::prelude::*;
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path().join("song.mp3");
+        // MPEG-1 Layer III frames of silence, no tag at all: the write has to
+        // create one.
+        let mut bytes = Vec::new();
+        for _ in 0..8 {
+            bytes.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
+            bytes.extend(std::iter::repeat(0u8).take(413));
+        }
+        fs::write(&audio, bytes).unwrap();
+        assert!(crate::tag_writer::read_tagged_file(&audio).unwrap().primary_tag().is_none());
+
+        let bin = tempfile::tempdir().unwrap();
+        let target = new_lyrics_target(&audio, LRC);
+        assert_eq!(target.source, "embedded");
+        let now = save_and_verify(&target, LRC, &trash_into(bin.path())).unwrap();
+        assert_eq!((now.source, now.kind, now.text.as_str()), ("embedded", "synced", LRC));
+    }
+
+    #[test]
+    fn test_new_lyrics_go_into_the_tags_of_an_mp4_video() {
+        if !crate::video_frames::is_ffmpeg_available() {
+            eprintln!("ffmpeg not installed; skipping");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let video = dir.path().join("clip.mp4");
+        let status = crate::dependencies::command_with_path("ffmpeg")
+            .args(["-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=64x64:d=1"])
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-shortest"])
+            .args(["-c:v", "mpeg4", "-c:a", "aac"])
+            .arg(&video)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let bin = tempfile::tempdir().unwrap();
+
+        let target = new_lyrics_target(&video, LRC);
+        assert_eq!(target.source, "embedded", "an MP4 holds lyrics in its own tags");
+        let now = save_and_verify(&target, LRC, &trash_into(bin.path())).unwrap();
+        assert_eq!((now.source, now.kind, now.text.as_str()), ("embedded", "synced", LRC));
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1, "no sidecar was written");
+        // The scanner reads a video's lyrics with the same embedded_lyrics_in
+        // the read-back above went through.
+        let file = crate::tag_writer::read_tagged_file(&video).unwrap();
+        assert_eq!(embedded_lyrics_in(&file).as_deref(), Some(LRC));
+    }
+
+    #[test]
+    fn test_new_lyrics_for_a_file_that_cant_be_tagged_go_beside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path().join("song.dsf");
+        fs::write(&audio, b"not a file lofty reads").unwrap();
+        let bin = tempfile::tempdir().unwrap();
+
+        let target = new_lyrics_target(&audio, LRC);
+        assert_eq!(target.file, Some(dir.path().join("song.lrc")));
+        let now = save_and_verify(&target, LRC, &trash_into(bin.path())).unwrap();
+        assert_eq!((now.source, now.text.as_str()), ("sidecar", LRC));
+
+        let plain = dir.path().join("other.dsf");
+        fs::write(&plain, b"x").unwrap();
+        let target = new_lyrics_target(&plain, PLAIN);
+        save_and_verify(&target, PLAIN, &trash_into(bin.path())).unwrap();
+        assert_eq!(fs::read_to_string(dir.path().join("other.txt")).unwrap(), PLAIN);
     }
 
     #[test]

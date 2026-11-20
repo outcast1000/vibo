@@ -123,7 +123,7 @@ import {
   CONTEXT_IMAGE_LIMIT_MAX, CONTEXT_IMAGE_ORDER_KEY, CONTEXT_IMAGE_TIMEOUT_MS, normalizeContextImageResult,
 } from "../utils/contextImages";
 import { useStoredProviderOrder } from "./useStoredProviderOrder";
-import { fetchLocalLyrics } from "../utils/localLyrics";
+import { fetchLocalLyrics, saveSongLyrics } from "../utils/localLyrics";
 import { sanitizeViewHeader } from "../utils/pluginViewHeader";
 
 /** Backstop for a global-search handler that never settles. Deliberately far
@@ -1889,8 +1889,12 @@ export function usePlugins(
         },
 
         lyrics: {
-          // The same write as the in-app lyrics editor: the song's cached
-          // lyrics become these, and every open view of it re-reads.
+          // The song's lyrics become these, and every open view of it
+          // re-reads. A plugin that also holds `lyrics:files` gets the in-app
+          // editor's own save — into the song's files when it has a local
+          // one (owner decision, 2026-11-20); without it, the cache-only
+          // save it always had, so a plugin that predates the permission
+          // keeps working.
           async save(track, lyrics) {
             const title = typeof track?.title === "string" ? track.title.trim() : "";
             if (!title) throw new Error("lyrics.save: track.title is required");
@@ -1906,7 +1910,16 @@ export function usePlugins(
             const entity: InfoEntity = { kind: "track", name: title, id: 0 };
             if (track.artistName) entity.artistName = track.artistName;
             if (track.albumTitle) entity.albumTitle = track.albumTitle;
+            const holdsFiles = [
+              ...(loaded.manifest.permissions ?? []),
+              ...optionalGranted(pluginId, loaded.manifest.optionalPermissions ?? []),
+            ].includes("lyrics:files");
+            if (holdsFiles) {
+              const saved = await saveSongLyrics(entity, lyrics.text, lyrics.kind);
+              return { savedTo: saved.savedTo };
+            }
             await saveInfoValue({ typeId: "lyrics", entity, value: { text: lyrics.text, kind: lyrics.kind } });
+            return { savedTo: "app" as const };
           },
         },
 

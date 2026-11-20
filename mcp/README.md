@@ -87,7 +87,9 @@ lyric phrase, local file lyrics included; `matchMode: "allTerms"` instead needs
 every word somewhere in the text or the track's artist/title, with `"quotes"`
 for a phrase; hits carry a snippet, the full value
 only with `includeValue`; `save_lyrics` saves plain or LRC-synced lyrics for a
-song the way the app's lyrics editor does — profile only, no permission switch),
+song the way the app's lyrics editor does — into the song's files when it has a
+local one (its tags, or the .lrc/.txt its lyrics already come from), else in the
+app; needs the Manage files switch),
 Now Playing **cue sheets** (`get_cue_context` gathers a
 song's lyrics with timestamps, its meaning/bio/review prose, quality and tags
 plus the format guides and named styles (it answers within ~25s; providers still loading are listed in `pending` for the assistant to fetch itself) — Storyteller, Annotated, Translation, Pop-up trivia, Lyric video, Liner notes — each marked with whether it fits that song, which the assistant offers when the user hasn't said what they want; `cue_sheet` saves either timed fact / lyric-meaning /

@@ -44,9 +44,10 @@ import type { AssistantInstallOutcome, AssistantInstallTarget } from "./useAssis
 import type { InfoEntity } from "../types/informationTypes";
 import { buildEntityKey } from "../types/informationTypes";
 import {
-  cacheTtlForRow, decideCacheAction, fetchInfoValue, resolveInfoEntityId, saveInfoValue, InfoFetchRequestError,
+  cacheTtlForRow, decideCacheAction, fetchInfoValue, resolveInfoEntityId, InfoFetchRequestError,
   type InvokeInfoFetch, type InfoTypeRow, type InfoValueRow,
 } from "../utils/infoFetchChain";
+import { saveSongLyrics } from "../utils/localLyrics";
 import { resolveShelfPlayAction } from "../utils/homeShelfPlay";
 import { homeShelfRoster, isBuiltInShelfId } from "./useHome";
 import { store } from "../store";
@@ -911,12 +912,15 @@ export function useControlApi(deps: ControlApiDeps) {
       }
 
       case "lyrics.set": {
-        // What the lyrics editor's Save does for lyrics that aren't the
-        // track's own file (InformationSections "save-lyrics"): the text goes
-        // into the lyrics cache, every open view re-reads. Like cues.set it
-        // names its song and never defaults to what's playing — a save that
-        // took a minute to write must not land on the song that started
-        // meanwhile. The kind comes off the text (LRC timestamps = synced).
+        // What the lyrics editor's Save does (saveSongLyrics, shared with
+        // InformationSections "save-lyrics"): into the song's files when it
+        // has a local one — back into the source that answered, else the
+        // file's tags — otherwise into the lyrics cache; every open view
+        // re-reads. Rust requires Manage files before bridging this. Like
+        // cues.set it names its song and never defaults to what's playing — a
+        // save that took a minute to write must not land on the song that
+        // started meanwhile. The kind comes off the text (LRC timestamps =
+        // synced).
         const title = optionalString(payload.title) ?? bad("title is required — lyrics.set never defaults to what's playing");
         const artistName = optionalString(payload.artistName) ?? bad("artistName is required");
         const text = typeof payload.text === "string" ? payload.text : bad("text is required (LRC with [mm:ss.xx] timestamps, or plain lines)");
@@ -938,27 +942,17 @@ export function useControlApi(deps: ControlApiDeps) {
           : playing
             ? { title: playing.title, artistName: playing.artist_name ?? artistName, albumTitle: playing.album_title ?? undefined }
             : { title, artistName, albumTitle: optionalString(payload.albumTitle) };
-        const entity = await resolveInfoEntity({ kind: "track", ...song });
-        // Lyrics read from the track's own files win the chain and are
-        // re-probed daily, so a cached save would be overwritten — the
-        // editor writes those back into the file, which is a file write
-        // this verb doesn't make. The playing entry's path covers a queue
-        // file outside the library. Asked directly (not fetchLocalLyrics,
-        // which reads a failure as "none"): a probe that fails refuses.
-        const fromFile = await invoke<{ text: string } | null>("get_local_lyrics", {
-          title: entity.name,
-          artistName: entity.artistName ?? null,
-          albumName: entity.albumTitle ?? null,
-          path: playing?.path ?? row?.path ?? null,
-        });
-        if (fromFile?.text) {
-          bad("this song's lyrics come from its own file (embedded tags or a .lrc/.txt next to it), which would override a saved copy — save into the file instead: manage_files action=write_lyrics (Manage files permission), or the app's lyrics editor");
-        }
-        await saveInfoValue({ typeId: "lyrics", entity, value: { text, kind: check.kind } });
+        // The playing entry's path covers a queue file outside the library.
+        const entity = { ...(await resolveInfoEntity({ kind: "track", ...song })), path: playing?.path ?? row?.path ?? undefined };
+        const saved = await saveSongLyrics(entity, text, check.kind);
         return {
           saved: true,
           title: entity.name,
           artistName: entity.artistName ?? null,
+          savedTo: saved.savedTo,
+          ...(saved.savedTo === "file"
+            ? { source: (saved.value._meta as { providerName?: string } | undefined)?.providerName ?? null }
+            : {}),
           kind: check.kind,
           lines: check.stats.lines,
           timedLines: check.stats.timed,

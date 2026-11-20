@@ -493,7 +493,7 @@ pub(crate) fn build_router(state: ServerState) -> Router {
         // Save does for lyrics that aren't the track's own file. Profile DB
         // only, no library file touched, so no write scope (as /v1/cues).
         .route("/v1/lyrics", get(|s, q| handle_bridge_query_slow(s, "lyrics.get", q))
-            .put(|s, b| handle_bridge_body(s, "lyrics.set", json!({}), b)))
+            .put(handle_lyrics_set))
         // Now Playing cue sheets (cue_sheets.rs). Bridged so a missing
         // title defaults to what's playing and the open view reloads; stored
         // in the profile dir (no library file touched), so no write scope —
@@ -2004,6 +2004,38 @@ async fn handle_file_tags(state: AxumState<ServerState>, body: Bytes) -> Respons
     axum::Json(result).into_response()
 }
 
+/// Saving a song's lyrics (`lyrics.set`, MCP `save_lyrics`). The webview runs
+/// the lyrics editor's own save, which always writes into the song's files
+/// when it has a local one (owner decision, 2026-11-20) — so this needs
+/// **Manage files**, checked here before anything is bridged, even for a song
+/// that turns out to have no file (the caller can't know in advance which it
+/// will be). Slow bridge: a tag write can rewrite a large video file.
+async fn handle_lyrics_set(state: AxumState<ServerState>, body: Bytes) -> Response {
+    if let Err(resp) = check_scope(&state.0, Scope::ManageFiles) {
+        return resp;
+    }
+    let payload = match parse_body(json!({}), &body) {
+        Ok(p) => p,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, e),
+    };
+    let timeout = state.0.bridge_timeout.saturating_mul(7);
+    let result = match bridge_value(&state.0, "lyrics.set", payload, timeout).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    if result["savedTo"].as_str() == Some("file") {
+        let song = format!(
+            "“{}” – {}",
+            result["title"].as_str().unwrap_or("?"),
+            result["artistName"].as_str().unwrap_or("?"),
+        );
+        let kind = result["kind"].as_str().unwrap_or("?");
+        let source = result["source"].as_str().unwrap_or("?");
+        assistant_write::log_change("lyrics.set", &format!("saved {kind} lyrics for {song} into its files ({source})"), &[]);
+    }
+    axum::Json(result).into_response()
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LyricsFileBody {
@@ -2971,6 +3003,7 @@ mod tests {
         for (method, path, body) in [
             ("POST", "/v1/tracks/file-tags", r#"{"trackIds":[1],"tagNames":["rock"]}"#),
             ("POST", "/v1/tracks/1/lyrics-file", r#"{"content":"la"}"#),
+            ("PUT", "/v1/lyrics", r#"{"title":"Hunter","artistName":"Bjork","text":"la"}"#),
             ("POST", "/v1/albums/1/cover-file", r#"{"fromCache":true}"#),
             ("POST", "/v1/files/move", r#"{"moves":[{"trackId":1}]}"#),
             ("POST", "/v1/mixtapes", r#"{"title":"Mix","trackIds":[1],"collectionId":1}"#),
