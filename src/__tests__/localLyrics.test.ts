@@ -13,6 +13,8 @@ vi.mock("../utils/infoFetchChain", () => ({
 }));
 
 import { fetchLocalLyrics, localLyricsProviderName, saveLocalLyrics, saveSongLyrics } from "../utils/localLyrics";
+import { onLyricsChanged } from "../utils/lyricsEvents";
+import type { LyricsChange } from "../types/plugin";
 
 describe("fetchLocalLyrics", () => {
   beforeEach(() => { invokeMock = vi.fn(); });
@@ -113,7 +115,7 @@ describe("saveSongLyrics", () => {
 
   it("writes into the song's files and caches what the file now says", async () => {
     invokeMock.mockResolvedValue({ text: "[00:01.00]la", kind: "synced", source: "embedded" });
-    const saved = await saveSongLyrics(song, "[00:01.00]la", "synced");
+    const saved = await saveSongLyrics(song, "[00:01.00]la", "synced", "edit");
     expect(saved.savedTo).toBe("file");
     expect(invokeMock).toHaveBeenCalledWith("save_local_lyrics", expect.objectContaining({ title: "Hunter", text: "[00:01.00]la" }));
     expect(saveInfoValueMock).toHaveBeenCalledWith(expect.objectContaining({ provider: "core:local-lyrics" }));
@@ -121,19 +123,35 @@ describe("saveSongLyrics", () => {
 
   it("keeps them in the app when the song has no local file", async () => {
     invokeMock.mockResolvedValue(null);
-    const saved = await saveSongLyrics(song, "words", "plain");
+    const saved = await saveSongLyrics(song, "words", "plain", "edit");
     expect(saved).toEqual({ savedTo: "app" });
     expect(saveInfoValueMock).toHaveBeenCalledWith({ typeId: "lyrics", entity: song, value: { text: "words", kind: "plain" } });
   });
 
   it("never asks the files for anything but a track", async () => {
-    await saveSongLyrics({ kind: "artist", name: "Björk", id: 0 }, "x", "plain");
+    await saveSongLyrics({ kind: "artist", name: "Björk", id: 0 }, "x", "plain", "edit");
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it("a failed file save is the caller's error, and nothing is cached", async () => {
     invokeMock.mockRejectedValue("Couldn't save the tags of song.mp3");
-    await expect(saveSongLyrics(song, "x", "plain")).rejects.toBe("Couldn't save the tags of song.mp3");
+    await expect(saveSongLyrics(song, "x", "plain", "edit")).rejects.toBe("Couldn't save the tags of song.mp3");
     expect(saveInfoValueMock).not.toHaveBeenCalled();
+  });
+
+  it("tells plugins what landed, from whom — file and app saves alike, never a failed one", async () => {
+    const seen: LyricsChange[] = [];
+    const off = onLyricsChanged((c) => seen.push(c));
+    invokeMock.mockResolvedValue({ text: "[00:01.00]la", kind: "synced", source: "embedded" });
+    await saveSongLyrics(song, "[00:01.00]la", "synced", "assistant");
+    invokeMock = vi.fn().mockResolvedValue(null);
+    await saveSongLyrics(song, "words", "plain", "plugin", { pluginId: "community" });
+    invokeMock = vi.fn().mockRejectedValue("Couldn't save the tags of song.mp3");
+    await expect(saveSongLyrics(song, "x", "plain", "edit")).rejects.toBeDefined();
+    off();
+    expect(seen.map((c) => [c.origin, c.kind, c.text, c.pluginId])).toEqual([
+      ["assistant", "synced", "[00:01.00]la", null],
+      ["plugin", "plain", "words", "community"],
+    ]);
   });
 });

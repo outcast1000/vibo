@@ -75,6 +75,8 @@ export type PluginEventName =
   | "scan:complete"
   // A like, dislike or un-like the user made (see `LikeChange`).
   | "like:changed"
+  // A song's lyrics were put in place (see `LyricsChange`).
+  | "lyrics:changed"
   // What the user is looking at changed, and has settled (see `UiContext`).
   | "ui:context-changed";
 
@@ -2710,7 +2712,35 @@ export interface PluginCueSheet {
 /** The user's Now Playing cue sheets (backend `cue_sheets.rs`). Keyed by
  *  title + artist like likes, so a sheet follows the song onto any copy.
  *  `set` runs the host's normalizer — what comes back is what will play. */
-/** Put lyrics in place for a song — permission `lyrics:write`. */
+/** Where lyrics that were just put in place came from. `edit` (the in-app
+ *  editor) and `assistant` (the control API's lyrics.set) are the user's own;
+ *  `plugin` is a plugin's `api.lyrics.save`; `provider` is a provider lookup
+ *  (a lyrics site, or the song's own files) that came back with lyrics. */
+export type LyricsOrigin = "edit" | "assistant" | "plugin" | "provider";
+
+/** The `lyrics:changed` event: one song's lyrics, as they now are. Sent after
+ *  the write succeeded, for tracks only. A provider lookup sends it each time
+ *  it runs (the cache expires, a song's files are re-read daily), so the same
+ *  text can arrive more than once — a consumer that acts on it de-dupes. */
+export interface LyricsChange {
+  title: string;
+  artistName: string | null;
+  albumTitle: string | null;
+  /** The track's length when the writer knew it. */
+  durationSecs: number | null;
+  kind: "synced" | "plain";
+  text: string;
+  origin: LyricsOrigin;
+  /** `plugin` only: the plugin that saved them. A plugin is never sent its
+   *  own saves. */
+  pluginId: string | null;
+  /** `provider` only: the provider that answered — a plugin id, or
+   *  "core:local-lyrics" for the song's own files. */
+  provider: string | null;
+}
+
+/** Put lyrics in place for a song — permission `lyrics:write`; hear about
+ *  lyrics put in place — permission `library:read`. */
 export interface PluginLyricsAPI {
   /** Make these the song's lyrics, replacing whatever a provider had cached;
    *  open views update at once. A plugin that also holds `lyrics:files` gets
@@ -2722,6 +2752,9 @@ export interface PluginLyricsAPI {
     track: { title: string; artistName?: string | null; albumTitle?: string | null },
     lyrics: { text: string; kind: "synced" | "plain" },
   ): Promise<{ savedTo: "file" | "app" }>;
+  /** Every time a song's lyrics are put in place (see `LyricsChange`).
+   *  Permission `library:read`. Absent on older hosts — feature-detect. */
+  onChanged(handler: (change: LyricsChange) => void): () => void;
 }
 
 /** What a waveform plugin is told about a track — see `TrackAudioFacts`. */

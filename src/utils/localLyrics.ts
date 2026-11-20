@@ -13,7 +13,9 @@
 // database read.
 import { invoke } from "@tauri-apps/api/core";
 import type { InfoEntity } from "../types/informationTypes";
+import type { LyricsOrigin } from "../types/plugin";
 import { CORE_LOCAL_LYRICS_PROVIDER, saveInfoValue } from "./infoFetchChain";
+import { announceLyrics } from "./lyricsEvents";
 
 interface LocalLyricsRow {
   text: string;
@@ -99,12 +101,21 @@ export type SongLyricsSave =
  *  them in its files (`saveLocalLyrics`), then cached under the local-lyrics
  *  row as what the file now says; anything else is a cache-only save (the
  *  same write as a plugin's `api.lyrics.save`). Both announce the change, so
- *  every open view of the song re-reads. Rejects with the file save's reason
- *  (including "saved, but X still takes priority"). */
-export async function saveSongLyrics(entity: InfoEntity, text: string, kind: string): Promise<SongLyricsSave> {
+ *  every open view of the song re-reads, and tell plugins (`lyrics:changed`,
+ *  from `origin` — who asked for the save). Rejects with the file save's
+ *  reason (including "saved, but X still takes priority"). */
+export async function saveSongLyrics(
+  entity: InfoEntity,
+  text: string,
+  kind: string,
+  origin: LyricsOrigin,
+  from?: { pluginId?: string | null },
+): Promise<SongLyricsSave> {
   const value = entity.kind === "track" ? await saveLocalLyrics(entity, text) : null;
   if (!value) {
-    await saveInfoValue({ typeId: "lyrics", entity, value: { text, kind } });
+    const cached = { text, kind };
+    await saveInfoValue({ typeId: "lyrics", entity, value: cached });
+    announceLyrics(entity, cached, origin, from);
     return { savedTo: "app" };
   }
   // The file holds the edit now: a cache failure must not report a failed
@@ -116,5 +127,8 @@ export async function saveSongLyrics(entity: InfoEntity, text: string, kind: str
   } catch (cacheErr) {
     console.error("Saved the lyrics file but couldn't update the cached copy:", cacheErr);
   }
+  // What the file now says — announced even when the cache write failed,
+  // since the file holds the lyrics either way.
+  announceLyrics(entity, value, origin, from);
   return { savedTo: "file", value };
 }

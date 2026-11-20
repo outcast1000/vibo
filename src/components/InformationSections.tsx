@@ -202,7 +202,7 @@ export function InformationSections({
       // song) re-reads by itself. Rethrown: the editor stays open with the
       // reason.
       try {
-        await saveSongLyrics(entity, p.text, p.kind);
+        await saveSongLyrics(entity, p.text, p.kind, "edit");
       } catch (e) {
         console.error("Failed to save lyrics:", e);
         // A refused file save may have recorded what the files hold now (they

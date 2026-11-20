@@ -8,6 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { buildEntityKey } from "../types/informationTypes";
 import type { InfoEntity, InfoFetchResult, FetchProgressEntry } from "../types/informationTypes";
 import { emitInfoValueChanged } from "./infoValueEvents";
+import { announceLyrics } from "./lyricsEvents";
 import { matchesProviderRef, parseProviderKey } from "./providerKey";
 
 export const ERROR_TTL = 3600; // 1 hour in seconds
@@ -145,12 +146,13 @@ export async function fetchInfoThroughChain(
   const { typeId, providers, entity, entityKey, invokeInfoFetch, pluginNames, onProgress } = opts;
   const allProviders = opts.allProviders ?? providers;
   let usedIntegerId = providers[0]?.[1] ?? 0;
+  let usedPluginId: string | null = providers[0]?.[0] ?? null;
   const steps: FetchProgressEntry[] = [];
   try {
     let result: InfoFetchResult = { status: "error" };
     // The first provisional ok (plain lyrics) seen, held while the walk looks
     // on for a better answer; used only when none turns up.
-    let fallback: { result: InfoFetchResult; integerId: number } | null = null;
+    let fallback: { result: InfoFetchResult; integerId: number; pluginId: string } | null = null;
 
     for (const [pluginId, integerId] of providers) {
       const step: FetchProgressEntry = {
@@ -165,11 +167,12 @@ export async function fetchInfoThroughChain(
         onProgress?.(steps);
       });
       usedIntegerId = integerId;
+      usedPluginId = pluginId;
       step.status = result.status === "ok" ? "ok" : result.status === "not_found" ? "not_found" : "error";
       onProgress?.(steps);
       if (result.status === "ok") {
         if (!isProvisionalAnswer(typeId, result.value)) break;
-        fallback ??= { result, integerId };
+        fallback ??= { result, integerId, pluginId };
       }
     }
     // No better answer further down: the first provisional one stands, which
@@ -177,6 +180,7 @@ export async function fetchInfoThroughChain(
     if (fallback && (result.status !== "ok" || isProvisionalAnswer(typeId, result.value))) {
       result = fallback.result;
       usedIntegerId = fallback.integerId;
+      usedPluginId = fallback.pluginId;
     }
 
     await invoke("info_upsert_value", {
@@ -185,6 +189,12 @@ export async function fetchInfoThroughChain(
       value: result.status === "ok" ? JSON.stringify(result.value) : "{}",
       status: result.status,
     });
+    // Lyrics a provider came back with → `lyrics:changed` (origin
+    // "provider"). Every chain walk goes through here: the detail pages, Now
+    // Playing, the control API and a plugin's informationTypes.fetch.
+    if (typeId === "lyrics" && result.status === "ok") {
+      announceLyrics(entity, result.value, "provider", { provider: usedPluginId });
+    }
 
     // Clean up stale cached values from other providers for this type_id
     for (const [, integerId] of allProviders) {

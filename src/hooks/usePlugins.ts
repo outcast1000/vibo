@@ -97,6 +97,7 @@ import {
   CORE_LOCAL_LYRICS_PROVIDER, fetchInfoValue, resolveInfoEntityId, saveInfoValue, saveOwnInfoValue, sectionDataRequest, type InvokeInfoFetch,
 } from "../utils/infoFetchChain";
 import { MAX_LYRICS_CHARS } from "../utils/lyricsEditor";
+import { announceLyrics, onLyricsChanged } from "../utils/lyricsEvents";
 import { CallGraph, callableProblem, describePlugins } from "../utils/crossPluginCalls";
 import { sanitizeSeekMarkers, type SeekMarker } from "../utils/seekMarkers";
 import { coerceScrobbleReport, type ScrobbleReport } from "../utils/scrobblers";
@@ -567,6 +568,7 @@ export function usePlugins(
     "queue:changed": [],
     "scan:complete": [],
     "like:changed": [],
+    "lyrics:changed": [],
     "ui:context-changed": [],
   });
   // Plugins currently subscribed to `track:scrobbled` — the plugin half of the
@@ -1915,12 +1917,19 @@ export function usePlugins(
               ...optionalGranted(pluginId, loaded.manifest.optionalPermissions ?? []),
             ].includes("lyrics:files");
             if (holdsFiles) {
-              const saved = await saveSongLyrics(entity, lyrics.text, lyrics.kind);
+              const saved = await saveSongLyrics(entity, lyrics.text, lyrics.kind, "plugin", { pluginId });
               return { savedTo: saved.savedTo };
             }
-            await saveInfoValue({ typeId: "lyrics", entity, value: { text: lyrics.text, kind: lyrics.kind } });
+            const value = { text: lyrics.text, kind: lyrics.kind };
+            await saveInfoValue({ typeId: "lyrics", entity, value });
+            announceLyrics(entity, value, "plugin", { pluginId });
             return { savedTo: "app" as const };
           },
+          onChanged: (handler) =>
+            subscribeEvent(
+              "lyrics:changed",
+              handler as (...args: unknown[]) => void,
+            ),
         },
 
         informationTypes: {
@@ -3442,6 +3451,17 @@ export function usePlugins(
     (event: PluginEventName, ...args: unknown[]) => {
       dispatchEventTo(event, () => true, ...args);
     },
+    [dispatchEventTo],
+  );
+
+  // Lyrics put in place anywhere in the app → `lyrics:changed`. A plugin is
+  // never sent its own saves (an import would otherwise read as a new lyric
+  // for the plugin that imported it).
+  useEffect(
+    () =>
+      onLyricsChanged((change) => {
+        dispatchEventTo("lyrics:changed", (pluginId) => pluginId !== change.pluginId, change);
+      }),
     [dispatchEventTo],
   );
 

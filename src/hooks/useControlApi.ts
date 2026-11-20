@@ -944,7 +944,7 @@ export function useControlApi(deps: ControlApiDeps) {
             : { title, artistName, albumTitle: optionalString(payload.albumTitle) };
         // The playing entry's path covers a queue file outside the library.
         const entity = { ...(await resolveInfoEntity({ kind: "track", ...song })), path: playing?.path ?? row?.path ?? undefined };
-        const saved = await saveSongLyrics(entity, text, check.kind);
+        const saved = await saveSongLyrics(entity, text, check.kind, "assistant");
         return {
           saved: true,
           title: entity.name,
