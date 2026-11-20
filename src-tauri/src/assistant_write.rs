@@ -891,6 +891,103 @@ pub fn assistant_download_layout(app_dir: &Path, subdir: &str) -> crate::downloa
     DownloadLayout::parse(Some(stored.as_deref().unwrap_or("artist-album")))
 }
 
+/// A temp path in `dir` that no other fetch in this process shares. The pid
+/// alone isn't enough: jobs run concurrently, and two downloads into the same
+/// folder (two tracks of one album under Artist › Album) wrote into one file —
+/// one renamed it away mid-write, the other landed a mix of both or failed.
+/// The counter makes the name per call; the pid keeps two profiles apart.
+/// `.tmp` is no media extension, so a rescan meanwhile never indexes one.
+fn unique_temp(dir: &Path, kind: &str) -> PathBuf {
+    dir.join(format!(".viboplr-{kind}-{}-{}.tmp", std::process::id(), next_seq()))
+}
+
+/// One counter for every per-call name in this module (temp files, stage ids).
+fn next_seq() -> u64 {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Remove temp files that a crashed or killed run left in `dir`. With a name
+/// per call nothing reuses them, so a force-quit mid-download would otherwise
+/// leave a hidden, possibly huge file in the music folder for good. Only files
+/// whose process is gone are removed: another profile can be downloading into
+/// the same collection right now. Covers the old pid-only names too.
+fn sweep_orphaned_temps(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let me = std::process::id();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(orphan_temp_pid) else { continue };
+        if pid != me && !crate::plugin_programs::process::pid_alive(pid) {
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => log::info!("Removed leftover download temp {}", entry.path().display()),
+                Err(e) => log::warn!("Couldn't remove leftover download temp {}: {}", entry.path().display(), e),
+            }
+        }
+    }
+}
+
+/// The pid in a temp name this module writes (`.viboplr-{dl|stage}-<pid>[-<n>].tmp`).
+fn orphan_temp_pid(name: &str) -> Option<u32> {
+    let rest = name.strip_prefix(".viboplr-")?.strip_suffix(".tmp")?;
+    let rest = rest.strip_prefix("dl-").or_else(|| rest.strip_prefix("stage-"))?;
+    let pid = rest.split('-').next()?;
+    if pid.is_empty() || !pid.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    pid.parse().ok()
+}
+
+/// Move `temp` to `dest` only if nothing is there. A hard link fails on an
+/// existing name, so the check and the move are one step: two landings of the
+/// same song can't both see `dest` free and the second replace the first (a
+/// plain rename replaces silently). The temp is always in the destination's
+/// collection, so the link never crosses volumes. A filesystem without hard
+/// links (exFAT, some network shares) gets a check-then-rename under a lock,
+/// which covers every landing in this process. `AlreadyExists` when taken.
+fn place_without_overwrite(temp: &Path, dest: &Path) -> std::io::Result<()> {
+    match std::fs::hard_link(temp, dest) {
+        Ok(()) => {
+            if let Err(e) = std::fs::remove_file(temp) {
+                log::warn!("Couldn't remove download temp {} after placing it: {}", temp.display(), e);
+            }
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
+        Err(_) => {
+            static PLACE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let _guard = PLACE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            if dest.exists() {
+                return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists));
+            }
+            std::fs::rename(temp, dest)
+        }
+    }
+}
+
+/// Undo a fetch whose landing failed. A plugin's resolved file was *moved*
+/// into the temp, so deleting the temp would destroy the only copy (a yt-dlp
+/// fetch can take minutes): it goes back where the plugin left it. Anything
+/// else was downloaded or copied, and the temp is just removed.
+fn abandon_temp(temp: &Path, source: &DownloadSource) {
+    if let DownloadSource::LocalFile(orig) = source {
+        if std::fs::rename(temp, orig).is_ok() {
+            return;
+        }
+        if std::fs::copy(temp, orig).is_ok() {
+            let _ = std::fs::remove_file(temp);
+            return;
+        }
+        log::warn!(
+            "Couldn't return the resolved file to {}; it is kept at {}",
+            orig.display(),
+            temp.display()
+        );
+        return;
+    }
+    let _ = std::fs::remove_file(temp);
+}
+
 pub fn land_download(
     db: &Arc<Database>,
     collection_id: i64,
@@ -930,7 +1027,8 @@ pub fn land_download_cancellable(
     };
 
     std::fs::create_dir_all(&dest_dir).map_err(|e| format!("failed to create {}: {}", dest_dir.display(), e))?;
-    let temp = dest_dir.join(format!(".viboplr-dl-{}.tmp", std::process::id()));
+    sweep_orphaned_temps(&dest_dir);
+    let temp = unique_temp(&dest_dir, "dl");
     fetch_into(&source, &temp, cancel)?;
     let final_ext = settle_ext(named_ext, &source, &temp);
     let is_video = crate::scanner::VIDEO_EXTENSIONS.contains(&final_ext.as_str());
@@ -938,20 +1036,26 @@ pub fn land_download_cancellable(
         layout, artist, title, name.album, name.track_number, is_video, &final_ext,
     );
     let dest = dest_dir.join(&rel);
+    let already_exists = || format!("{} already exists — downloads never overwrite", dest.display());
+    // Early answer only; `place_without_overwrite` is what actually holds the line.
     if dest.exists() {
-        let _ = std::fs::remove_file(&temp);
-        return Err(format!("{} already exists — downloads never overwrite", dest.display()));
+        abandon_temp(&temp, &source);
+        return Err(already_exists());
     }
     if let Some(parent) = dest.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
-            let _ = std::fs::remove_file(&temp);
+            abandon_temp(&temp, &source);
             return Err(format!("failed to create {}: {}", parent.display(), e));
         }
     }
-    std::fs::rename(&temp, &dest).map_err(|e| {
-        let _ = std::fs::remove_file(&temp);
-        format!("failed to move downloaded file into place: {}", e)
-    })?;
+    if let Err(e) = place_without_overwrite(&temp, &dest) {
+        abandon_temp(&temp, &source);
+        return Err(if e.kind() == std::io::ErrorKind::AlreadyExists {
+            already_exists()
+        } else {
+            format!("failed to move downloaded file into place: {}", e)
+        });
+    }
 
     // File tags, best-effort (after the rename so lofty sees the real
     // extension; a tag-write failure must not fail a completed download —
@@ -1072,12 +1176,15 @@ pub fn audio_quality(path: &Path, format: &str) -> Value {
     })
 }
 
+/// Clock + counter: the clock keeps ids apart across runs, the counter within
+/// one — the clock alone has microsecond resolution on macOS, so two stages in
+/// the same tick got one id and the second replaced the first's bytes.
 fn stage_token() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("{:012x}", (nanos as u64) & 0xffff_ffff_ffff)
+    format!("{:012x}{:04x}", (nanos as u64) & 0xffff_ffff_ffff, next_seq() & 0xffff)
 }
 
 fn ext_of(path: &Path) -> String {
@@ -1094,21 +1201,22 @@ pub fn stage_replacement(db: &Database, track_id: i64, ext_hint: &str, source: D
         e => e.trim_start_matches('.').to_ascii_lowercase(),
     };
     let parent = target.old.parent().ok_or("track file has no parent directory")?;
-    let temp = parent.join(format!(".viboplr-stage-{}.tmp", std::process::id()));
+    sweep_orphaned_temps(parent);
+    let temp = unique_temp(parent, "stage");
     fetch_into(&source, &temp, None)?;
     let ext = settle_ext(named_ext, &source, &temp);
     let stage_id = format!("{}.{}", stage_token(), ext);
     let staged = match staged_path(&target.old, &stage_id) {
         Ok(p) => p,
         Err(e) => {
-            let _ = std::fs::remove_file(&temp);
+            abandon_temp(&temp, &source);
             return Err(e);
         }
     };
-    std::fs::rename(&temp, &staged).map_err(|e| {
-        let _ = std::fs::remove_file(&temp);
-        format!("failed to stage the replacement: {}", e)
-    })?;
+    if let Err(e) = place_without_overwrite(&temp, &staged) {
+        abandon_temp(&temp, &source);
+        return Err(format!("failed to stage the replacement: {}", e));
+    }
     Ok(serde_json::json!({
         "staged": true,
         "stageId": stage_id,
@@ -1447,6 +1555,20 @@ mod tests {
     use super::*;
     use crate::downloader::DownloadLayout;
     use serde_json::json;
+
+    #[test]
+    fn test_concurrent_fetches_into_one_folder_get_their_own_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let names: std::collections::HashSet<PathBuf> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..8).map(|_| s.spawn(|| unique_temp(dir.path(), "dl"))).collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        assert_eq!(names.len(), 8, "two fetches shared a temp file");
+        for p in &names {
+            assert_eq!(p.parent(), Some(dir.path()));
+            assert_eq!(p.extension().and_then(|e| e.to_str()), Some("tmp"));
+        }
+    }
 
     #[test]
     fn test_scopes_fail_closed_without_a_file() {
@@ -1838,10 +1960,150 @@ mod tests {
         std::fs::write(&resolved, b"ID3other").unwrap();
         let err = land_download(
             &db, col.id, "Web Artist/Singles", DownloadLayout::Flat, &name, "mp3",
-            DownloadSource::LocalFile(resolved), None,
+            DownloadSource::LocalFile(resolved.clone()), None,
         )
         .unwrap_err();
         assert!(err.contains("never overwrite"));
+        // The refused landing gives the plugin's file back rather than deleting
+        // the only copy, and leaves no temp behind in the collection.
+        assert_eq!(std::fs::read(&resolved).unwrap(), b"ID3other");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"ID3fakebytes");
+        let leftovers: Vec<_> = std::fs::read_dir(root.path().join("Web Artist/Singles"))
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp left behind: {leftovers:?}");
+    }
+
+    fn dest_collection() -> (tempfile::TempDir, Arc<Database>, i64) {
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::new_in_memory().unwrap());
+        let col = db
+            .add_collection("local", "Dest", Some(root.path().to_str().unwrap()), None, None, None, None, None)
+            .unwrap();
+        (root, db, col.id)
+    }
+
+    #[test]
+    fn test_concurrent_downloads_into_one_album_folder_all_land_intact() {
+        // Two tracks of one album land in the same Artist/Album folder at once.
+        // With a shared temp name one renamed the other's half-written file away.
+        let (root, db, col) = dest_collection();
+        let sources = tempfile::tempdir().unwrap();
+        let n = 6;
+        let srcs: Vec<PathBuf> = (0..n)
+            .map(|i| {
+                let p = sources.path().join(format!("src{i}.mp3"));
+                std::fs::write(&p, format!("ID3track{i}").repeat(4096)).unwrap();
+                p
+            })
+            .collect();
+        let titles: Vec<String> = (0..n).map(|i| format!("Song {i}")).collect();
+        std::thread::scope(|s| {
+            for i in 0..n {
+                let (db, src, title) = (&db, &srcs[i], &titles[i]);
+                s.spawn(move || {
+                    let name = LandName { artist: "A", title, album: Some("Al"), track_number: Some(i as u32 + 1) };
+                    land_download(db, col, "", DownloadLayout::ArtistAlbum, &name, "mp3", DownloadSource::CopyOf(src.clone()), None)
+                        .unwrap();
+                });
+            }
+        });
+        for i in 0..n {
+            let dest = root.path().join(format!("A/Al/{:02} Song {i}.mp3", i + 1));
+            assert_eq!(std::fs::read(&dest).unwrap(), std::fs::read(&srcs[i]).unwrap(), "{} is not its own bytes", dest.display());
+        }
+    }
+
+    #[test]
+    fn test_concurrent_downloads_of_one_song_land_once_and_never_overwrite() {
+        // Both fetches finish and both see the destination free; exactly one may
+        // land, the rest are refused, and the file is the winner's own bytes.
+        let (root, db, col) = dest_collection();
+        let sources = tempfile::tempdir().unwrap();
+        let n = 8;
+        let srcs: Vec<PathBuf> = (0..n)
+            .map(|i| {
+                let p = sources.path().join(format!("src{i}.mp3"));
+                std::fs::write(&p, format!("ID3copy{i}")).unwrap();
+                p
+            })
+            .collect();
+        let results: Vec<(usize, Result<Value, String>)> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..n)
+                .map(|i| {
+                    let (db, src) = (&db, &srcs[i]);
+                    s.spawn(move || {
+                        let name = LandName { artist: "A", title: "Same", album: None, track_number: None };
+                        (i, land_download(db, col, "x", DownloadLayout::Flat, &name, "mp3", DownloadSource::CopyOf(src.clone()), None))
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let winners: Vec<usize> = results.iter().filter(|(_, r)| r.is_ok()).map(|(i, _)| *i).collect();
+        assert_eq!(winners.len(), 1, "results: {results:?}");
+        for (_, r) in &results {
+            if let Err(e) = r {
+                assert!(e.contains("never overwrite"), "unexpected error: {e}");
+            }
+        }
+        let dest = root.path().join("x/A - Same.mp3");
+        assert_eq!(std::fs::read(&dest).unwrap(), format!("ID3copy{}", winners[0]).into_bytes());
+        let leftovers = std::fs::read_dir(root.path().join("x")).unwrap().count();
+        assert_eq!(leftovers, 1, "only the landed file should remain");
+    }
+
+    #[test]
+    fn test_place_without_overwrite_refuses_a_taken_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let (temp, dest) = (dir.path().join("t.tmp"), dir.path().join("d.mp3"));
+        std::fs::write(&temp, b"new").unwrap();
+        std::fs::write(&dest, b"old").unwrap();
+        let e = place_without_overwrite(&temp, &dest).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&dest).unwrap(), b"old");
+        assert!(temp.exists(), "a refused placement leaves the temp to the caller");
+        std::fs::remove_file(&dest).unwrap();
+        place_without_overwrite(&temp, &dest).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new");
+        assert!(!temp.exists());
+    }
+
+    #[test]
+    fn test_orphan_temp_pid_reads_only_our_temp_names() {
+        assert_eq!(orphan_temp_pid(".viboplr-dl-123-4.tmp"), Some(123));
+        assert_eq!(orphan_temp_pid(".viboplr-stage-77-0.tmp"), Some(77));
+        assert_eq!(orphan_temp_pid(".viboplr-dl-123.tmp"), Some(123), "the old pid-only name");
+        for other in [".viboplr-import-1.tmp", ".viboplr-dl-.tmp", ".viboplr-dl-x1-2.tmp", "song.tmp", ".viboplr-dl-1-2.mp3"] {
+            assert_eq!(orphan_temp_pid(other), None, "{other}");
+        }
+    }
+
+    #[test]
+    fn test_sweep_removes_dead_processes_temps_and_keeps_live_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        // A pid this high is never alive.
+        let dead = dir.path().join(".viboplr-dl-4000000000-3.tmp");
+        let dead_old = dir.path().join(".viboplr-stage-4000000001.tmp");
+        let mine = dir.path().join(format!(".viboplr-dl-{}-9.tmp", std::process::id()));
+        let music = dir.path().join("01 Song.mp3");
+        for p in [&dead, &dead_old, &mine, &music] {
+            std::fs::write(p, b"x").unwrap();
+        }
+        sweep_orphaned_temps(dir.path());
+        assert!(!dead.exists() && !dead_old.exists());
+        assert!(mine.exists(), "a download in flight in this process is never swept");
+        assert!(music.exists());
+    }
+
+    #[test]
+    fn test_stage_tokens_differ_within_one_clock_tick() {
+        let tokens: std::collections::HashSet<String> = (0..1000).map(|_| stage_token()).collect();
+        assert_eq!(tokens.len(), 1000);
+        let id = format!("{}.flac", tokens.iter().next().unwrap());
+        assert!(parse_stage_id(&id).is_ok(), "{id} must pass the stageId check");
     }
 
     #[test]
