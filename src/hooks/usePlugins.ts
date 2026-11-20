@@ -216,8 +216,11 @@ export const DEFAULT_INFO_TYPE_PRIORITY: Record<string, Record<string, number>> 
   // `ensure_builtin_rows` (db/mod.rs), not by this map — it has no manifest for the sync/reset
   // loops to walk. Listed here as documentation of the full default chain.
   // Keys are provider keys (utils/providerKey.ts): the bundled Lyrics plugin
-  // offers LRCLIB and Lyrics.ovh as two providers of one type.
-  lyrics: { "core:local-lyrics": 50, "lyrics/lrclib": 100, genius: 200, "lyrics/lyrics-ovh": 300, google: 400 },
+  // offers LRCLIB and Lyrics.ovh as two providers of one type. The Community
+  // plugin answers synced lyrics only, so it sits right after LRCLIB, the other
+  // synced source. (A plain answer doesn't end the walk — isProvisionalAnswer —
+  // so it is asked wherever it sits; the place decides which synced copy wins.)
+  lyrics: { "core:local-lyrics": 50, "lyrics/lrclib": 100, community: 150, genius: 200, "lyrics/lyrics-ovh": 300, google: 400 },
   artist_bio: { lastfm: 100, genius: 200 },
   album_wiki: { lastfm: 100, genius: 200 },
 };
