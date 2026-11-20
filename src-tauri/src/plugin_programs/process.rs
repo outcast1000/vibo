@@ -84,6 +84,11 @@ pub fn pid_alive(pid: u32) -> bool {
     }
     #[cfg(unix)]
     {
+        // No real pid exceeds i32::MAX; cast, it would turn negative and kill()
+        // would address a process group (-1 = every process we may signal).
+        if pid > i32::MAX as u32 {
+            return false;
+        }
         if unsafe { libc::kill(pid as i32, 0) } == 0 {
             return true;
         }
@@ -296,6 +301,10 @@ mod tests {
         assert!(!pid_alive(0));
         // Far above any real pid range on the platforms we ship.
         assert!(!pid_alive(0x7fff_fff0));
+        // Above i32::MAX the cast turns negative; u32::MAX would be kill(-1, 0),
+        // which succeeds (we may signal our own processes) and read as alive.
+        assert!(!pid_alive(u32::MAX));
+        assert!(!pid_alive(i32::MAX as u32 + 1));
     }
 
     #[test]
