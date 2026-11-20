@@ -25,6 +25,11 @@ export interface BackfillOpts {
   context?: PlaylistContext | null;
   resolveTail: () => Promise<QueueTrack[]>;
   tailErrorMessage?: string;
+  /** Called when the list came back empty (or failed) while the play was
+   *  still live — never when it was cancelled or replaced by another play.
+   *  For a caller whose empty answer needs its own words (radio's "nothing
+   *  like X is in your library"); `tailErrorMessage` still notifies if set. */
+  onEmpty?: () => void;
   /** Who is building the list (a plugin's name), shown while it loads. */
   source?: string | null;
   /** The surface that started the play (a Home card). */

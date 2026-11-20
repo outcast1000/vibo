@@ -299,7 +299,7 @@ export function usePlayActions({
   // Resolves with the tracks that landed (an extend's appended tail, a
   // switch's whole list; empty when it failed, was redundant, or was dropped),
   // so callers can report exactly what landed.
-  const playWithBackfill = useCallback(async ({ head, context, resolveTail, tailErrorMessage, source, originKey }: BackfillPlay): Promise<QueueTrack[]> => {
+  const playWithBackfill = useCallback(async ({ head, context, resolveTail, tailErrorMessage, onEmpty, source, originKey }: BackfillPlay): Promise<QueueTrack[]> => {
     const ctx = context ?? null;
     const info = {
       name: ctx?.name ?? head[0]?.title ?? "tracks",
@@ -334,6 +334,7 @@ export function usePlayActions({
       if (!list || list.length === 0) {
         endLoadingPlay(loading, { kind: "nothing" });
         if (tailErrorMessage) notify(withFailureReason(tailErrorMessage, failureReason), { kind: "error" });
+        onEmpty?.();
         return [];
       }
       // Ends the loading play itself (a new session), releasing any waiter.
@@ -357,6 +358,7 @@ export function usePlayActions({
       const message = withFailureReason(tailErrorMessage ?? `Couldn't load the rest of “${info.name}”.`, failureReason);
       if (tailErrorMessage) notify(message, { kind: "error" });
       endLoadingPlay(loading, { kind: "nothing" }, message);
+      onEmpty?.();
       return [];
     }
     const appended = appendToPlaySession(gen, dropPlayedHead(head, tail));
@@ -415,13 +417,19 @@ export function usePlayActions({
       // The seed opens the station metadata-only, as for a seed whose artist
       // is in the library; the stream resolvers find it at play time.
       const externalSeed = buildExternalQueueTrack(seed.title, seed.artistName, { albumTitle: seed.albumTitle });
-      // Set inside resolveTail; `as` keeps TS from narrowing it to "found".
-      let outcome = "found" as "found" | "nothing" | "failed";
+      // Set inside resolveTail, read by onEmpty — which runs only while the
+      // play is still live, so a cancelled or replaced station says nothing
+      // (cancelling is not a failure).
+      let failed = false;
       const landed = await playWithBackfill({
         head: [],
         context: { name: contextName, imagePath: seed.coverPath ?? null, source: "radio" },
-        // Failures are reported below, not by the backfill: an empty list is
-        // "nothing like it here" (a warning), not a load error.
+        // An empty list is "nothing like it here" (a warning), not a load
+        // error, so the wording is ours rather than tailErrorMessage's.
+        onEmpty: () => {
+          if (failed) notify("Failed to start radio.", { kind: "error" });
+          else notify(`Couldn't start radio — nothing like "${seed.title}" is in your library.`, { kind: "warning" });
+        },
         resolveTail: async () => {
           try {
             const hints = await gatherRadioHints({ title: seed.title, artistName: seed.artistName, invokeInfoFetch, pluginNames });
@@ -434,26 +442,15 @@ export function usePlayActions({
                 options: radioOptions,
               })
               : [];
-            if (rest.length === 0) {
-              outcome = "nothing";
-              return [];
-            }
-            return [externalSeed, ...rest.map(trackToQueueTrack)];
+            return rest.length === 0 ? [] : [externalSeed, ...rest.map(trackToQueueTrack)];
           } catch (e) {
             console.error("Failed to build a radio station from hints:", e);
-            outcome = "failed";
+            failed = true;
             return [];
           }
         },
       });
-      if (landed.length > 0) return started(landed.length, externalSeed);
-      // Empty with neither flag set: cancelled, or replaced by another play.
-      if (outcome === "nothing") {
-        notify(`Couldn't start radio — nothing like "${seed.title}" is in your library.`, { kind: "warning" });
-      } else if (outcome === "failed") {
-        notify("Failed to start radio.", { kind: "error" });
-      }
-      return null;
+      return landed.length > 0 ? started(landed.length, externalSeed) : null;
     };
 
     try {

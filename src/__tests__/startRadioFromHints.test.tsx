@@ -31,7 +31,7 @@ function libTrack(id: number, title: string): Track {
   };
 }
 
-function mount(fromHints: Track[] | Error) {
+function mount(fromHints: Track[] | Error, opts: { live?: boolean } = {}) {
   vi.mocked(invoke).mockImplementation(async (cmd: string) => {
     if (cmd === "build_radio_station") return { seedInLibrary: false, tracks: [] };
     if (cmd === "build_radio_from_hints") {
@@ -48,7 +48,7 @@ function mount(fromHints: Track[] | Error) {
     enqueueTracks: vi.fn(),
     appendToPlaySession: vi.fn(() => null),
     beginLoadingPlay: beginLoadingPlay as never,
-    isLoadingPlayLive: vi.fn(() => true),
+    isLoadingPlayLive: vi.fn(() => opts.live ?? true),
     endLoadingPlay: vi.fn(),
     setPlaylistContext: vi.fn(),
     albums: [], artists: [], tags: [],
@@ -104,5 +104,18 @@ describe("startRadio from hints", () => {
     expect(await startRadio(seed)).toBeNull();
     expect(playTracks).not.toHaveBeenCalled();
     expect(notify).toHaveBeenCalledWith("Failed to start radio.", { kind: "error" });
+  });
+
+  it("says nothing when the station was cancelled before it found nothing or failed", async () => {
+    // Cancelling is not a failure (conventions.md "Play With Backfill").
+    gatherRadioHints.mockResolvedValue(hints);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    for (const answer of [[], new Error("db")]) {
+      const { startRadio, playTracks, notify } = mount(answer, { live: false });
+      expect(await startRadio(seed)).toBeNull();
+      expect(playTracks).not.toHaveBeenCalled();
+      expect(notify).not.toHaveBeenCalled();
+      cleanup();
+    }
   });
 });
