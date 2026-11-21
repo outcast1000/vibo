@@ -1,7 +1,7 @@
 {
   "id": "artwork",
   "name": "Artwork",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "runtime": "worker",
   "permissions": [
     "network:www.theaudiodb.com",

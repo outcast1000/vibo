@@ -92,6 +92,21 @@ describe.each(["artwork", "lyrics"])("bundled %s plugin", (id) => {
   });
 });
 
+describe("Artwork's User-Agent", () => {
+  it("names the app, a version and a contact, which MusicBrainz requires", async () => {
+    const agents: string[] = [];
+    const fetch = vi.fn((_url: string, init?: { headers?: Record<string, string> }) => {
+      agents.push(init?.headers?.["User-Agent"] ?? "");
+      return Promise.resolve({ status: 200, json: () => Promise.resolve({ artists: [] }) });
+    });
+    const p = load("artwork", fetch as unknown as (url: string) => Promise<unknown>);
+    await p.handlers.get(handlerKey("artist", "musicbrainz"))!("Björk");
+    expect(fetch.mock.calls[0][0]).toContain("musicbrainz.org");
+    // A bare "Vibo" is answered 403 by MusicBrainz.
+    expect(agents[0]).toMatch(/^Viboplr\/\d+\.\d+\.\d+ \( https:\/\/\S+ \)$/);
+  });
+});
+
 describe("status panels", () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });

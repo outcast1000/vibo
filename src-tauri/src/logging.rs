@@ -76,6 +76,20 @@ impl FileSink {
 
 static FILE_SINK: Mutex<FileSink> = Mutex::new(FileSink::Off);
 
+/// Dependencies whose warnings describe a file rather than a fault, and are
+/// written once per file read — lofty's "MPEG: Using bitrate to estimate
+/// duration" came 72 times in one session. Only their errors reach the file.
+const QUIET_DEPENDENCIES: &[&str] = &["lofty"];
+
+/// Whether a record belongs in the log file.
+fn wanted_in_file(metadata: &Metadata) -> bool {
+    let target = metadata.target();
+    let quiet = QUIET_DEPENDENCIES
+        .iter()
+        .any(|dep| target == *dep || target.starts_with(&format!("{dep}::")));
+    !quiet || metadata.level() <= Level::Error
+}
+
 pub struct CombinedLogger {
     env_logger: env_logger::Logger,
     file_enabled: bool,
@@ -91,7 +105,7 @@ impl Log for CombinedLogger {
             self.env_logger.log(record);
         }
 
-        if self.file_enabled {
+        if self.file_enabled && wanted_in_file(record.metadata()) {
             let now = chrono::Local::now();
             let level = match record.level() {
                 Level::Error => "ERROR",
@@ -183,7 +197,22 @@ pub fn open_file_log() {
 
 #[cfg(test)]
 mod tests {
-    use super::{rotate_previous_log, FileSink, PREV_LOG_NAME};
+    use super::{rotate_previous_log, wanted_in_file, FileSink, PREV_LOG_NAME};
+    use log::{Level, Metadata};
+
+    fn meta(target: &str, level: Level) -> Metadata<'_> {
+        Metadata::builder().target(target).level(level).build()
+    }
+
+    #[test]
+    fn test_lofty_warnings_stay_out_of_the_file_but_its_errors_do_not() {
+        assert!(!wanted_in_file(&meta("lofty::mpeg::properties", Level::Warn)));
+        assert!(!wanted_in_file(&meta("lofty", Level::Info)));
+        assert!(wanted_in_file(&meta("lofty::mp4::atom_info", Level::Error)));
+        // Our own warnings, and a crate that merely starts with the same letters, are kept.
+        assert!(wanted_in_file(&meta("viboplr_lib::scanner", Level::Warn)));
+        assert!(wanted_in_file(&meta("loftyish", Level::Warn)));
+    }
 
     #[test]
     fn test_rotate_keeps_previous_session_log() {

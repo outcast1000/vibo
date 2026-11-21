@@ -37,8 +37,10 @@ function activate(api) {
   // Sent on every request, including the image downloads the host makes for
   // our answers: the host's default is a browser-style User-Agent, which some
   // filtering proxies block from a non-browser client, and archive.org serves
-  // an HTML page instead of the image to it.
-  var CLIENT_HEADERS = { "User-Agent": "Vibo" };
+  // an HTML page instead of the image to it. MusicBrainz also refuses (403) a
+  // bare name with no version or contact — it asks for "Name/version ( contact )"
+  // — so the plain "Vibo" this used to send left every MusicBrainz lookup failing.
+  var CLIENT_HEADERS = { "User-Agent": "Viboplr/1.1.2 ( https://viboplr.com )" };
   // The image worker resolves one entity at a time, so a source that never
   // answers would hold up every image queued behind it.
   var FETCH_TIMEOUT_MS = 20000;
