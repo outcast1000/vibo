@@ -46,6 +46,50 @@
       <div class="timeline" id="timeline">
         <div class="timeline-entry reveal">
         <div class="timeline-header">
+          <span class="timeline-version">Viboplr v1.0.123</span>
+          <span class="timeline-date">November 21, 2026</span>
+        </div>
+        <div class="timeline-body">
+          <h4>Features</h4>
+          <ul>
+          <li><strong>mcp</strong>: synced-lyrics guide uses the Whisper plugin's sync_lyrics</li>
+          <li><strong>plugins</strong>: Community's lyrics provider defaults right after LRCLIB</li>
+          <li><strong>plugins</strong>: lyrics:changed — api.lyrics.onChanged</li>
+          <li><strong>lyrics</strong>: always save lyrics into the song's files</li>
+          <li><strong>detail</strong>: &quot;Not in library&quot; switch; hero Play/Radio play what is shown</li>
+          <li><strong>radio</strong>: station from provider hints when neither seed nor artist is in the library</li>
+          <li><strong>lyrics</strong>: read lyrics files during the library scan, not per view</li>
+          <li><strong>mcp</strong>: synced-lyrics guide — time lyrics from the audio with Whisper</li>
+          <li><strong>mcp</strong>: save_lyrics tool — PUT /v1/lyrics saves lyrics like the editor</li>
+          <li><strong>lyrics</strong>: edit lyrics from the track's own files in place</li>
+          <li><strong>lyrics</strong>: Write/Sync lyrics editor with tap-to-sync</li>
+          <li><strong>mini</strong>: short names in the compact mini player row</li>
+          <li><strong>mcp</strong>: one-click install of the MCP server into Claude Desktop, Claude Code and Cursor</li>
+          <li><strong>sidebar</strong>: right-click a plugin entry for details / disable / uninstall</li>
+          <li><strong>playback</strong>: log the Library stream resolver in the resolver log</li>
+          <li><strong>tools</strong>: opt-in automatic updates per managed tool</li>
+          </ul>
+          <h4>Bug Fixes</h4>
+          <ul>
+          <li><strong>artwork, logging</strong>: MusicBrainz accepts our User-Agent; lofty warnings stay out of the log file</li>
+          <li><strong>programs</strong>: pid_alive refuses pids above i32::MAX</li>
+          <li><strong>downloads</strong>: concurrent assistant downloads no longer share a temp file</li>
+          <li><strong>radio</strong>: a cancelled hints station says nothing</li>
+          <li><strong>tools</strong>: clear the Update button after an automatic tool update</li>
+          <li><strong>playback</strong>: a row's play button walks the whole resolver chain again</li>
+          <li><strong>window</strong>: clicking the unfocused main window no longer moves it on macOS</li>
+          <li><strong>play</strong>: say why a backfilled play failed</li>
+          <li><strong>now-playing</strong>: resolve the bar's art at render instead of stamping it</li>
+          </ul>
+        </div>
+        <div class="timeline-assets">
+            <a href="https://github.com/outcast1000/vibo/releases/download/v1.0.123/Viboplr_1.0.123_aarch64.dmg" class="timeline-asset-link"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Viboplr_1.0.123_aarch64.dmg</a>
+            <a href="https://github.com/outcast1000/vibo/releases/download/v1.0.123/Viboplr_1.0.123_x64-setup.exe" class="timeline-asset-link"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Viboplr_1.0.123_x64-setup.exe</a>
+        </div>
+      </div>
+      
+        <div class="timeline-entry reveal">
+        <div class="timeline-header">
           <span class="timeline-version">Viboplr v1.0.122</span>
           <span class="timeline-date">November 16, 2026</span>
         </div>
