@@ -866,3 +866,53 @@
 .np-action-btn:disabled {
   opacity: 0.22;
 }
+
+/* Song intro: title over artist · album, top-left (the action row holds the
+   top-right; the fullscreen control bar the bottom). Shown when a song starts,
+   faded out by NowPlayingIntro's timer. One-shot, opacity + transform only. */
+.np-intro {
+  position: absolute;
+  top: 16px;
+  left: 20px;
+  z-index: 3;
+  max-width: min(60%, 560px);
+  pointer-events: none;
+  /* No fill mode: a filled animation would hold opacity at 1 over .is-leaving. */
+  animation: np-intro-in var(--dur-slow) var(--ease-out-quart);
+  transition: opacity var(--dur-slower) ease;
+}
+.np-intro.is-leaving {
+  opacity: 0;
+}
+@keyframes np-intro-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}
+.np-intro-title {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--np-text-primary);
+  text-shadow: var(--np-text-shadow);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.np-intro-sub {
+  margin-top: 2px;
+  font-size: var(--fs-sm);
+  color: var(--np-text-secondary);
+  text-shadow: var(--np-text-shadow-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.now-playing-view--fs .np-intro {
+  top: 24px;
+  left: 32px;
+}
+.now-playing-view--fs .np-intro-title {
+  font-size: clamp(var(--fs-xl), 1.2vh + 0.6vw, 34px);
+}
+.now-playing-view--fs .np-intro-sub {
+  font-size: clamp(var(--fs-base), 0.8vh + 0.4vw, var(--fs-xl));
+}

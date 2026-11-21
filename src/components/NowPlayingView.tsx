@@ -131,6 +131,31 @@ interface NowPlayingViewProps {
   onToggleCues?: () => void;
 }
 
+/** How long the song intro stays up before it fades. */
+export const NOW_PLAYING_INTRO_MS = 6000;
+
+/** "What is this?" — title over artist · album, top-left, when a song starts
+ *  (and when the view opens, e.g. entering fullscreen), then gone. The view
+ *  draws no permanent title (issue #136: it crowded 1080p), and in fullscreen
+ *  the control bar that carries it is idle-hidden most of the time, so a new
+ *  song had no name on screen. Keyed by the track by the caller, so each song
+ *  mounts a fresh one; the fade-out is a timer flipping a class, so reduced
+ *  motion still shows it and still takes it away (it just doesn't animate).
+ *  aria-hidden: the bars already expose the same text. */
+function NowPlayingIntro({ title, subtitle }: { title: string; subtitle: string }) {
+  const [leaving, setLeaving] = useState(false);
+  useEffect(() => {
+    const id = setTimeout(() => setLeaving(true), NOW_PLAYING_INTRO_MS);
+    return () => clearTimeout(id);
+  }, []);
+  return (
+    <div className={`np-intro${leaving ? " is-leaving" : ""}`} aria-hidden="true" data-testid="np-intro">
+      <div className="np-intro-title">{title}</div>
+      {subtitle && <div className="np-intro-sub">{subtitle}</div>}
+    </div>
+  );
+}
+
 /** Centered, lean-back lyrics display. Synced (karaoke) when LRC timing is
     available, otherwise centered plain text. Synced auto-scrolls to the active
     line (pausing briefly after manual scroll) and lines are tap-to-seek; plain
@@ -715,6 +740,15 @@ export function NowPlayingView({
           </div>
         )}
       </div>
+      {/* The song's name, briefly, when it starts. Not over a clip, which
+          owns the whole view and usually titles itself. */}
+      {!clipOwnsView && track.title && (
+        <NowPlayingIntro
+          key={track.key}
+          title={track.title}
+          subtitle={[track.artist_name, track.album_title].filter(Boolean).join(" · ")}
+        />
+      )}
       {/* Keyed by the sheet's save time as well as the track, so a sheet
           rewritten mid-song remounts cleanly rather than diffing elements
           keyed by their index in the old sheet. */}
