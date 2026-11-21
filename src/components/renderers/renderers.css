@@ -80,6 +80,14 @@ a.gallery-source:hover { opacity: 0.8; text-decoration: underline; }
 
 /* ── Lyrics editor (LyricsEditor) ── */
 .lyrics-editor-panel { display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--border); border-radius: var(--ds-radius-card); background: var(--bg-secondary); padding: 10px 12px 12px; }
+/* A plugin's draft under review (LyricsDraftReview): accent-tinted so it reads
+   as "not saved yet", skin tokens only. */
+.lyrics-draft-banner { display: flex; flex-direction: column; gap: 8px; padding: 8px 12px; border-radius: var(--ds-radius); background: color-mix(in srgb, var(--accent) 10%, var(--bg-secondary)); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); }
+.lyrics-draft-banner-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.lyrics-draft-banner-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.lyrics-draft-title { font-size: var(--fs-sm); font-weight: 600; color: var(--text-primary); }
+.lyrics-draft-note { font-size: var(--fs-xs); color: var(--text-secondary); }
+.lyrics-draft-current { margin: 0; max-height: 220px; overflow-y: auto; white-space: pre-wrap; font-family: inherit; font-size: var(--fs-xs); line-height: 1.5; color: var(--text-secondary); background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--ds-radius); padding: 8px 10px; }
 .lyrics-editor-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .lyrics-sync-clock { font-variant-numeric: tabular-nums; font-size: var(--fs-sm); color: var(--text-secondary); }
 .lyrics-editor { width: 100%; min-height: 280px; box-sizing: border-box; background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--ds-radius); padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: var(--fs-sm); line-height: 1.6; resize: vertical; }

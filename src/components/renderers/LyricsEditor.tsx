@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 import { getPlaybackPosition, usePlaybackPosition } from "../../playback/positionStore";
 import { scrollLineToCenter } from "../../utils/lyrics";
 import {
@@ -35,6 +35,18 @@ interface LyricsEditorProps {
   /** Persist; rejects with the reason when the save failed. */
   onSave: (text: string, kind: LyricsKind) => Promise<void>;
   onClose: () => void;
+  /** What "unchanged" means — the song's current lyrics — when the editor
+   *  opens on something else (a plugin's draft under review). Defaults to
+   *  `initialText`. Save is offered whenever the text differs from it. */
+  baselineText?: string;
+  /** Drawn above the tabs (the review banner). */
+  banner?: ReactNode;
+  /** Reviewing a draft: the buttons read Discard draft / Save, and leaving
+   *  asks "Discard this draft?". */
+  review?: boolean;
+  /** Save is held back for this reason (shown in the status line) — a review
+   *  whose current lyrics haven't been read yet. */
+  saveBlockedReason?: string | null;
 }
 
 type Tab = "write" | "sync";
@@ -45,7 +57,7 @@ type Tab = "write" | "sync";
  * while the song plays. Whether it saves as synced or plain is read off the
  * text (`detectLyricsKind`) — there is no type picker to get wrong.
  */
-export function LyricsEditor({ initialText, live, seek, onSave, onClose }: LyricsEditorProps) {
+export function LyricsEditor({ initialText, live, seek, onSave, onClose, baselineText, banner, review = false, saveBlockedReason = null }: LyricsEditorProps) {
   const [text, setText] = useState(initialText);
   const [tab, setTab] = useState<Tab>("write");
   const [cursor, setCursor] = useState(() => firstUntimedIndex(parseEditorLines(initialText)));
@@ -59,7 +71,9 @@ export function LyricsEditor({ initialText, live, seek, onSave, onClose }: Lyric
   const stats = useMemo(() => lyricsStats(lines), [lines]);
   const kind = useMemo(() => detectLyricsKind(text), [text]);
   const syncable = useMemo(() => syncableIndices(lines), [lines]);
-  const dirty = text !== initialText;
+  const dirty = text !== (baselineText ?? initialText);
+  // Leaving loses work: an edit, or a draft nobody has accepted yet.
+  const losesWork = review || text !== initialText;
   const empty = text.trim() === "";
 
   const position = usePlaybackPosition(live && tab === "sync");
@@ -144,7 +158,7 @@ export function LyricsEditor({ initialText, live, seek, onSave, onClose }: Lyric
   };
 
   const save = async () => {
-    if (saving || empty || !dirty) return;
+    if (saving || empty || !dirty || saveBlockedReason) return;
     setSaving(true);
     setError(null);
     try {
@@ -158,7 +172,7 @@ export function LyricsEditor({ initialText, live, seek, onSave, onClose }: Lyric
   };
 
   const requestClose = () => {
-    if (dirty && !confirmDiscard) { setConfirmDiscard(true); return; }
+    if (losesWork && !confirmDiscard) { setConfirmDiscard(true); return; }
     onClose();
   };
 
@@ -209,6 +223,7 @@ export function LyricsEditor({ initialText, live, seek, onSave, onClose }: Lyric
 
   return (
     <div className="lyrics-editor-panel" onKeyDown={handleRootKeyDown}>
+      {banner}
       <div className="lyrics-editor-head">
         <div className="ds-tabs ds-tabs--compact ds-tabs--no-border" role="tablist" aria-label="Edit mode">
           <button role="tab" aria-selected={tab === "write"} className={`ds-tab${tab === "write" ? " active" : ""}`} onClick={() => setTab("write")}>Write</button>
@@ -306,6 +321,8 @@ export function LyricsEditor({ initialText, live, seek, onSave, onClose }: Lyric
         <div className="lyrics-editor-status" role="status">
           {error ? (
             <span className="lyrics-editor-error">{error}</span>
+          ) : saveBlockedReason ? (
+            <span>{saveBlockedReason}</span>
           ) : (
             <>
               <span>{summary}</span>
@@ -316,14 +333,14 @@ export function LyricsEditor({ initialText, live, seek, onSave, onClose }: Lyric
         <div className="lyrics-editor-buttons">
           {confirmDiscard ? (
             <>
-              <span className="lyrics-editor-confirm">Discard your changes?</span>
+              <span className="lyrics-editor-confirm">{review ? "Discard this draft?" : "Discard your changes?"}</span>
               <button className="ds-btn ds-btn--sm ds-btn--secondary" onClick={() => setConfirmDiscard(false)}>Keep editing</button>
               <button className="ds-btn ds-btn--sm ds-btn--danger" onClick={onClose}>Discard</button>
             </>
           ) : (
             <>
-              <button className="ds-btn ds-btn--sm ds-btn--secondary" onClick={requestClose} disabled={saving} title="Esc">Cancel</button>
-              <button className="ds-btn ds-btn--sm ds-btn--primary" onClick={() => void save()} disabled={saving || empty || !dirty} title="⌘S">
+              <button className="ds-btn ds-btn--sm ds-btn--secondary" onClick={requestClose} disabled={saving} title="Esc">{review ? "Discard draft" : "Cancel"}</button>
+              <button className="ds-btn ds-btn--sm ds-btn--primary" onClick={() => void save()} disabled={saving || empty || !dirty || !!saveBlockedReason} title="⌘S">
                 {saving ? "Saving…" : "Save"}
               </button>
             </>

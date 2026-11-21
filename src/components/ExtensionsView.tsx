@@ -99,8 +99,9 @@ interface ExtensionsViewProps {
   dependencies?: DependenciesApi;
   /** One-shot tab switch from elsewhere (Settings' "Open Tools"); bump `seq` to re-fire.
    *  `detailId` also opens that extension's detail pane (a plugin's own
-   *  "Extension settings" link, `requestAction("open-extension-settings")`). */
-  tabRequest?: { tab: ExtTab; seq: number; detailId?: string } | null;
+   *  "Extension settings" link, `requestAction("open-extension-settings")`);
+   *  `configMode` scrolls that pane to its Configuration section. */
+  tabRequest?: { tab: ExtTab; seq: number; detailId?: string; configMode?: boolean } | null;
   style?: React.CSSProperties;
 }
 
@@ -605,7 +606,7 @@ function PluginTools({ pluginId, dependencies }: { pluginId: string; dependencie
 
 function PluginDetail({
   ext, installing, busy, onUpdate, onUninstall, onToggleEnabled, onInstall,
-  getPluginViewData, onPluginAction, autoScrollToConfig,
+  getPluginViewData, onPluginAction, autoScrollToConfig, scrollNonce,
   contributions, contributionVisibility, onSetContributionEnabled,
   onApprovePermissions, onRevokePermissions, onNotify, dependencies,
 }: {
@@ -615,6 +616,9 @@ function PluginDetail({
   getPluginViewData?: (pluginId: string, viewId: string) => PluginViewData | undefined;
   onPluginAction?: (pluginId: string, actionId: string, data?: unknown) => void;
   autoScrollToConfig?: boolean;
+  /** Changes on every request to scroll there, so a second request for the
+   *  pane already open scrolls again. */
+  scrollNonce?: number;
   contributions?: PluginContribution[];
   contributionVisibility?: ContributionVisibility;
   onSetContributionEnabled?: (key: string, enabled: boolean) => void;
@@ -642,7 +646,7 @@ function PluginDetail({
     if (autoScrollToConfig && settingsPanelId) {
       configRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     }
-  }, [autoScrollToConfig, settingsPanelId]);
+  }, [autoScrollToConfig, settingsPanelId, scrollNonce]);
 
   return (
     <div className="ext-detail">
@@ -974,7 +978,7 @@ export default function ExtensionsView(props: ExtensionsViewProps) {
   const [uninstallPrompt, setUninstallPrompt] = useState<{ id: string; name: string; revertsToBuiltin?: boolean } | null>(null);
   // Full-page plugin detail navigation (replaces the card grid; back returns).
   // `configMode` scrolls straight to the Configuration section.
-  const [detail, setDetail] = useState<{ id: string; configMode: boolean } | null>(null);
+  const [detail, setDetail] = useState<{ id: string; configMode: boolean; nonce?: number } | null>(null);
   const openDetail = (id: string, configMode = false) => setDetail({ id, configMode });
   const closeDetail = () => setDetail(null);
 
@@ -1027,7 +1031,7 @@ export default function ExtensionsView(props: ExtensionsViewProps) {
   if (tabRequest && tabRequest.seq !== seenTabRequest) {
     setSeenTabRequest(tabRequest.seq);
     switchTab(tabRequest.tab);
-    if (tabRequest.detailId) setDetail({ id: tabRequest.detailId, configMode: false });
+    if (tabRequest.detailId) setDetail({ id: tabRequest.detailId, configMode: !!tabRequest.configMode, nonce: tabRequest.seq });
   }
 
   const kindFilter = tab === "skins" ? "skin" : "plugin";
@@ -1344,6 +1348,7 @@ export default function ExtensionsView(props: ExtensionsViewProps) {
               installing={installing.has(detailExt.id)}
               busy={busy}
               autoScrollToConfig={detail?.configMode}
+              scrollNonce={detail?.nonce}
               onUpdate={() => onUpdateExtension(detailExt.id)}
               onUninstall={() => setUninstallPrompt({ id: detailExt.id, name: detailExt.name, revertsToBuiltin: detailExt.revertsToBuiltin })}
               onToggleEnabled={() => onToggleEnabled(detailExt.id, "plugin")}

@@ -1,4 +1,8 @@
 import { renderers } from "./renderers";
+import { LyricsDraftReview } from "./renderers/LyricsDraftReview";
+import { closeLyricsDraft, useLyricsDraft } from "../utils/lyricsDrafts";
+import type { CurrentLyrics } from "./renderers/LyricsDraftReview";
+import type { LyricsKind } from "../utils/lyricsEditor";
 import type { InfoEntity } from "../types/informationTypes";
 import { useInformationTypes } from "../hooks/useInformationTypes";
 import type { OpenInfoArgs } from "../hooks/useRetrieveModal";
@@ -99,6 +103,9 @@ export function InformationSections({
   const { sections, refresh, reloadCache, getTypeMeta, activate } = useInformationTypes({ entity, exclude, disabled: pluginSectionsDisabled, invokeInfoFetch, pluginNames });
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const entityKey = entity ? buildEntityKey(entity) : null;
+  // A plugin's lyrics draft waiting for review on this track (review-lyrics):
+  // the lyrics tab opens on it, in the editor, whatever the tab holds now.
+  const lyricsDraft = useLyricsDraft(entity?.kind === "track" ? { name: entity.name, artistName: entity.artistName } : null);
   const rendererContext = useMemo(
     () => (livePosition != null || onSeek ? { livePosition, seek: onSeek } : undefined),
     [livePosition, onSeek],
@@ -439,6 +446,28 @@ export function InformationSections({
             );
           }
           const Renderer = renderers[s.displayKind];
+          if (s.displayKind === "lyrics" && lyricsDraft && entity?.kind === "track") {
+            const loaded = s.state.kind === "loaded" ? (s.state.data as { text?: string; kind?: string } | null) : null;
+            const current: CurrentLyrics =
+              // The section has no error state of its own: a chain that failed
+              // ends "empty", which reads as no lyrics.
+              s.state.kind === "loading" ? { state: "loading" }
+                : loaded?.text ? { state: "loaded", text: loaded.text, kind: loaded.kind ?? "plain" }
+                  : { state: "none" };
+            const draft = lyricsDraft;
+            return (
+              <LyricsDraftReview
+                // Per draft: a re-sent draft for this song replaces the editor.
+                key={`${entityKey}|draft|${draft.seq}`}
+                draft={draft}
+                current={current}
+                live={!!rendererContext?.livePosition}
+                seek={rendererContext?.seek}
+                onSave={(text: string, kind: LyricsKind) => handleAction("save-lyrics", { text, kind }, s.name)}
+                onDone={(outcome) => closeLyricsDraft(draft, outcome)}
+              />
+            );
+          }
           return s.state.kind === "loading" ? (
             <div className="info-section-loading">
               <div className="info-section-skeleton" />

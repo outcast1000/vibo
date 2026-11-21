@@ -1,4 +1,6 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
+import { onLyricsDraftClosed, parseLyricsDraft, putLyricsDraft } from "./utils/lyricsDrafts";
+import { requestDetailTab } from "./utils/pendingDetailTab";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -1818,7 +1820,7 @@ function App() {
   const [searchViewModes, setSearchViewModes] = usePersistedSetting<SearchViewModes>("searchViewModes", { tracks: "list", albums: "tiles", artists: "tiles", tags: "tiles" }, restoredRef, { restore: restoreSearchViewModes });
   const [pluginViewMode, setPluginViewMode] = usePersistedSetting<PluginViewMode>("pluginViewMode", "list", restoredRef, { restore: restorePluginViewMode });
   // One-shot "open Extensions on this tab" (Settings → Dependencies → Open Tools).
-  const [extTabRequest, setExtTabRequest] = useState<{ tab: ExtTab; seq: number; detailId?: string } | null>(null);
+  const [extTabRequest, setExtTabRequest] = useState<{ tab: ExtTab; seq: number; detailId?: string; configMode?: boolean } | null>(null);
   const [searchInitialQuery, setSearchInitialQuery] = useState<string | null>(null);
   const [searchQueryKey, setSearchQueryKey] = useState(0);
   // Bumped when a scan/sync changes the library's track population, so the
@@ -1890,8 +1892,16 @@ function App() {
   // Extensions → one plugin's page (installed or gallery-only), for the
   // "these plugins could find it" suggestions. Installing / switching it on
   // stays the user's step there.
-  const showPluginInExtensions = useCallback((pluginId: string) => {
-    setExtTabRequest((prev) => ({ tab: "plugins", seq: (prev?.seq ?? 0) + 1, detailId: pluginId }));
+  // A lyrics review ended — Save or Discard in the editor: tell the plugin
+  // that sent the draft (`api.ui.onAction("review-lyrics:closed")`), so it
+  // never has to guess the outcome from lyric saves.
+  const dispatchUIActionForDrafts = plugins.dispatchUIAction;
+  useEffect(() => onLyricsDraftClosed((o) => {
+    dispatchUIActionForDrafts(o.pluginId, "review-lyrics:closed", { title: o.title, artistName: o.artistName, outcome: o.outcome });
+  }), [dispatchUIActionForDrafts]);
+
+  const showPluginInExtensions = useCallback((pluginId: string, configMode = false) => {
+    setExtTabRequest((prev) => ({ tab: "plugins", seq: (prev?.seq ?? 0) + 1, detailId: pluginId, configMode }));
     library.setView("extensions");
     library.setSelectedArtist(null);
     library.setSelectedAlbum(null);
@@ -2814,7 +2824,25 @@ function App() {
         // A plugin's own "Extension settings" link: Extensions → its detail pane
         // (permissions, contributions). Always the calling plugin — never an id
         // from the payload, so a plugin can't open another's page.
-        showPluginInExtensions(_pluginId);
+        // `section: "configuration"` scrolls to its settings panel (a job's
+        // progress drawn there, Whisper's "Show progress").
+        const section = (payload as { section?: unknown } | null)?.section;
+        showPluginInExtensions(_pluginId, section === "configuration");
+      } else if (action === "review-lyrics") {
+        // Lyrics a plugin isn't sure of (Whisper's transcripts and timings):
+        // open the song's track page with the draft in the lyrics editor. The
+        // user's Save is the approval (the editor's own save, files first);
+        // Discard leaves the song's lyrics as they were. Nothing is saved here.
+        const draft = parseLyricsDraft(_pluginId, pluginNames[_pluginId] ?? _pluginId, payload);
+        if ("error" in draft) {
+          console.error(`Plugin ${_pluginId}: ${draft.error}`);
+          return;
+        }
+        putLyricsDraft(draft);
+        requestDetailTab({ kind: "track", name: draft.title, artistName: draft.artistName }, "lyrics");
+        pushStateRef.current();
+        library.navigateToTrackByName(draft.title, draft.artistName ?? undefined, draft.albumTitle ?? undefined)
+          .catch((e) => console.error("Failed to open the track page for a lyrics review:", e));
       } else if (action === "require-dependency") {
         // A plugin asks the host to surface its platform-aware install modal for a
         // binary dependency (e.g. yt-dlp → ffmpeg). The modal pulls the correct
