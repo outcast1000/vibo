@@ -35,6 +35,9 @@ interface VideoAmbientOverlayProps {
   lyricsOffsetSecs?: number;
   /** Omit to hide the offset control. */
   onLyricsOffsetChange?: (secs: number) => void;
+  /** Bake the offset into the lyrics and save them; omit to hide Save. */
+  onSaveLyricsOffset?: () => void;
+  lyricsOffsetSaving?: boolean;
 }
 
 export function VideoAmbientOverlay({
@@ -52,6 +55,8 @@ export function VideoAmbientOverlay({
   onToggleSubtitles,
   lyricsOffsetSecs = 0,
   onLyricsOffsetChange,
+  onSaveLyricsOffset,
+  lyricsOffsetSaving,
 }: VideoAmbientOverlayProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   // Bump on track change to re-trigger the intro slide-in animation.
@@ -130,6 +135,8 @@ export function VideoAmbientOverlay({
         <LyricsOffsetControl
           offsetSecs={lyricsOffsetSecs}
           onChange={onLyricsOffsetChange}
+          onSave={onSaveLyricsOffset}
+          saving={lyricsOffsetSaving}
           className="video-ambient-offset video-ambient-fade"
         />
       )}

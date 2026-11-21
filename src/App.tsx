@@ -17,7 +17,9 @@ import "./App.css";
 
 import type { Track, QueueTrack, View, ViewMode, Collection, ResolvedTrackSource, Album, Artist, Tag, TrackSelection, OpenedMixtape } from "./types";
 import { isVideoTrack, parseSubsonicUrl, trashLabel } from "./utils";
-import { parseLrc, syncedLyricsFitMedia, lyricOffsetKey, clampLyricOffset, coerceLyricOffsets } from "./utils/lyrics";
+import { parseLrc, syncedLyricsFitMedia, lyricOffsetKey, clampLyricOffset, coerceLyricOffsets, shiftLrc } from "./utils/lyrics";
+import { saveSongLyrics } from "./utils/localLyrics";
+import type { InfoEntity } from "./types/informationTypes";
 
 import { store } from "./store";
 import { parseUrlScheme, localTrackSource, trackToQueueTrack, nextQueueKey, isLocalTrack, effectiveLocalPath, pluginTrackToQueueTrack, trackRowToQueueTrack, trackSelection, queueTrackSelection, isPlayingSelection, isPlayingLibraryRow } from "./queueEntry";
@@ -4857,6 +4859,77 @@ function App() {
     return syncedLyricsFitMedia(lines, durationSecs) ? lines : null;
   }, [playback.currentTrack, playback.durationSecs, nowPlayingLyrics]);
 
+  // "Save timing": bake the current offset into the synced lyrics and save them
+  // through the lyrics editor's own save (`saveSongLyrics`, origin "edit");
+  // `lyrics:changed` then lets Community publish them when the member shares
+  // their lyrics (stored with the duration, so a video-timed sheet is its own).
+  //
+  // - Only lyrics read for THIS track (`nowPlayingLyrics.ready`): after a track
+  //   change the previous song's answer lingers until the new one is read.
+  // - Into the song's files only when it is playing FROM that local file
+  //   (`effectiveLocalPath`). A stream or video's timing (a 20s intro) must not
+  //   land in the album track's tags, which the metadata lookup would find —
+  //   those plays save to Vibo's lyrics cache only.
+  // - The saved amount is taken off the track's offset (captured key — the song
+  //   may change mid-save), not the whole offset: a nudge made during the save
+  //   stays.
+  // - "Saved to X, but Y takes priority" / "couldn't read it back": the file
+  //   holds the shift but the lyrics on screen don't, so the offset is kept and
+  //   the message shown as a warning, not an error.
+  const [lyricsOffsetSavingKey, setLyricsOffsetSavingKey] = useState<string | null>(null);
+  const handleSaveLyricsOffset = useCallback(async () => {
+    const t = playback.currentTrack;
+    const data = nowPlayingLyrics.data;
+    if (!t?.title || !nowPlayingLyrics.ready || nowPlayingLyrics.status !== "loaded" || data?.kind !== "synced" || !data.text) return;
+    const offset = lyricsOffsetSecs;
+    if (offset === 0) return;
+    const key = lyricOffsetKey(t);
+    const localPath = effectiveLocalPath(t, resolvedSource);
+    const entity: InfoEntity = {
+      kind: "track",
+      name: t.title,
+      id: 0,
+      artistName: t.artist_name ?? "",
+      albumTitle: t.album_title ?? "",
+      path: localPath ? `file://${localPath}` : undefined,
+      // The length the lyrics are now timed to: what is decoding, else the
+      // entry's own — a video's intro is part of what Community matches on.
+      durationSecs: playback.durationSecs || t.duration_secs || undefined,
+    };
+    setLyricsOffsetSavingKey(key);
+    try {
+      const result = await saveSongLyrics(entity, shiftLrc(data.text, offset), "synced", "edit", undefined, { files: !!localPath });
+      setLyricsOffsets((prev) => {
+        const remaining = clampLyricOffset((prev[key] ?? 0) - offset);
+        if (remaining === 0) {
+          if (!(key in prev)) return prev;
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        }
+        return prev[key] === remaining ? prev : { ...prev, [key]: remaining };
+      });
+      notify(
+        result.savedTo === "file" ? "Lyrics timing saved to the song's file" : "Lyrics timing saved",
+        { kind: "success" },
+      );
+    } catch (e) {
+      const message = errorText(e);
+      if (message.startsWith("Saved to ")) {
+        console.error("Saved the lyrics timing, but it doesn't show:", e);
+        notify(message, { kind: "warning" });
+      } else {
+        console.error("Failed to save lyrics timing:", e);
+        notify(`Couldn't save the lyrics timing: ${message}`, { kind: "error" });
+      }
+    } finally {
+      setLyricsOffsetSavingKey((k) => (k === key ? null : k));
+    }
+  }, [playback.currentTrack, playback.durationSecs, nowPlayingLyrics, lyricsOffsetSecs, resolvedSource, setLyricsOffsets, notify]);
+  const lyricsOffsetSaving = !!playback.currentTrack && lyricsOffsetSavingKey === lyricOffsetKey(playback.currentTrack);
+  // No Save until the lyrics on screen are this track's.
+  const saveLyricsOffset = nowPlayingLyrics.ready ? handleSaveLyricsOffset : undefined;
+
   // `PluginVisualizerActions.setPlaying`. Idempotent: the visualizer states what
   // it wants, and this compares against live state, so a request that already
   // matches is a no-op rather than a toggle that inverts. `handlePause` is the
@@ -5980,6 +6053,8 @@ function App() {
               onToggleFullscreen={canAudioFullscreen ? toggleAudioFullscreen : undefined}
               lyricsOffsetSecs={lyricsOffsetSecs}
               onLyricsOffsetChange={handleLyricsOffsetChange}
+              onSaveLyricsOffset={saveLyricsOffset}
+              lyricsOffsetSaving={lyricsOffsetSaving}
               lyricsHidden={nowPlayingLyricsHidden}
               about={nowPlayingAbout}
               aboutOpen={nowPlayingAboutOpen}
@@ -6500,6 +6575,8 @@ function App() {
               onPlayQueueIndex={(index) => { queueHook.setQueueIndex(index); playback.handlePlay(queueHook.queue[index]); }}
               lyricsOffsetSecs={lyricsOffsetSecs}
               onLyricsOffsetChange={handleLyricsOffsetChange}
+              onSaveLyricsOffset={saveLyricsOffset}
+              lyricsOffsetSaving={lyricsOffsetSaving}
               onToggleFullscreen={playback.toggleFullscreen}
               isFullscreen={playback.nativeFullscreen}
               syncedLyricLines={videoSyncedLyricLines}
@@ -7328,6 +7405,8 @@ function App() {
               onToggleFullscreen={toggleAudioFullscreen}
               lyricsOffsetSecs={lyricsOffsetSecs}
               onLyricsOffsetChange={handleLyricsOffsetChange}
+              onSaveLyricsOffset={saveLyricsOffset}
+              lyricsOffsetSaving={lyricsOffsetSaving}
               lyricsHidden={nowPlayingLyricsHidden}
               about={nowPlayingAbout}
               aboutOpen={nowPlayingAboutOpen}

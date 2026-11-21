@@ -8,6 +8,10 @@ export type LyricsStatus = "loading" | "loaded" | "empty";
 export interface UseLyricsResult {
   data: LyricsData | null;
   status: LyricsStatus;
+  /** `data` is the current track's. After a track change the previous song's
+   *  answer stays until the new one is read; anything that WRITES what it
+   *  shows (Save timing) must wait for this. */
+  ready: boolean;
 }
 
 interface UseLyricsOpts {
@@ -51,7 +55,7 @@ export function useLyrics({ track, enabled = true, invokeInfoFetch, pluginNames 
     };
   }, [enabled, track?.title, track?.artist_name, track?.album_title, track?.path, track?.duration_secs]);
 
-  const { sections } = useInformationTypes({
+  const { sections, ready } = useInformationTypes({
     entity,
     include: LYRICS_ONLY,
     invokeInfoFetch,
@@ -60,12 +64,12 @@ export function useLyrics({ track, enabled = true, invokeInfoFetch, pluginNames 
 
   return useMemo<UseLyricsResult>(() => {
     const section = sections.find((s) => s.typeId === "lyrics");
-    if (!section) return { data: null, status: "empty" };
-    if (section.state.kind === "loading") return { data: null, status: "loading" };
+    if (!section) return { data: null, status: "empty", ready };
+    if (section.state.kind === "loading") return { data: null, status: "loading", ready };
     if (section.state.kind === "loaded") {
       const d = section.state.data as LyricsData | null;
-      return d?.text ? { data: d, status: "loaded" } : { data: null, status: "empty" };
+      return d?.text ? { data: d, status: "loaded", ready } : { data: null, status: "empty", ready };
     }
-    return { data: null, status: "empty" };
-  }, [sections]);
+    return { data: null, status: "empty", ready };
+  }, [sections, ready]);
 }

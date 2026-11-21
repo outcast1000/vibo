@@ -117,6 +117,9 @@ interface NowPlayingViewProps {
   /** Omit to hide the offset control (it is also hidden for plain lyrics, which
       have no timeline to shift). */
   onLyricsOffsetChange?: (secs: number) => void;
+  /** Bake the offset into the lyrics and save them; omit to hide Save. */
+  onSaveLyricsOffset?: () => void;
+  lyricsOffsetSaving?: boolean;
   /** This song's assistant-written cue sheet (`useCueSheet`), or null. Its
       cards play over the art column — over a visualizer too, since the cues
       describe the song, not the picture. */
@@ -316,6 +319,8 @@ export function NowPlayingView({
   aboutOpen = false,
   lyricsOffsetSecs = 0,
   onLyricsOffsetChange,
+  onSaveLyricsOffset,
+  lyricsOffsetSaving,
   cueSheet,
   cuesHidden = false,
   onToggleCues,
@@ -702,6 +707,8 @@ export function NowPlayingView({
               <LyricsOffsetControl
                 offsetSecs={lyricsOffsetSecs}
                 onChange={onLyricsOffsetChange}
+                onSave={onSaveLyricsOffset}
+                saving={lyricsOffsetSaving}
                 className="np-lyrics-offset"
               />
             )}

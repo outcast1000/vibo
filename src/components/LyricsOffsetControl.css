@@ -55,7 +55,7 @@
   padding: 0 4px;
   font-size: var(--fs-2xs);
   /* Tabular so the readout doesn't jitter the buttons sideways as it steps
-     through 0.5 / 10.0 / −5.0. */
+     through 0.2 / 10.0 / −5.0. */
   font-variant-numeric: tabular-nums;
   font-weight: 600;
 }
@@ -73,3 +73,18 @@
   color: var(--accent);
 }
 
+
+/* Save sits after the arrows, separated by a hairline so it doesn't read as a
+   third nudge. */
+.lyric-offset-save {
+  margin-left: 2px;
+  border-left: 1px solid rgba(var(--overlay-base), 0.18);
+  border-radius: 0 var(--ds-radius) var(--ds-radius) 0;
+}
+.lyric-offset-save:disabled {
+  cursor: default;
+}
+.lyric-offset-save .ds-spinner {
+  width: 12px;
+  height: 12px;
+}

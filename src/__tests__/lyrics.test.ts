@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   parseLrc,
+  shiftLrc,
+  LYRIC_OFFSET_STEP,
   currentSyncedLineIndex,
   activeSyncedLine,
   syncedLyricsFitMedia,
@@ -278,5 +280,49 @@ describe("lyricOffsetKey", () => {
     expect(lyricOffsetKey({ title: "A", artist_name: "X" }))
       .not.toBe(lyricOffsetKey({ title: "B", artist_name: "X" }));
     expect(lyricOffsetKey({ title: "A", artist_name: null })).toBe("track::a");
+  });
+});
+
+describe("shiftLrc (Save timing)", () => {
+  it("moves every line timestamp by the offset, positive = later", () => {
+    const out = shiftLrc("[00:01.50]one\n[01:59.90]two", 0.4);
+    expect(out).toBe("[00:01.90]one\n[02:00.30]two");
+    expect(parseLrc(out).map((l) => l.time)).toEqual([1.9, 120.3]);
+  });
+
+  it("keeps the precision each stamp was written in and handles missing fractions", () => {
+    expect(shiftLrc("[00:10.250]a\n[00:20]b", -0.2)).toBe("[00:10.050]a\n[00:19.80]b");
+  });
+
+  it("clamps at zero, shifts several stamps per line and word-level stamps", () => {
+    expect(shiftLrc("[00:00.10][00:30.00]x <00:30.50>y", -1)).toBe("[00:00.00][00:29.00]x <00:29.50>y");
+  });
+
+  it("leaves header tags and text alone, and is a no-op at zero", () => {
+    const text = "[ar:Björk]\n[offset:+200]\n[00:05.00]Jóga [live]";
+    expect(shiftLrc(text, 0)).toBe(text);
+    expect(shiftLrc(text, 15)).toBe("[ar:Björk]\n[offset:+200]\n[00:20.00]Jóga [live]");
+  });
+
+  it("never touches a time written in the words, a header or an untimed line", () => {
+    const text = "[ti:Live at [1:30]]\n[01:00.00]Meet me at [3:45] tonight\nnote [0:10]";
+    expect(shiftLrc(text, 1)).toBe("[ti:Live at [1:30]]\n[01:01.00]Meet me at [3:45] tonight\nnote [0:10]");
+  });
+
+  it("requires matching brackets", () => {
+    expect(shiftLrc("[00:01.00>x", 1)).toBe("[00:01.00>x");
+  });
+
+  it("carries a rounded fraction into the next second", () => {
+    expect(shiftLrc("[00:01.990]a", 0.005)).toBe("[00:01.995]a");
+    expect(shiftLrc("[00:01.99]a", 0.005)).toBe("[00:02.00]a");
+    expect(shiftLrc("[00:59.99]a", 0.006)).toBe("[01:00.00]a");
+  });
+
+  it("steps 200ms, and repeated steps stay clean", () => {
+    expect(LYRIC_OFFSET_STEP).toBe(0.2);
+    let v = 0;
+    for (let i = 0; i < 3; i++) v = clampLyricOffset(v + LYRIC_OFFSET_STEP);
+    expect(v).toBe(0.6);
   });
 });

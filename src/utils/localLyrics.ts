@@ -104,16 +104,22 @@ export type SongLyricsSave =
  *  same write as a plugin's `api.lyrics.save`). Both announce the change, so
  *  every open view of the song re-reads, and tell plugins (`lyrics:changed`,
  *  from `origin` — who asked for the save). Rejects with the file save's
- *  reason (including "saved, but X still takes priority"). */
+ *  reason (including "saved, but X still takes priority").
+ *
+ *  `files: false` skips the file write — for lyrics timed against a copy that
+ *  isn't the local file (Save timing while a stream or video plays: its intro
+ *  offset must not land in the album track's tags, which the metadata lookup
+ *  would find). */
 export async function saveSongLyrics(
   entity: InfoEntity,
   text: string,
   kind: string,
   origin: LyricsOrigin,
   from?: { pluginId?: string | null },
+  opts?: { files?: boolean },
 ): Promise<SongLyricsSave> {
   let value: Record<string, unknown> | null = null;
-  if (entity.kind === "track") {
+  if (entity.kind === "track" && opts?.files !== false) {
     try {
       value = await saveLocalLyrics(entity, text);
     } catch (e) {

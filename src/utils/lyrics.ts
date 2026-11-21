@@ -23,9 +23,11 @@ export function parseLrc(lrc: string): LrcLine[] {
   return lines;
 }
 
-/** Nudge step for the offset control; Shift takes the coarse one. A music-video
- *  intro is commonly 10-30s, which 0.5s alone would make a clicking exercise. */
-export const LYRIC_OFFSET_STEP = 0.5;
+/** Nudge step for the offset control; Shift takes the coarse one. 0.2s because
+ *  a drift of a quarter second is already visible against the words (0.5s
+ *  overshot it). A music-video intro is commonly 10-30s, which the fine step
+ *  alone would make a clicking exercise. */
+export const LYRIC_OFFSET_STEP = 0.2;
 export const LYRIC_OFFSET_COARSE_STEP = 5;
 /** Past a minute the lyrics are for a different recording, not out of sync. */
 export const LYRIC_OFFSET_MAX = 60;
@@ -76,6 +78,55 @@ export function formatLyricOffset(secs: number): string {
   if (v === 0) return "0.0s";
   const sign = v > 0 ? "+" : "−";
   return `${sign}${Math.abs(v).toFixed(1)}s`;
+}
+
+/** One LRC timestamp, as `shiftLrc` writes it: at least two minute digits and
+ *  the fraction in the precision the original used (centiseconds or ms).
+ *  Rounded once, in the unit written, and split from that — rounding the
+ *  fraction alone would drop its carry (1.995 → "01.99", not "02.00"). */
+function formatLrcStamp(secs: number, msDigits: boolean): string {
+  const unit = msDigits ? 1000 : 100;
+  const total = Math.max(0, Math.round(secs * unit));
+  const mins = Math.floor(total / (60 * unit));
+  const whole = Math.floor(total / unit) % 60;
+  const frac = String(total % unit).padStart(msDigits ? 3 : 2, "0");
+  return `${String(mins).padStart(2, "0")}:${String(whole).padStart(2, "0")}.${frac}`;
+}
+
+function shiftStamp(mm: string, ss: string, frac: string | undefined, offsetSecs: number): string {
+  const base = parseInt(mm, 10) * 60 + parseInt(ss, 10) + (frac ? parseInt(frac, 10) / (frac.length === 3 ? 1000 : 100) : 0);
+  return formatLrcStamp(base + offsetSecs, frac?.length === 3);
+}
+
+/** The run of `[mm:ss.xx]` stamps opening a line (several = a repeated line). */
+const LRC_LINE_STAMPS = /^(?:\[\d{1,3}:\d{2}(?:[.:]\d{2,3})?\])+/;
+const LRC_LINE_STAMP = /\[(\d{1,3}):(\d{2})(?:[.:](\d{2,3}))?\]/g;
+/** Enhanced-LRC word timing, `<mm:ss.xx>`, on a timed line. */
+const LRC_WORD_STAMP = /<(\d{1,3}):(\d{2})(?:[.:](\d{2,3}))?>/g;
+
+/**
+ * Bake a timing offset into LRC text: the timestamps opening each line
+ * (several per line included) and that line's word-level `<mm:ss.xx>` marks
+ * move by `offsetSecs`, with the offset control's sign (positive delays, i.e.
+ * later times). Header tags (`[ar:…]`, `[offset:…]`), untimed lines and the
+ * words themselves — a "[3:45]" sung in a line too — are kept verbatim. A time
+ * pushed before zero lands on zero. This is how "Save timing" writes the nudge
+ * into the lyrics themselves, so the files, the cache and Community carry it
+ * and every player reads it — an `[offset:]` header would be ignored by this
+ * app's own parser and by many others.
+ */
+export function shiftLrc(text: string, offsetSecs: number): string {
+  if (!offsetSecs) return text;
+  return text
+    .split("\n")
+    .map((line) => {
+      const lead = line.match(LRC_LINE_STAMPS);
+      if (!lead) return line;
+      const stamps = lead[0].replace(LRC_LINE_STAMP, (_m, mm: string, ss: string, frac?: string) => `[${shiftStamp(mm, ss, frac, offsetSecs)}]`);
+      const rest = line.slice(lead[0].length).replace(LRC_WORD_STAMP, (_m, mm: string, ss: string, frac?: string) => `<${shiftStamp(mm, ss, frac, offsetSecs)}>`);
+      return stamps + rest;
+    })
+    .join("\n");
 }
 
 /** Storage key for a track's lyric offset. Metadata-keyed, matching the

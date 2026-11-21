@@ -11,6 +11,12 @@ interface LyricsOffsetControlProps {
   onChange: (secs: number) => void;
   /** Host class, so the two surfaces can place it themselves. */
   className?: string;
+  /** Bake the offset into the lyrics and save them (files, cache, Community —
+   *  App's `handleSaveLyricsOffset`). Omit to hide the Save button. */
+  onSave?: () => void;
+  /** A save is running: the button is disabled so a second click can't shift
+   *  the lyrics twice. */
+  saving?: boolean;
 }
 
 /**
@@ -25,12 +31,16 @@ interface LyricsOffsetControlProps {
  * See `lyricPosition`, which owns the sign.
  *
  * Two step sizes because the two problems are different orders of magnitude: a
- * drift is fixed in halves of a second, an intro is not (30 clicks), so Shift
+ * drift is fixed in fifths of a second, an intro is not (75 clicks), so Shift
  * takes 5s at a time. Clicking the readout resets to zero — the offset is
  * per-track and sticky, so "undo whatever I did to this song" has to be one
  * action rather than counting clicks back.
+ *
+ * **Save** (only while an offset is set) writes the nudge into the lyrics
+ * themselves — every timestamp shifted — through the lyrics editor's save, and
+ * the offset goes back to zero. Until then the nudge is this app's alone.
  */
-export function LyricsOffsetControl({ offsetSecs, onChange, className }: LyricsOffsetControlProps) {
+export function LyricsOffsetControl({ offsetSecs, onChange, className, onSave, saving = false }: LyricsOffsetControlProps) {
   const nudge = (dir: -1 | 1, coarse: boolean) => {
     const step = coarse ? LYRIC_OFFSET_COARSE_STEP : LYRIC_OFFSET_STEP;
     onChange(clampLyricOffset(offsetSecs + dir * step));
@@ -70,6 +80,23 @@ export function LyricsOffsetControl({ offsetSecs, onChange, className }: LyricsO
           <polyline points="6 17 11 12 6 7" />
         </svg>
       </button>
+      {onSave && active && (
+        <button
+          className={`lyric-offset-btn lyric-offset-save${saving ? " is-saving" : ""}`}
+          onClick={onSave}
+          disabled={saving}
+          title="Save this timing into the lyrics — the song's file (or Vibo's copy), and Community when it shares your lyrics"
+          aria-label="Save lyrics timing"
+        >
+          {saving ? (
+            <span className="ds-spinner ds-spinner--sm ds-motion-essential" aria-hidden="true" />
+          ) : (
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+          )}
+        </button>
+      )}
     </div>
   );
 }
