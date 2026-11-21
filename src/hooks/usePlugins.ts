@@ -86,6 +86,7 @@ import type {
   PluginWaveformShareHandler,
   PluginDownloadInit,
   PluginAutoContinueRequest,
+  PluginDependencyInstalled,
 } from "../types/plugin";
 import { sanitizePluginRms, type WaveformPluginBridge } from "../waveform/pluginProvider";
 import { PLUGIN_AUTO_CONTINUE_TIMEOUT_MS, type AutoContinuePluginBridge } from "../utils/autoContinue";
@@ -575,6 +576,7 @@ export function usePlugins(
     "lyrics:changed": [],
     "cues:changed": [],
     "ui:context-changed": [],
+    "dependency:installed": [],
   });
   // Plugins currently subscribed to `track:scrobbled` — the plugin half of the
   // Settings → Playback → Scrobbling list. Re-derived on every (un)subscribe to that event.
@@ -2424,6 +2426,8 @@ export function usePlugins(
               latest: d.latestVersion ?? null,
             };
           },
+          onDependencyInstalled: (handler) =>
+            subscribeEvent("dependency:installed", handler as (...args: unknown[]) => void),
           async readAudioTags(paths: string[]) {
             // One invoke for the whole batch: a plugin queueing a finished
             // release calls this once per user action, not once per file.
@@ -3489,6 +3493,27 @@ export function usePlugins(
     () =>
       onCueSheetChanged((change) => {
         dispatchEventTo("cues:changed", (pluginId) => pluginId !== change.pluginId, change);
+      }),
+    [dispatchEventTo],
+  );
+
+  // A tool finished installing (Rust's `dependency-installed`, emitted by the
+  // one install path — a click or an opted-in auto-update) → `dependency:installed`,
+  // only to the plugins whose manifest lists it. `require-dependency` is
+  // fire-and-forget, so without this a plugin could only poll.
+  useEffect(
+    () =>
+      subscribe<{ name: string; version: string }>("dependency-installed", ({ payload }) => {
+        if (!payload || typeof payload.name !== "string") return;
+        const change: PluginDependencyInstalled = { name: payload.name, version: String(payload.version ?? "") };
+        dispatchEventTo(
+          "dependency:installed",
+          (pluginId) =>
+            !!pluginStatesRef.current
+              .find((p) => p.id === pluginId)
+              ?.manifest.binaryDependencies?.some((d) => d.name === change.name),
+          change,
+        );
       }),
     [dispatchEventTo],
   );

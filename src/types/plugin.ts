@@ -80,7 +80,19 @@ export type PluginEventName =
   // A song's cue sheet was saved or deleted (see `CueSheetChange`).
   | "cues:changed"
   // What the user is looking at changed, and has settled (see `UiContext`).
-  | "ui:context-changed";
+  | "ui:context-changed"
+  // A tool the plugin's manifest lists finished installing (see
+  // `PluginDependencyInstalled`).
+  | "dependency:installed";
+
+/** A tool finished installing — the user's click (Tools, the update notice,
+ *  an install dialog) or an opted-in automatic update. Sent only to plugins
+ *  whose manifest lists `name` in `binaryDependencies`. */
+export interface PluginDependencyInstalled {
+  name: string;
+  /** The version the new copy reports. */
+  version: string;
+}
 
 /**
  * One like / dislike / un-like the user made — from any surface (a heart
@@ -2530,6 +2542,13 @@ export interface PluginSystemAPI {
    *  never hits the network. `latest` is null until the host's background
    *  check populates it (~30s after startup, then daily, or via Settings). */
   getDependency(name: string): Promise<PluginDependencyStatus | null>;
+  /** Called after a tool this plugin's manifest lists in `binaryDependencies`
+   *  finished installing (or updating) — whoever started it. The answer to
+   *  `requestAction("require-dependency")`, which is fire-and-forget: refresh
+   *  what the missing tool held back here instead of polling `getDependency`.
+   *  Not called for a failed install or a dismissed dialog. Returns an
+   *  unsubscriber; dropped on unload. No permission. Feature-detect. */
+  onDependencyInstalled?(handler: (change: PluginDependencyInstalled) => void): () => void;
   /** Read embedded tags for local files — one result per input path, in order,
    *  `null` for anything unreadable. Batch the whole set in one call: the host
    *  probes on a worker thread, and per-file calls are per-file IPC round trips.

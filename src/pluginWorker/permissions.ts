@@ -256,6 +256,8 @@ export const PERMISSION_TABLE: Record<string, PermissionCheck | null> = {
 
   "system.exec": (args) => `exec:${String(args[0])}`,
   "system.getDependency": OWN,
+  // Told when one of its own declared tools lands; says nothing about the user.
+  "system.onDependencyInstalled": OWN,
   // Which build of a program to fetch; says nothing about the user.
   "system.platform": OWN,
   "system.userFolders": OWN,
