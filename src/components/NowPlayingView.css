@@ -184,6 +184,17 @@
   align-self: stretch;
   min-width: 0;
 }
+/* The side column (lyrics or info) sits against the right edge, over the
+   scrim's dark band, rather than splitting the stage evenly with the empty art
+   column — an even split put the lyrics mid-picture on a normal window. 38% is
+   where the band is still at 0.45 before it fades out; the column's own
+   max-width (in-grid and fullscreen tiers) still caps it on a wide window, and
+   the floor keeps a narrow one from wrapping every line. */
+.np-audio--fill .np-lyrics-col {
+  flex: 0 1 auto;
+  width: 38%;
+  min-width: 300px;
+}
 
 /* ── Crossfade between tracks ─────────────────── */
 /* Each <Crossfade> stacks 1-2 absolutely-positioned layers; the incoming layer
