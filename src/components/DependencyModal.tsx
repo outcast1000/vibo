@@ -134,7 +134,25 @@ export function DependencyModal({ dep, feature, required = true, installProgress
           </p>
         )}
 
-        {!installing && (
+        {/* A plugin-defined tool often names only a download page (whisper-cli
+            has no package-manager command): no command, no terminal box —
+            an empty one with a Copy button read as broken. */}
+        {!installing && !command && canSelfInstall && dep.install.url && (
+          <p style={{ margin: "0 0 16px", fontSize: "var(--fs-xs)", color: "var(--text-tertiary)" }}>
+            Or download it yourself from{" "}
+            <button
+              type="button"
+              className="ds-btn ds-btn--ghost ds-btn--sm"
+              style={{ padding: 0, height: "auto", minHeight: 0, color: "var(--accent)", fontSize: "inherit", verticalAlign: "baseline" }}
+              onClick={() => openUrl(dep.install.url).catch(console.error)}
+            >
+              its download page
+            </button>
+            .
+          </p>
+        )}
+
+        {!installing && command && (
           <div style={{ margin: "0 0 16px" }}>
             <div style={{ fontSize: "var(--fs-xs)", color: "var(--text-tertiary)", marginBottom: 6 }}>
               {canSelfInstall ? "Or install manually via terminal" : "Install via terminal"} ({getPlatformLabel(platform)}):
