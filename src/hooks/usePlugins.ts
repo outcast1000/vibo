@@ -98,6 +98,7 @@ import {
 } from "../utils/infoFetchChain";
 import { MAX_LYRICS_CHARS } from "../utils/lyricsEditor";
 import { announceLyrics, onLyricsChanged } from "../utils/lyricsEvents";
+import { announceCueSheet, onCueSheetChanged } from "../utils/cueEvents";
 import { CallGraph, callableProblem, describePlugins } from "../utils/crossPluginCalls";
 import { sanitizeSeekMarkers, type SeekMarker } from "../utils/seekMarkers";
 import { coerceScrobbleReport, type ScrobbleReport } from "../utils/scrobblers";
@@ -572,6 +573,7 @@ export function usePlugins(
     "scan:complete": [],
     "like:changed": [],
     "lyrics:changed": [],
+    "cues:changed": [],
     "ui:context-changed": [],
   });
   // Plugins currently subscribed to `track:scrobbled` — the plugin half of the
@@ -1856,9 +1858,10 @@ export function usePlugins(
           // knows when the plugin doesn't say. A declared `durationSecs` wins
           // — a shared sheet was timed to its author's copy. The command
           // normalizes and emits `cue-sheet-changed`, so an open Now Playing
-          // view picks up a sheet a plugin installs mid-song.
-          set(title, artistName, sheet, meta) {
-            return saveCueSheet<PluginCueSheet>(
+          // view picks up a sheet a plugin installs mid-song. Other plugins
+          // hear of it through `cues:changed`; this one doesn't.
+          async set(title, artistName, sheet, meta) {
+            const row = await saveCueSheet<PluginCueSheet>(
               {
                 currentTrack: () => currentTrackRef.current,
                 currentDurationSecs: () => hostCallbacksRef?.current?.playbackDurationSecs?.() ?? null,
@@ -1868,10 +1871,22 @@ export function usePlugins(
               sheet,
               { author: meta?.author ?? null, albumName: meta?.albumName ?? null, durationSecs: meta?.durationSecs ?? null },
             );
+            announceCueSheet({ title: row.title, artistName: row.artistName }, "saved", "plugin", {
+              pluginId,
+              updatedAt: row.updatedAt,
+            });
+            return row;
           },
-          delete(title, artistName) {
-            return invoke<boolean>("cue_sheet_delete", { title, artistName: artistName ?? null });
+          async delete(title, artistName) {
+            const existed = await invoke<boolean>("cue_sheet_delete", { title, artistName: artistName ?? null });
+            if (existed) announceCueSheet({ title, artistName }, "deleted", "plugin", { pluginId });
+            return existed;
           },
+          onChanged: (handler) =>
+            subscribeEvent(
+              "cues:changed",
+              handler as (...args: unknown[]) => void,
+            ),
         },
 
         waveforms: {
@@ -3464,6 +3479,16 @@ export function usePlugins(
     () =>
       onLyricsChanged((change) => {
         dispatchEventTo("lyrics:changed", (pluginId) => pluginId !== change.pluginId, change);
+      }),
+    [dispatchEventTo],
+  );
+
+  // A cue sheet saved or deleted (the assistant, or a plugin) → `cues:changed`,
+  // never back to the plugin that wrote it.
+  useEffect(
+    () =>
+      onCueSheetChanged((change) => {
+        dispatchEventTo("cues:changed", (pluginId) => pluginId !== change.pluginId, change);
       }),
     [dispatchEventTo],
   );

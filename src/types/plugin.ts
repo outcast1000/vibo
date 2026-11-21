@@ -77,6 +77,8 @@ export type PluginEventName =
   | "like:changed"
   // A song's lyrics were put in place (see `LyricsChange`).
   | "lyrics:changed"
+  // A song's cue sheet was saved or deleted (see `CueSheetChange`).
+  | "cues:changed"
   // What the user is looking at changed, and has settled (see `UiContext`).
   | "ui:context-changed";
 
@@ -2709,9 +2711,25 @@ export interface PluginCueSheet {
   warnings?: string[];
 }
 
-/** The user's Now Playing cue sheets (backend `cue_sheets.rs`). Keyed by
- *  title + artist like likes, so a sheet follows the song onto any copy.
- *  `set` runs the host's normalizer — what comes back is what will play. */
+/** Who wrote or deleted a cue sheet: `assistant` (the control API's cues.set /
+ *  cues.delete — an AI acting for the user) or `plugin` (a plugin's api.cues,
+ *  e.g. a Community import). The app has no cue-sheet editor of its own. */
+export type CueSheetOrigin = "assistant" | "plugin";
+
+/** The `cues:changed` event: one song's cue sheet was saved or deleted, sent
+ *  after the write succeeded. Read the sheet itself with `api.cues.get`. */
+export interface CueSheetChange {
+  title: string;
+  artistName: string | null;
+  action: "saved" | "deleted";
+  origin: CueSheetOrigin;
+  /** `plugin` only: the plugin that wrote it. A plugin is never sent its own
+   *  writes, so an import isn't read back as a new sheet. */
+  pluginId: string | null;
+  /** `saved` only: the stored row's `updatedAt` (seconds), to de-dupe on. */
+  updatedAt: number | null;
+}
+
 /** Where lyrics that were just put in place came from. `edit` (the in-app
  *  editor) and `assistant` (the control API's lyrics.set) are the user's own;
  *  `plugin` is a plugin's `api.lyrics.save`; `provider` is a provider lookup
@@ -2782,6 +2800,9 @@ export interface PluginWaveformsAPI {
   onShare(handler: PluginWaveformShareHandler): () => void;
 }
 
+/** The user's Now Playing cue sheets (backend `cue_sheets.rs`). Keyed by
+ *  title + artist like likes, so a sheet follows the song onto any copy.
+ *  `set` runs the host's normalizer — what comes back is what will play. */
 export interface PluginCuesAPI {
   get(title: string, artistName?: string | null): Promise<PluginCueSheet | null>;
   list(): Promise<PluginCueSheet[]>;
@@ -2793,6 +2814,10 @@ export interface PluginCuesAPI {
   ): Promise<PluginCueSheet>;
   /** Resolves whether a sheet existed. */
   delete(title: string, artistName?: string | null): Promise<boolean>;
+  /** Every time a song's cue sheet is saved or deleted by the assistant or by
+   *  another plugin (see `CueSheetChange`). Permission `cues:read`. Absent on
+   *  older hosts — feature-detect. */
+  onChanged(handler: (change: CueSheetChange) => void): () => void;
 }
 
 export interface PluginEnvAPI {

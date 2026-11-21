@@ -244,6 +244,7 @@ export const PERMISSION_TABLE: Record<string, PermissionCheck | null> = {
   "cues.list": need("cues:read"),
   "cues.set": need("cues:write"),
   "cues.delete": need("cues:write"),
+  "cues.onChanged": need("cues:read"),
 
   "lyrics.save": need("lyrics:write"),
   "lyrics.onChanged": need("library:read"),

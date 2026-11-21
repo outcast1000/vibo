@@ -57,6 +57,7 @@ import { trackToQueueTrack, playlistTrackToQueueTrack, pluginTrackToQueueTrack, 
 import { toPlaylistTrackPayload } from "../utils/playlistPayload";
 import { cueCountBucket, cueErrorField, cueText, cueWriteSong, sameCueSong, splitSheetMeta, type CueSheetRow, type CueSheetTrack } from "../utils/cueSheet";
 import { saveCueSheet, type CueOpsDeps } from "../utils/cueOps";
+import { announceCueSheet } from "../utils/cueEvents";
 import { checkLyricsForSave } from "../utils/lyricsEditor";
 import { track } from "../telemetry";
 import { contextImageTypeIds, gatherCueContext } from "../utils/cueContext";
@@ -992,12 +993,15 @@ export function useControlApi(deps: ControlApiDeps) {
           throw e;
         }
         track("cue_sheet_saved", { mode: row.sheet.mode ?? "cards", cues: cueCountBucket(row.sheet.cues.length) });
+        announceCueSheet({ title: row.title, artistName: row.artistName }, "saved", "assistant", { updatedAt: row.updatedAt });
         return row;
       }
 
       case "cues.delete": {
         const song = cueWriteSongOrBad(payload, null);
-        return { deleted: await invoke<boolean>("cue_sheet_delete", song) };
+        const deleted = await invoke<boolean>("cue_sheet_delete", song);
+        if (deleted) announceCueSheet(song, "deleted", "assistant");
+        return { deleted };
       }
 
       case "cues.context": {
