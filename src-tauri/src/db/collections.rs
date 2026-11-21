@@ -101,6 +101,81 @@ impl TagMode {
     }
 }
 
+/// What `bulk_update_tracks` does to the tracks' tags.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum TagEdit {
+    /// Tags are not touched.
+    #[default]
+    Unchanged,
+    /// Each track's tags become exactly these.
+    Replace(Vec<String>),
+    /// Add `add` to every track and take `remove` off every track; tags named
+    /// in neither are kept. The Edit Properties dialog sends its exact delta
+    /// this way, so a tag only some of the selected tracks carry survives an
+    /// edit that never mentioned it (a Replace would drop it from all).
+    Delta { add: Vec<String>, remove: Vec<String> },
+}
+
+impl TagEdit {
+    /// Build the edit from the command's wire fields: `tag_names` + `tag_mode`
+    /// (plugins, the control API) or `tags_add` / `tags_remove` (the dialog's
+    /// delta) — one shape or the other, never both.
+    pub fn from_fields(
+        tag_names: Option<Vec<String>>,
+        tag_mode: Option<&str>,
+        tags_add: Option<Vec<String>>,
+        tags_remove: Option<Vec<String>>,
+    ) -> Result<TagEdit, String> {
+        if tags_add.is_some() || tags_remove.is_some() {
+            if tag_names.is_some() || tag_mode.is_some() {
+                return Err("pass tag_names with tag_mode, or tags_add / tags_remove — not both".to_string());
+            }
+            let add = tags_add.unwrap_or_default();
+            let remove = tags_remove.unwrap_or_default();
+            // Two empty lists change no tag, so no file's genre is rewritten.
+            if add.is_empty() && remove.is_empty() {
+                return Ok(TagEdit::Unchanged);
+            }
+            return Ok(TagEdit::Delta { add, remove });
+        }
+        // The mode only matters with tag names; without them nothing reads it.
+        let Some(names) = tag_names else { return Ok(TagEdit::Unchanged) };
+        Ok(match TagMode::parse(tag_mode)? {
+            TagMode::Replace => TagEdit::Replace(names),
+            TagMode::Add => TagEdit::Delta { add: names, remove: Vec::new() },
+            TagMode::Remove => TagEdit::Delta { add: Vec::new(), remove: names },
+        })
+    }
+
+    pub fn is_unchanged(&self) -> bool {
+        matches!(self, TagEdit::Unchanged)
+    }
+}
+
+/// The tag row named `name`, matched accent- and case-insensitively.
+fn find_tag_id_conn(conn: &rusqlite::Connection, name: &str) -> SqlResult<Option<i64>> {
+    conn.query_row(
+        "SELECT id FROM tags WHERE strip_diacritics(unicode_lower(name)) = strip_diacritics(unicode_lower(?1))",
+        params![name],
+        |row| row.get(0),
+    ).optional()
+}
+
+fn find_or_create_tag_ids_conn(conn: &rusqlite::Connection, names: &[String]) -> SqlResult<Vec<i64>> {
+    let mut ids = Vec::with_capacity(names.len());
+    for name in names {
+        let id = match find_tag_id_conn(conn, name)? {
+            Some(id) => id,
+            None => {
+                conn.execute("INSERT INTO tags (name) VALUES (?1)", params![name])?;
+                conn.last_insert_rowid()
+            }
+        };
+        ids.push(id);
+    }
+    Ok(ids)
+}
+
 impl Database {
 
     // --- Collections ---
@@ -629,8 +704,7 @@ impl Database {
         year: FieldUpdate<i32>,
         title: Option<&str>,
         track_number: FieldUpdate<i32>,
-        tag_names: Option<&[String]>,
-        tag_mode: TagMode,
+        tags: &TagEdit,
     ) -> SqlResult<Vec<(i64, String, Option<i64>)>> {
         if track_ids.is_empty() {
             return Ok(vec![]);
@@ -893,55 +967,40 @@ impl Database {
                     FieldUpdate::Set(n) => update_track_column(&conn, track_ids, "track_number", n)?,
                 }
 
-                // Step 4: Tags (replace / add / remove)
-                if let Some(tags) = tag_names {
-                    // Pre-resolve/create all tag IDs (needed for replace + add).
-                    let mut tag_ids: Vec<i64> = Vec::with_capacity(tags.len());
-                    for name in tags {
-                        let tag_id: i64 = match conn.query_row(
-                            "SELECT id FROM tags WHERE strip_diacritics(unicode_lower(name)) = strip_diacritics(unicode_lower(?1))",
-                            params![name],
-                            |row| row.get(0),
-                        ).optional()? {
-                            Some(id) => id,
-                            None => {
-                                conn.execute("INSERT INTO tags (name) VALUES (?1)", params![name])?;
-                                conn.last_insert_rowid()
+                // Step 4: Tags
+                match tags {
+                    TagEdit::Unchanged => {}
+                    TagEdit::Replace(names) => {
+                        let tag_ids = find_or_create_tag_ids_conn(&conn, names)?;
+                        for &tid in track_ids {
+                            conn.execute("DELETE FROM track_tags WHERE track_id = ?1", params![tid])?;
+                            for &tag_id in &tag_ids {
+                                conn.execute(
+                                    "INSERT OR IGNORE INTO track_tags (track_id, tag_id) VALUES (?1, ?2)",
+                                    params![tid, tag_id],
+                                )?;
                             }
-                        };
-                        tag_ids.push(tag_id);
+                        }
                     }
-
-                    match tag_mode {
-                        TagMode::Replace => {
+                    TagEdit::Delta { add, remove } => {
+                        // Removing a tag nobody has is a no-op — never a new
+                        // empty tag row (the old Remove mode created one).
+                        for name in remove {
+                            let Some(tag_id) = find_tag_id_conn(&conn, name)? else { continue };
                             for &tid in track_ids {
-                                conn.execute("DELETE FROM track_tags WHERE track_id = ?1", params![tid])?;
-                                for &tag_id in &tag_ids {
-                                    conn.execute(
-                                        "INSERT OR IGNORE INTO track_tags (track_id, tag_id) VALUES (?1, ?2)",
-                                        params![tid, tag_id],
-                                    )?;
-                                }
+                                conn.execute(
+                                    "DELETE FROM track_tags WHERE track_id = ?1 AND tag_id = ?2",
+                                    params![tid, tag_id],
+                                )?;
                             }
                         }
-                        TagMode::Add => {
-                            for &tid in track_ids {
-                                for &tag_id in &tag_ids {
-                                    conn.execute(
-                                        "INSERT OR IGNORE INTO track_tags (track_id, tag_id) VALUES (?1, ?2)",
-                                        params![tid, tag_id],
-                                    )?;
-                                }
-                            }
-                        }
-                        TagMode::Remove => {
-                            for &tid in track_ids {
-                                for &tag_id in &tag_ids {
-                                    conn.execute(
-                                        "DELETE FROM track_tags WHERE track_id = ?1 AND tag_id = ?2",
-                                        params![tid, tag_id],
-                                    )?;
-                                }
+                        let tag_ids = find_or_create_tag_ids_conn(&conn, add)?;
+                        for &tid in track_ids {
+                            for &tag_id in &tag_ids {
+                                conn.execute(
+                                    "INSERT OR IGNORE INTO track_tags (track_id, tag_id) VALUES (?1, ?2)",
+                                    params![tid, tag_id],
+                                )?;
                             }
                         }
                     }

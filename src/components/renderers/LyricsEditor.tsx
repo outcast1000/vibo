@@ -25,16 +25,13 @@ const REPLAY_PREROLL_SECS = 2;
 /** How long "Start over" waits for its confirming second click. */
 const CONFIRM_WINDOW_MS = 3000;
 
-interface LyricsEditorProps {
+interface LyricsEditorBaseProps {
   initialText: string;
   /** True when this song is the one playing — Sync needs a live position. */
   live: boolean;
   /** Play this song from `secs` (seeks when it is already playing). Absent
    *  where the page can't start the song; Sync then asks the user to. */
   seek?: (secs: number) => void;
-  /** Persist; rejects with the reason when the save failed. */
-  onSave: (text: string, kind: LyricsKind) => Promise<void>;
-  onClose: () => void;
   /** What "unchanged" means — the song's current lyrics — when the editor
    *  opens on something else (a plugin's draft under review). Defaults to
    *  `initialText`. Save is offered whenever the text differs from it. */
@@ -49,6 +46,24 @@ interface LyricsEditorProps {
   saveBlockedReason?: string | null;
 }
 
+/** Standalone: the editor has its own Save / Cancel, ⌘S and Esc. */
+interface StandaloneLyricsEditorProps extends LyricsEditorBaseProps {
+  /** Persist; rejects with the reason when the save failed. */
+  onSave: (text: string, kind: LyricsKind) => Promise<void>;
+  onClose: () => void;
+  onTextChange?: never;
+}
+
+/** Embedded in a host that saves (the Edit Properties dialog's Lyrics tab):
+ *  no buttons of its own, every edit reported, ⌘S and Esc left to the host. */
+interface EmbeddedLyricsEditorProps extends LyricsEditorBaseProps {
+  onTextChange: (text: string) => void;
+  onSave?: never;
+  onClose?: never;
+}
+
+type LyricsEditorProps = StandaloneLyricsEditorProps | EmbeddedLyricsEditorProps;
+
 type Tab = "write" | "sync";
 
 /**
@@ -57,7 +72,8 @@ type Tab = "write" | "sync";
  * while the song plays. Whether it saves as synced or plain is read off the
  * text (`detectLyricsKind`) — there is no type picker to get wrong.
  */
-export function LyricsEditor({ initialText, live, seek, onSave, onClose, baselineText, banner, review = false, saveBlockedReason = null }: LyricsEditorProps) {
+export function LyricsEditor({ initialText, live, seek, onSave, onClose, onTextChange, baselineText, banner, review = false, saveBlockedReason = null }: LyricsEditorProps) {
+  const embedded = onTextChange !== undefined;
   const [text, setText] = useState(initialText);
   const [tab, setTab] = useState<Tab>("write");
   const [cursor, setCursor] = useState(() => firstUntimedIndex(parseEditorLines(initialText)));
@@ -118,7 +134,8 @@ export function LyricsEditor({ initialText, live, seek, onSave, onClose, baselin
     setText(next);
     setError(null);
     setConfirmDiscard(false);
-  }, []);
+    onTextChange?.(next);
+  }, [onTextChange]);
 
   const stamp = useCallback(() => {
     if (!live || activeCursor < 0) return;
@@ -158,12 +175,12 @@ export function LyricsEditor({ initialText, live, seek, onSave, onClose, baselin
   };
 
   const save = async () => {
-    if (saving || empty || !dirty || saveBlockedReason) return;
+    if (!onSave || saving || empty || !dirty || saveBlockedReason) return;
     setSaving(true);
     setError(null);
     try {
       await onSave(text.replace(/\s+$/, ""), kind);
-      onClose();
+      onClose?.();
     } catch (e) {
       console.error("Failed to save lyrics:", e);
       setError(`Couldn't save the lyrics: ${e instanceof Error ? e.message : String(e)}`);
@@ -173,12 +190,14 @@ export function LyricsEditor({ initialText, live, seek, onSave, onClose, baselin
 
   const requestClose = () => {
     if (losesWork && !confirmDiscard) { setConfirmDiscard(true); return; }
-    onClose();
+    onClose?.();
   };
 
   // Editor-wide keys. Stopped here so the page's own shortcuts don't also
-  // run: Escape would close the track page, Space would pause.
+  // run: Escape would close the track page, Space would pause. Embedded, the
+  // host owns saving and closing, so these reach it.
   const handleRootKeyDown = (e: KeyboardEvent) => {
+    if (embedded) return;
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
       e.preventDefault();
       e.stopPropagation();
@@ -330,7 +349,7 @@ export function LyricsEditor({ initialText, live, seek, onSave, onClose, baselin
             </>
           )}
         </div>
-        <div className="lyrics-editor-buttons">
+        {!embedded && <div className="lyrics-editor-buttons">
           {confirmDiscard ? (
             <>
               <span className="lyrics-editor-confirm">{review ? "Discard this draft?" : "Discard your changes?"}</span>
@@ -345,7 +364,7 @@ export function LyricsEditor({ initialText, live, seek, onSave, onClose, baselin
               </button>
             </>
           )}
-        </div>
+        </div>}
       </div>
     </div>
   );

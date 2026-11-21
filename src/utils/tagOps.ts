@@ -2,8 +2,8 @@
 // control API dispatcher (hooks/useControlApi.ts), the plugin API
 // (usePlugins.buildAPI → api.library), the Now Playing quick edit
 // (hooks/useTagActions.ts) and the detail pages' entity tags
-// (hooks/useEntityTags.ts). BulkEditModal writes files with its own mode
-// selector, through the same `bulk_update_tracks` command. Same split as
+// (hooks/useEntityTags.ts), and the Edit Properties dialog (BulkEditModal)
+// through `writeFileMetadata`. Same split as
 // hostOps.ts / queueOps.ts: the op owns what runs and what the app is told
 // afterwards; each caller owns argument shape and its response.
 //
@@ -19,8 +19,8 @@
 //     Removes go through `remove_tag_from_tracks`, the detail pages' path,
 //     which recounts itself; `tagsChanged` still reloads the lists.
 //   - File metadata (`bulk_update_tracks`, the only path that writes into
-//     audio files). `filesWritten` is the same full refresh BulkEditModal's
-//     save triggers, plus a `trackEvents` patch for the fields it changed.
+//     audio files). `filesWritten` is the full refresh, plus a `trackEvents`
+//     patch for the fields it changed.
 //
 // Before this module the three callers disagreed: the control API removed a
 // tag via `replace_track_tags` (case-insensitive, not diacritic-insensitive
@@ -122,6 +122,11 @@ export interface FileMetadataEdit {
   /** Defaults to `"add"`. Replace is the destructive reading, so it is never
    *  implied. (The backend has no default: tag names without a mode fail.) */
   tagMode?: unknown;
+  /** An exact delta instead of `tagNames` + `tagMode`: these are added to and
+   *  taken off every track, every other tag kept — what the Edit Properties
+   *  dialog sends, so a tag only some of the tracks carry is never dropped. */
+  tagsAdd?: unknown;
+  tagsRemove?: unknown;
 }
 
 /** Validate an edit and build the `bulk_update_tracks` fields. Throws with a
@@ -170,8 +175,19 @@ export function buildFileMetadataFields(trackIds: number[], edit: FileMetadataEd
     throw new Error("tagMode needs tagNames");
   }
 
+  if (has("tagsAdd") || has("tagsRemove")) {
+    if (has("tagNames")) throw new Error("pass tagNames with tagMode, or tagsAdd / tagsRemove — not both");
+    for (const key of ["tagsAdd", "tagsRemove"] as const) {
+      if (has(key) && !Array.isArray(edit[key])) throw new Error(`${key} must be an array of strings`);
+    }
+    const add = cleanNames(edit.tagsAdd);
+    const remove = cleanNames(edit.tagsRemove);
+    if (add.length > 0) fields.tags_add = add;
+    if (remove.length > 0) fields.tags_remove = remove;
+  }
+
   if (Object.keys(fields).length === 0) {
-    throw new Error("nothing to write — pass tagNames, artistName, albumArtistName, albumTitle, year, trackNumber or title");
+    throw new Error("nothing to write — pass tagNames, tagsAdd, tagsRemove, artistName, albumArtistName, albumTitle, year, trackNumber or title");
   }
   return fields;
 }
@@ -185,8 +201,8 @@ export async function writeFileMetadata(
 ): Promise<string[]> {
   const fields = buildFileMetadataFields(trackIds, edit);
   const errors = await invoke<string[]>("bulk_update_tracks", { trackIds, fields });
-  // Same live patch BulkEditModal sends, so an open detail page updates without
-  // waiting for the reload. Only on full success — a partial failure leaves
+  // A live patch, so an open detail page updates without waiting for the
+  // reload. Only on full success — a partial failure leaves
   // the reload to tell the truth per track.
   if (errors.length === 0) {
     const patch: Partial<Track> = {};

@@ -1026,11 +1026,9 @@ pub async fn bulk_update_tracks(
     let album_u = crate::models::FieldUpdate::from_double_opt(fields.album_title).trimmed_name();
     let year_u = crate::models::FieldUpdate::from_double_opt(fields.year);
     let track_number_u = crate::models::FieldUpdate::from_double_opt(fields.track_number);
-    // The mode only matters with tag names; without them nothing reads it.
-    let tag_mode = match fields.tag_names {
-        Some(_) => crate::db::collections::TagMode::parse(fields.tag_mode.as_deref())?,
-        None => crate::db::collections::TagMode::Add,
-    };
+    let tag_edit = crate::db::collections::TagEdit::from_fields(
+        fields.tag_names, fields.tag_mode.as_deref(), fields.tags_add, fields.tags_remove,
+    )?;
 
     // Perform DB updates
     let track_info = db.bulk_update_tracks(
@@ -1041,14 +1039,13 @@ pub async fn bulk_update_tracks(
         year_u,
         fields.title.as_deref(),
         track_number_u,
-        fields.tag_names.as_deref(),
-        tag_mode,
+        &tag_edit,
     ).map_err(|e| e.to_string())?;
 
     // Write tags to local files. Genre is written per-track from the FINAL tag set
     // (so add/remove modes write the resulting tags, not the raw delta).
     let mut errors = Vec::new();
-    let tags_touched = fields.tag_names.is_some();
+    let tags_touched = !tag_edit.is_unchanged();
 
     for (track_id, path, _collection_id) in &track_info {
         // Skip non-local files

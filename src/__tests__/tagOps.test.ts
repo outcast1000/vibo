@@ -84,6 +84,19 @@ describe("editTrackTags", () => {
 });
 
 describe("buildFileMetadataFields", () => {
+  it("sends an exact tag delta, dropping blanks and empty lists", () => {
+    expect(buildFileMetadataFields([1, 2], { tagsAdd: [" Live ", ""], tagsRemove: ["Rock"] }))
+      .toEqual({ tags_add: ["Live"], tags_remove: ["Rock"] });
+    expect(buildFileMetadataFields([1], { tagsRemove: ["Rock"], tagsAdd: [] }))
+      .toEqual({ tags_remove: ["Rock"] });
+    expect(() => buildFileMetadataFields([1], { tagsAdd: [], tagsRemove: [] })).toThrow("nothing to write");
+  });
+
+  it("refuses a delta mixed with tagNames, or a non-array", () => {
+    expect(() => buildFileMetadataFields([1], { tagNames: ["a"], tagsAdd: ["b"] })).toThrow("not both");
+    expect(() => buildFileMetadataFields([1], { tagsAdd: "b" })).toThrow("tagsAdd must be an array");
+  });
+
   it("tagNames without a mode ADDS — never the backend's replace default", () => {
     expect(buildFileMetadataFields([1], { tagNames: ["Jazz"] }))
       .toEqual({ tag_names: ["Jazz"], tag_mode: "add" });

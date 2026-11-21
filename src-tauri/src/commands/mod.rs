@@ -194,6 +194,10 @@ pub struct BulkUpdateFields {
     #[serde(default, deserialize_with = "double_option")]
     pub track_number: Option<Option<i32>>,
     pub tag_mode: Option<String>,
+    /// An exact tag delta — added to / taken off every track, the rest kept.
+    /// The alternative to `tag_names` + `tag_mode` (`TagEdit::from_fields`).
+    pub tags_add: Option<Vec<String>>,
+    pub tags_remove: Option<Vec<String>>,
 }
 
 /// The extension implied by an image's magic bytes, when they're recognizable.

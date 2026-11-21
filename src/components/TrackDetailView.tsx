@@ -7,6 +7,7 @@ import type { Track } from "../types";
 import { formatDuration, formatDateTime, formatRelativeTime, formatFileSize } from "../utils";
 import { formatAverage, formatCompactCount } from "../utils/formatCount";
 import { isLocalTrack } from "../queueEntry";
+import { formatAudioSummary, prettifyTagKey, type AudioProperties } from "../utils/trackFileInfo";
 import { useDetailActions, useDetailState, useInfoSectionActions } from "../contexts/DetailViewContext";
 import { IconFolder, IconLastfm } from "./Icons";
 import { store } from "../store";
@@ -57,24 +58,6 @@ interface TrackDetailViewProps {
   onToggleDislike: () => void;
 }
 
-// Turn a raw tag key like REPLAYGAIN_TRACK_GAIN / MUSICBRAINZ_RECORDING_ID into a
-// readable label ("ReplayGain Track Gain", "MusicBrainz Recording ID").
-const TAG_ACRONYMS = new Set(["ID", "ISRC", "BPM", "URL", "UPC", "EAN"]);
-function prettifyTagKey(key: string): string {
-  return key
-    .toLowerCase()
-    .split(/[_\s]+/)
-    .filter(Boolean)
-    .map(w => {
-      const up = w.toUpperCase();
-      if (TAG_ACRONYMS.has(up)) return up;
-      if (up === "REPLAYGAIN") return "ReplayGain";
-      if (up === "MUSICBRAINZ") return "MusicBrainz";
-      return w.charAt(0).toUpperCase() + w.slice(1);
-    })
-    .join(" ");
-}
-
 /** Plays (newest first) grouped by calendar year, keeping that order. */
 function groupPlaysByYear(plays: Array<{ played_at: number }>): { year: number; entries: Array<{ played_at: number }> }[] {
   const groups: { year: number; entries: Array<{ played_at: number }> }[] = [];
@@ -100,7 +83,7 @@ export function TrackDetailView({
   const isLibrary = trackId != null;
 
   const [playStats, setPlayStats] = useState<TrackPlayStats | null>(null);
-  const [audioProps, setAudioProps] = useState<{ sample_rate?: number; bit_depth?: number; channels?: number; bitrate?: number } | null>(null);
+  const [audioProps, setAudioProps] = useState<AudioProperties | null>(null);
   const [extraTags, setExtraTags] = useState<Record<string, string> | null>(null);
   // The track's library tags, shown on the Details tab's Tags row and edited
   // by TagPopover (controlled — this is the only copy). `null` while loading.
@@ -161,7 +144,7 @@ export function TrackDetailView({
     setExtraTitleLines({});
 
     if (isLibrary) {
-      invoke<{ sample_rate?: number; bit_depth?: number; channels?: number; bitrate?: number }>("get_track_audio_properties", { trackId })
+      invoke<AudioProperties>("get_track_audio_properties", { trackId })
         .then(setAudioProps).catch(e => console.error("Failed to load audio properties:", e));
       invoke<Record<string, string> | null>("get_track_extra_tags", { trackId })
         .then(setExtraTags).catch(e => console.error("Failed to load extra tags:", e));
@@ -474,12 +457,7 @@ export function TrackDetailView({
                   {isLibrary && track.format && (
                     <div className="track-details-row">
                       <span className="track-details-label">Format</span>
-                      <span className="track-details-value">
-                        {track.format.toUpperCase()}
-                        {audioProps?.bitrate ? ` · ${audioProps.bitrate} kbps` : ""}
-                        {audioProps?.sample_rate ? ` · ${(audioProps.sample_rate / 1000).toFixed(1)} kHz` : ""}
-                        {audioProps?.bit_depth ? ` · ${audioProps.bit_depth}-bit` : ""}
-                      </span>
+                      <span className="track-details-value">{formatAudioSummary(track.format, audioProps)}</span>
                     </div>
                   )}
                   {isLibrary && track.file_size != null && (

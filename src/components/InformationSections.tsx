@@ -9,7 +9,6 @@ import type { OpenInfoArgs } from "../hooks/useRetrieveModal";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { saveSongLyrics } from "../utils/localLyrics";
-import { emitInfoValueChanged } from "../utils/infoValueEvents";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { buildEntityKey } from "../types/informationTypes";
 import type { QueueTrack } from "../types";
@@ -206,16 +205,12 @@ export function InformationSections({
       // came from; a song with no local file keeps them in the cache
       // (saveSongLyrics, shared with the control API's lyrics.set). The save
       // announces the change, so this section (and any other open view of the
-      // song) re-reads by itself. Rethrown: the editor stays open with the
-      // reason.
+      // song) re-reads by itself — after a refused file save too. Rethrown:
+      // the editor stays open with the reason.
       try {
         await saveSongLyrics(entity, p.text, p.kind, "edit");
       } catch (e) {
         console.error("Failed to save lyrics:", e);
-        // A refused file save may have recorded what the files hold now (they
-        // changed since the last scan) and dropped the stale cached copy: make
-        // the open views re-read, so closing the editor shows the current text.
-        if (entity.kind === "track") emitInfoValueChanged(buildEntityKey(entity), "lyrics");
         throw e;
       }
       return;

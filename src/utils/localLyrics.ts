@@ -12,9 +12,10 @@
 // no scan to notice it changed, and for a library track the re-check is a
 // database read.
 import { invoke } from "@tauri-apps/api/core";
-import type { InfoEntity } from "../types/informationTypes";
+import { buildEntityKey, type InfoEntity } from "../types/informationTypes";
 import type { LyricsOrigin } from "../types/plugin";
 import { CORE_LOCAL_LYRICS_PROVIDER, saveInfoValue } from "./infoFetchChain";
+import { emitInfoValueChanged } from "./infoValueEvents";
 import { announceLyrics } from "./lyricsEvents";
 
 interface LocalLyricsRow {
@@ -111,7 +112,18 @@ export async function saveSongLyrics(
   origin: LyricsOrigin,
   from?: { pluginId?: string | null },
 ): Promise<SongLyricsSave> {
-  const value = entity.kind === "track" ? await saveLocalLyrics(entity, text) : null;
+  let value: Record<string, unknown> | null = null;
+  if (entity.kind === "track") {
+    try {
+      value = await saveLocalLyrics(entity, text);
+    } catch (e) {
+      // A refused file save may have recorded what the files hold now (they
+      // changed since the last scan) and dropped the stale cached copy: make
+      // the open views re-read, so they show the current text, not the old.
+      emitInfoValueChanged(buildEntityKey(entity), "lyrics");
+      throw e;
+    }
+  }
   if (!value) {
     const cached = { text, kind };
     await saveInfoValue({ typeId: "lyrics", entity, value: cached });

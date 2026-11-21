@@ -20,7 +20,7 @@ import { isVideoTrack, parseSubsonicUrl, trashLabel } from "./utils";
 import { parseLrc, syncedLyricsFitMedia, lyricOffsetKey, clampLyricOffset, coerceLyricOffsets } from "./utils/lyrics";
 
 import { store } from "./store";
-import { parseUrlScheme, localTrackSource, trackToQueueTrack, nextQueueKey, isLocalTrack, effectiveLocalPath, pluginTrackToQueueTrack, trackRowToQueueTrack, trackSelection, queueTrackSelection, isPlayingSelection } from "./queueEntry";
+import { parseUrlScheme, localTrackSource, trackToQueueTrack, nextQueueKey, isLocalTrack, effectiveLocalPath, pluginTrackToQueueTrack, trackRowToQueueTrack, trackSelection, queueTrackSelection, isPlayingSelection, isPlayingLibraryRow } from "./queueEntry";
 import { partitionTrackIds, buildDeleteConfirmPayload } from "./utils/deleteTracks";
 import { resolveLibraryIds } from "./utils/resolveLibraryIds";
 import { subscribeTrackEvents } from "./trackEvents";
@@ -4991,10 +4991,11 @@ function App() {
   // recompute_counts prunes it — follow the tracks to their new home: albums and
   // artists have a single destination (the new name); a tag's edit is a set
   // operation with no single destination, so it falls back to the Library.
+  // The library reload after an edit comes from the write itself
+  // (writeFileMetadata → tagOpsDeps.filesWritten, and the backend's
+  // bulk-edit-complete event); this only re-points an open detail page.
   const handleBulkEditSaved = async (result: BulkEditResult) => {
     contextMenuActions.setBulkEditTracks(null);
-    library.loadLibrary();
-    library.loadTracks();
 
     const { view, selectedAlbum, selectedArtist, selectedTag } = library;
     try {
@@ -6815,18 +6816,28 @@ function App() {
         );
       })()}
 
-      {contextMenuActions.bulkEditTracks && (
+      {contextMenuActions.bulkEditTracks && (() => {
+        const editTracks = contextMenuActions.bulkEditTracks;
+        // Sync in the Lyrics tab needs the song playing; only one track has a tab.
+        const editLive = editTracks.length === 1 && isPlayingLibraryRow(editTracks[0], playback.currentTrack);
+        return (
         <BulkEditModal
+          // A new selection (the control API's bulkEdit while open) starts fresh.
+          key={editTracks.map((t) => t.id).join(",")}
           pluginsLoaded={plugins.pluginsLoaded}
-          tracks={contextMenuActions.bulkEditTracks}
+          tracks={editTracks}
           artistOptions={[...new Set(library.artists.map((a) => a.name))]}
           albumOptions={[...new Set(library.albums.map((a) => a.title))]}
           tagOptions={[...new Set(library.tags.map((t) => t.name))]}
           invokeInfoFetch={plugins.invokeInfoFetch}
+          pluginNames={plugins.pluginNames}
+          live={editLive}
+          seek={editLive ? playback.handleSeek : undefined}
           onClose={() => contextMenuActions.setBulkEditTracks(null)}
           onSave={handleBulkEditSaved}
         />
-      )}
+        );
+      })()}
 
       {replacePrompt && (
         <ReplaceTrackFileModal
