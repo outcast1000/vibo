@@ -926,10 +926,41 @@
   gap: 4px 12px;
 }
 
+/* The info column takes the free width, so every row's control lines up on the
+   right like the host's own settings rows (.settings-row-info is flex: 1).
+   The 240px basis is where a row wraps its control underneath on a narrow
+   panel; a long description wraps inside the column instead. */
 .plugin-settings-row-info {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+/* In a compact control row (horizontal layout) the label hugs its control. */
+.plugin-layout-horizontal > .plugin-settings-row > .plugin-settings-row-info {
+  flex: 0 1 auto;
+}
+
+/* A toolbar standing in as a row's control, or inside a section card, is just
+   its buttons: the view-header chrome (band background, bottom rule, 16px
+   inset) only makes sense for a toolbar hoisted above the view. Inside a row
+   it drew a dark slab behind each button. */
+.plugin-settings-row > .plugin-toolbar,
+.settings-card > .plugin-toolbar {
+  background: transparent;
+  border-bottom: none;
+  padding: 0;
+  min-height: 0;
+}
+.settings-card > .plugin-toolbar {
+  padding: 8px 0;
+}
+
+/* A progress bar as a row's child gets its own full-width line under the label. */
+.plugin-settings-row > .plugin-progress {
+  flex: 1 1 100%;
 }
 
 .plugin-settings-label {
