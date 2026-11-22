@@ -71,14 +71,33 @@ describe("layoutPluginMenu", () => {
     expect(shape(layoutPluginMenu(items))).toEqual(["Alpha: Do it", "Beta: Do it"]);
   });
 
-  it("keeps two entries for one action from the same plugin apart", () => {
+  it("nests a plugin that offers one action more than once under its own name", () => {
     const items: PluginMenuItem[] = [
       item("a", "Alpha", "song", "Song radio", { action: "radio" }),
       item("a", "Alpha", "artist", "Artist radio", { action: "radio" }),
       item("b", "Beta", "r", "Start radio", { action: "radio" }),
     ];
     expect(shape(layoutPluginMenu(items))).toEqual([
-      { "Start radio": ["Alpha: Artist radio", "Alpha: Song radio", "Beta"] },
+      { "Start radio": [{ Alpha: ["Artist radio", "Song radio"] }, "Beta"] },
+    ]);
+  });
+
+  it("groups the download plugins' items under Download and Find downloads", () => {
+    // The live track menu with the download plugins (2026-11-22).
+    const items: PluginMenuItem[] = [
+      item("ytdlp", "yt-dlp", "ytdlp-watch-video", "Watch YouTube video"),
+      item("ytdlp", "yt-dlp", "ytdlp-download-track", "Download…", { action: "download" }),
+      item("rqbit", "rqbit", "rqbit-find-torrents", "Find torrents…", { action: "find-source" }),
+      item("rqbit", "rqbit", "rqbit-download", "Download…", { action: "download" }),
+      item("slskd", "Soulseek", "slskd-download", "Download", { action: "download", order: 0 }),
+      item("slskd", "Soulseek", "slskd-download-choose", "Download and let me choose…", { action: "download", order: 1 }),
+      item("qbittorrent", "qBittorrent", "qbt-find-torrents", "Find torrents…", { action: "find-source" }),
+      item("qbittorrent", "qBittorrent", "qbt-upgrade", "Upgrade…", { action: "download" }),
+    ];
+    expect(shape(layoutPluginMenu(items))).toEqual([
+      { Download: ["qBittorrent", "rqbit", { Soulseek: ["Download", "Download and let me choose…"] }, "yt-dlp"] },
+      { "Find downloads": ["qBittorrent", "rqbit"] },
+      "yt-dlp: Watch YouTube video",
     ]);
   });
 

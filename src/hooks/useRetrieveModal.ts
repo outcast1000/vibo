@@ -10,6 +10,7 @@ import {
   isCoreImageProvider,
 } from "../utils/coreImageProviders";
 
+import { saveSongLyrics } from "../utils/localLyrics";
 import { useAssignRef, useLatestRef } from "./useLatestRef";
 // Centered, cancelable "Retrieve" modal for user-triggered image & info fetches.
 //
@@ -59,14 +60,29 @@ export type RetrievePhase =
   | "applied"    // done
   | "exhausted"; // all providers tried, nothing usable
 
+/** What the entity has now, shown beside a "get" result so the user can tell
+ *  Add from Replace. */
+export type RetrieveCurrent =
+  | { status: "loading" }
+  | { status: "none" }
+  | { status: "ok"; imageSrc?: string; info?: Record<string, unknown> };
+
 export interface RetrieveModalData {
   kind: "image" | "info";
+  /** `retrieve`: the detail pages' refresh — a found result applies itself
+   *  after a countdown. `get`: the menus' Get lyrics / Get image — nothing is
+   *  applied or closed without the user's click, and the current value is
+   *  shown next to the new one (Add, or Replace / Keep current). Absent = `retrieve`. */
+  mode?: "retrieve" | "get";
+  current?: RetrieveCurrent;
   label: string;
   title: string;
   entityKind: "artist" | "album" | "tag" | "track";
   name: string;
   artistName?: string | null;
   albumTitle?: string | null;
+  /** A track's file, as a hint for lyrics lookups and saves (not part of its key). */
+  entityPath?: string | null;
   displayKind?: DisplayKind;
   infoTypeId?: string;
   providers: ProviderRow[];
@@ -103,6 +119,12 @@ export interface OpenImageArgs {
   artistName?: string | null;
   providers: Array<[string, number, number]>; // [pluginId, priority, integerId]
   pluginNames: Map<string, string>;
+  /** Defaults to `retrieve`; see `RetrieveModalData.mode`. */
+  mode?: "retrieve" | "get";
+  /** Ask only this provider (its key as it appears in `providers`). */
+  onlyProvider?: string | null;
+  /** `get` mode: the entity's image now, as an `<img src>`, or null for none. */
+  currentImageSrc?: string | null;
 }
 export interface OpenInfoArgs {
   infoTypeId: string;
@@ -111,6 +133,42 @@ export interface OpenInfoArgs {
   entity: InfoEntity;
   providers: Array<[string, number]>; // [pluginId, integerId]
   pluginNames: Map<string, string>;
+  /** Defaults to `retrieve`; see `RetrieveModalData.mode`. */
+  mode?: "retrieve" | "get";
+  /** Ask only this provider (its key as it appears in `providers`). */
+  onlyProvider?: string | null;
+}
+
+/** The lyrics an apply should save through `saveSongLyrics`, or null when the
+ *  result is not a song's lyrics (any other info type keeps the cache write). */
+export function lyricsToSave(m: Pick<RetrieveModalData, "kind" | "infoTypeId" | "entityKind" | "infoPreview">): { text: string; kind: string } | null {
+  if (m.kind !== "info" || m.infoTypeId !== "lyrics" || m.entityKind !== "track") return null;
+  const text = m.infoPreview?.text;
+  if (typeof text !== "string" || !text.trim()) return null;
+  const kind = m.infoPreview?.kind === "synced" ? "synced" : "plain";
+  return { text, kind };
+}
+
+/** Keep only `only` when it is given and present; otherwise every row. */
+export function pickProviders<T>(rows: T[], keyOf: (row: T) => string, only: string | null | undefined): T[] {
+  if (!only) return rows;
+  return rows.filter((r) => keyOf(r) === only);
+}
+
+/** The cached value a `get` for this info type would replace, from the rows
+ *  `info_get_values_for_entity` returns ([integer_id, type_id, value, status, fetched_at]). */
+export function currentInfoFromRows(rows: Array<[number, string, string, string, number]>, typeId: string): RetrieveCurrent {
+  const row = rows.find(([, t, , status]) => t === typeId && status === "ok");
+  if (!row) return { status: "none" };
+  try {
+    const info = JSON.parse(row[2]) as Record<string, unknown>;
+    // A lyrics row with no text is "nothing yet" to the user, not something to replace.
+    if (typeId === "lyrics" && !(typeof info?.text === "string" && info.text.trim())) return { status: "none" };
+    return { status: "ok", info };
+  } catch (e) {
+    console.error("Unreadable cached info value:", e);
+    return { status: "none" };
+  }
 }
 
 export interface UseRetrieveModalReturn {
@@ -126,10 +184,11 @@ export interface UseRetrieveModalReturn {
 function entityTitle(name: string, artistName?: string | null): string {
   return artistName ? `${name} · ${artistName}` : name;
 }
-function imageLabel(kind: "artist" | "album" | "tag"): string {
-  if (kind === "album") return "Retrieve album art";
-  if (kind === "artist") return "Retrieve artist image";
-  return "Retrieve tag image";
+function imageLabel(kind: "artist" | "album" | "tag", mode: "retrieve" | "get"): string {
+  const verb = mode === "get" ? "Get" : "Retrieve";
+  if (kind === "album") return `${verb} album art`;
+  if (kind === "artist") return `${verb} artist image`;
+  return `${verb} tag image`;
 }
 
 interface FetchOutcome {
@@ -230,7 +289,7 @@ export function useRetrieveModal(
       } else {
         const entity: InfoEntity = {
           kind: data.entityKind, name: data.name, id: 0,
-          artistName: data.artistName ?? undefined, albumTitle: data.albumTitle ?? undefined,
+          artistName: data.artistName ?? undefined, albumTitle: data.albumTitle ?? undefined, path: data.entityPath ?? undefined,
         };
         const result = await invokeInfoFetch(provider.pluginId!, data.infoTypeId!, entity);
         if (gen !== genRef.current) return { ok: false, status: "error" };
@@ -268,7 +327,8 @@ export function useRetrieveModal(
           infoPreview: outcome.infoPreview,
         });
         const keepOpen = modalRef.current?.keepOpen ?? false;
-        if (keepOpen) setModal((m) => m && { ...m, countdown: null });
+        // A `get` waits for Add / Replace: it is never applied for the user.
+        if (keepOpen || data.mode === "get") setModal((m) => m && { ...m, countdown: null });
         else startCountdown(GRACE_SECS, "apply");
         return;
       }
@@ -281,7 +341,7 @@ export function useRetrieveModal(
     // commit leaves the ref unset, and the predicate only needs what is being
     // retrieved (kind / entity / info type), which `data` carries.
     const hold = !!holdOpenRef.current?.({ ...data, phase: "exhausted" });
-    if (keepOpen || hold) setModal((m) => m && { ...m, countdown: null });
+    if (keepOpen || hold || data.mode === "get") setModal((m) => m && { ...m, countdown: null });
     else startCountdown(EXHAUSTED_SECS, "close");
   }, [fetchProvider, setProviderStatus, startCountdown, holdOpenRef]);
 
@@ -291,8 +351,9 @@ export function useRetrieveModal(
     // the same ordered table), so the modal walks them wherever the user put
     // them. Embedded artwork used to be unshifted onto the front here — the
     // frontend half of the "always first" policy that no longer exists.
+    const mode = args.mode ?? "retrieve";
     const providers: ProviderRow[] = [];
-    for (const [providerId, , integerId] of args.providers) {
+    for (const [providerId, , integerId] of pickProviders(args.providers, (r) => r[0], args.onlyProvider)) {
       const name = imageProviderName(providerId, args.pluginNames, "long");
       if (isCoreImageProvider(providerId)) {
         if (!coreProviderSupports(providerId, args.kind)) continue;
@@ -303,7 +364,9 @@ export function useRetrieveModal(
     }
     const data: RetrieveModalData = {
       kind: "image",
-      label: imageLabel(args.kind),
+      mode,
+      current: mode === "get" ? (args.currentImageSrc ? { status: "ok", imageSrc: args.currentImageSrc } : { status: "none" }) : undefined,
+      label: imageLabel(args.kind, mode),
       title: entityTitle(args.name, args.kind === "album" ? args.artistName : null),
       entityKind: args.kind, name: args.name, artistName: args.artistName ?? null,
       providers, currentIndex: 0,
@@ -318,15 +381,18 @@ export function useRetrieveModal(
   }, [advanceChain, clearTick, clearAppliedTimer]);
 
   const openInfo = useCallback((args: OpenInfoArgs) => {
-    const providers: ProviderRow[] = args.providers.map(([pluginId, integerId]) => ({
+    const mode = args.mode ?? "retrieve";
+    const providers: ProviderRow[] = pickProviders(args.providers, (r) => r[0], args.onlyProvider).map(([pluginId, integerId]) => ({
       id: pluginId, name: args.pluginNames.get(pluginId) ?? pluginId, pluginId, integerId, status: "pending",
     }));
     const data: RetrieveModalData = {
       kind: "info",
-      label: `Retrieve ${args.label}`,
+      mode,
+      current: mode === "get" ? { status: "loading" } : undefined,
+      label: `${mode === "get" ? "Get" : "Retrieve"} ${args.label}`,
       title: entityTitle(args.entity.name, args.entity.artistName ?? null),
       entityKind: args.entity.kind, name: args.entity.name,
-      artistName: args.entity.artistName ?? null, albumTitle: args.entity.albumTitle ?? null,
+      artistName: args.entity.artistName ?? null, albumTitle: args.entity.albumTitle ?? null, entityPath: args.entity.path ?? null,
       displayKind: args.displayKind, infoTypeId: args.infoTypeId,
       providers, currentIndex: 0,
       phase: providers.length ? "running" : "exhausted",
@@ -336,6 +402,13 @@ export function useRetrieveModal(
     const gen = ++genRef.current;
     clearTick(); clearAppliedTimer();
     setModal(data);
+    if (mode === "get") {
+      // What a Replace would replace: the cached value, read once (no fetch).
+      invoke<Array<[number, string, string, string, number]>>("info_get_values_for_entity", { entityKey: buildEntityKey(args.entity) })
+        .then((rows) => currentInfoFromRows(rows, args.infoTypeId))
+        .catch((e) => { console.error("Failed to read the current value:", e); return { status: "none" } as RetrieveCurrent; })
+        .then((current) => setModal((m) => (m && gen === genRef.current ? { ...m, current } : m)));
+    }
     if (providers.length) void advanceChain(data, 0, gen);
   }, [advanceChain, clearTick, clearAppliedTimer]);
 
@@ -376,14 +449,22 @@ export function useRetrieveModal(
           const provider = m.providers[m.currentIndex];
           const entity: InfoEntity = {
             kind: m.entityKind, name: m.name, id: 0,
-            artistName: m.artistName ?? undefined, albumTitle: m.albumTitle ?? undefined,
+            artistName: m.artistName ?? undefined, albumTitle: m.albumTitle ?? undefined, path: m.entityPath ?? undefined,
           };
-          await invoke("info_upsert_value", {
-            informationTypeId: provider?.integerId ?? 0,
-            entityKey: buildEntityKey(entity),
-            value: JSON.stringify(m.infoPreview),
-            status: "ok",
-          });
+          const lyrics = lyricsToSave(m);
+          if (lyrics) {
+            // Song lyrics are saved like the lyrics editor saves them: into the
+            // song's files when a library copy is on disk, else the cache. A
+            // cache-only row would be lost on the next re-read of the files.
+            await saveSongLyrics(entity, lyrics.text, lyrics.kind, "provider", { provider: provider?.pluginId ?? null });
+          } else {
+            await invoke("info_upsert_value", {
+              informationTypeId: provider?.integerId ?? 0,
+              entityKey: buildEntityKey(entity),
+              value: JSON.stringify(m.infoPreview),
+              status: "ok",
+            });
+          }
           window.dispatchEvent(new CustomEvent("retrieve:info-applied", {
             detail: { infoTypeId: m.infoTypeId, entityKey: buildEntityKey(entity) },
           }));
@@ -407,6 +488,8 @@ export function useRetrieveModal(
         clearTick();
         return { ...m, keepOpen: true, countdown: null };
       }
+      // A `get` has no countdowns to re-arm (the modal doesn't offer the switch).
+      if (m.mode === "get") return { ...m, keepOpen: false };
       // Re-arm the appropriate countdown for the current phase.
       if (m.phase === "paused") startCountdown(GRACE_SECS, "apply");
       else if (m.phase === "exhausted") startCountdown(EXHAUSTED_SECS, "close", true);

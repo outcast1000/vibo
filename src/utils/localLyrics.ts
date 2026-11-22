@@ -115,7 +115,7 @@ export async function saveSongLyrics(
   text: string,
   kind: string,
   origin: LyricsOrigin,
-  from?: { pluginId?: string | null },
+  from?: { pluginId?: string | null; provider?: string | null },
   opts?: { files?: boolean },
 ): Promise<SongLyricsSave> {
   let value: Record<string, unknown> | null = null;

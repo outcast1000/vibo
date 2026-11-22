@@ -68,6 +68,10 @@ export interface PluginManifestViewHeader {
 export const SHARED_MENU_ACTIONS = {
   "play-full-album": "Play the Full Album",
   "radio": "Start radio",
+  /** Get this song as a file from the plugin's source (each runs its own flow). */
+  "download": "Download",
+  /** Open the plugin's own search for a download, filled in with the item. */
+  "find-source": "Find downloads",
 } as const;
 export type SharedMenuAction = keyof typeof SHARED_MENU_ACTIONS;
 

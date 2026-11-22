@@ -520,12 +520,15 @@ See "Entity System > Context Menu Consistency" for how context menus work across
 
 | Target | Base Actions |
 |--------|-------------|
-| **track** | Play, Enqueue, Play Next, Show in Folder, Delete, Bulk Edit, Export as Tape, search providers |
-| **album** | Play All, Enqueue All, Refresh Image |
-| **artist** | Play All, Enqueue All, Refresh Image |
+| **track** | Play, Enqueue, Play Next, Show in Folder, Delete, Bulk Edit, Export as Tape, Start radio, Get lyrics ▸, search providers |
+| **album** | Play All, Enqueue All, Get image ▸ |
+| **artist** | Play All, Enqueue All, Get image ▸ |
+| **tag** | Play All, Enqueue All, Get image ▸ |
 | **multi-track** | Play, Enqueue, Delete, Bulk Edit |
 | **playlist** | Play All, Enqueue All, Delete |
-| **queue items** | Remove, Keep Only, Move to Top/Bottom; single item also: Details, Edit info…, Start radio |
+| **queue items** | Remove, Keep Only, Move to Top/Bottom; single item also: Details, Edit info…, Start radio, Get lyrics ▸ |
+
+**Get lyrics ▸ / Get image ▸** list the switched-on providers ("All sources" first) and open the Retrieve modal in its `get` mode: the new value beside the current one, Add or Replace / Keep current, nothing applied on its own (conventions.md "Get lyrics / Get image"). Plugin items that declare a shared action (Start radio, Play the Full Album, Download, Find downloads) are grouped under the action's name; where the host has its own entry (the library radio and album) it joins as "Library" (plugins.md "Shared actions").
 | **video** | Dock position (top/bottom/left/right) |
 
 Plugin-registered actions appear on all applicable targets automatically, minus any the user turned off per-item in Extensions → Contributions. Search providers are user-configurable (built-in and custom).

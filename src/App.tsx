@@ -31,7 +31,7 @@ import { contextToExportMetadata, contextFromMixtapeMetadata, playlistContextTit
 import { collectionAlert } from "./utils/collectionAlert";
 import { type RecentPlaySession } from "./utils/recentPlays";
 import { useLatestPlay, type LatestPlayDeps } from "./hooks/useLatestPlay";
-import { stripImageVersion } from "./utils/resolveImageUrl";
+import { resolveImageSrc, stripImageVersion } from "./utils/resolveImageUrl";
 import { pickEntityImagePath, resolveTrackImage } from "./utils/trackImage";
 import { buildTagSuggestionPool } from "./utils/tagSuggestions";
 import { resolveShelfPlayAction } from "./utils/homeShelfPlay";
@@ -170,6 +170,9 @@ import { AddServerModal } from "./components/AddServerModal";
 import { showNativeMenu, type MenuItemSpec } from "./nativeMenu";
 import { buildPluginNavMenuSpecs } from "./contextMenu/buildPluginNavMenuSpecs";
 import { buildPluginMenuSpecs, mergeHostAction } from "./contextMenu/pluginMenuGroups";
+import { buildGetFromProvidersSpec, imageProviderChoices, infoProviderChoices } from "./contextMenu/providerMenus";
+import type { GetLyricsTrack, GetMenus } from "./contextMenu/buildContextMenuSpecs";
+import { useGetMenuProviders } from "./hooks/useGetMenuProviders";
 import { toPluginTarget } from "./types/contextMenu";
 import { buildRatingMenuSpecs } from "./contextMenu/ratingMenu";
 import { buildContextMenuSpecs } from "./contextMenu/buildContextMenuSpecs";
@@ -2258,6 +2261,48 @@ function App() {
 
   const tagImageCache = useImageCache("tag");
 
+  // The menus' Get lyrics / Get image: a pick from the providers the user has
+  // switched on, confirmed in the Retrieve modal's "get" mode (never applied
+  // without a click; Add, or Replace beside the current value).
+  const getMenuProviders = useGetMenuProviders(plugins.pluginStates);
+  const refreshGetMenuProviders = getMenuProviders.refresh;
+  const openGetLyrics = useCallback((track: GetLyricsTrack, providerKey: string | null) => {
+    openRetrieveInfo({
+      infoTypeId: "lyrics",
+      label: "lyrics",
+      displayKind: getMenuProviders.lyrics?.displayKind ?? "lyrics",
+      entity: { kind: "track", id: 0, name: track.title, artistName: track.artistName ?? undefined, albumTitle: track.albumTitle ?? undefined, path: track.path ?? undefined },
+      providers: getMenuProviders.lyrics?.providers ?? [],
+      pluginNames: plugins.pluginNames,
+      mode: "get",
+      onlyProvider: providerKey,
+    });
+  }, [openRetrieveInfo, getMenuProviders.lyrics, plugins.pluginNames]);
+  const openGetImage = useCallback((kind: "artist" | "album" | "tag", name: string, artistName: string | null, providerKey: string | null) => {
+    refreshGalleryForSuggestions();
+    const cache = kind === "artist" ? artistImageCache : kind === "album" ? albumImageCache : tagImageCache;
+    retrieveOpenImage({
+      kind, name, artistName,
+      providers: getMenuProviders.images[kind],
+      pluginNames: plugins.pluginNames,
+      mode: "get",
+      onlyProvider: providerKey,
+      // No fetch: what's on disk now is what a Replace would replace.
+      currentImageSrc: resolveImageSrc(cache.peekImage(name, artistName)),
+    });
+  }, [retrieveOpenImage, refreshGalleryForSuggestions, artistImageCache, albumImageCache, tagImageCache, getMenuProviders.images, plugins.pluginNames]);
+  const getMenus = useMemo((): GetMenus => ({
+    lyrics: infoProviderChoices(getMenuProviders.lyrics?.providers ?? [], plugins.pluginNames),
+    images: {
+      artist: imageProviderChoices(getMenuProviders.images.artist, "artist", plugins.pluginNames),
+      album: imageProviderChoices(getMenuProviders.images.album, "album", plugins.pluginNames),
+      tag: imageProviderChoices(getMenuProviders.images.tag, "tag", plugins.pluginNames),
+    },
+    openLyrics: openGetLyrics,
+    openImage: openGetImage,
+  }), [getMenuProviders.lyrics, getMenuProviders.images, plugins.pluginNames, openGetLyrics, openGetImage]);
+
+
   // After the Retrieve modal applies a new image, drop the cached entry so the
   // displayed art (cards, hero, now-playing) re-resolves from disk.
   useEffect(() => {
@@ -2583,12 +2628,14 @@ function App() {
     const specs = buildContextMenuSpecs(cm.target, {
       contextMenuActions, videoLayout, queueHook, library,
       plugins, artistImageCache,
-      albumImageCache, tagImageCache, beginRetrieveImage,
+      albumImageCache, tagImageCache, getMenus,
       setSearchInitialQuery, setSearchQueryKey,
       setDeleteTagConfirm, trashLabel, handleExportAsMixtapeRef, openPublishMusicSourceRef, openEditTrackInfoRef,
       userPlaylists, onAddToPlaylist: handleAddToPlaylist, onAddToNewPlaylist: handleAddToNewPlaylist,
       onBrowsePlaylists: handleBrowsePlaylists,
     });
+    // The provider lists are a snapshot; re-read them for the next menu.
+    refreshGetMenuProviders();
     if (!specs) {
       contextMenuActions.setContextMenu(null);
       return;
@@ -2596,7 +2643,7 @@ function App() {
     // Returned (errors already logged, so the promise never rejects) so a caller
     // can hold UI open for the menu's lifetime — popup resolves on dismissal.
     return showNativeMenu(cm.x, cm.y, specs).catch((e) => console.error("Failed to show native menu:", e));
-  }, [contextMenuActions, videoLayout, queueHook, library, plugins, artistImageCache, albumImageCache, tagImageCache, beginRetrieveImage, setSearchInitialQuery, setSearchQueryKey, setDeleteTagConfirm, trashLabel, handleExportAsMixtapeRef, openPublishMusicSourceRef, openEditTrackInfoRef, userPlaylists, handleAddToPlaylist, handleAddToNewPlaylist, handleBrowsePlaylists]);
+  }, [contextMenuActions, videoLayout, queueHook, library, plugins, artistImageCache, albumImageCache, tagImageCache, getMenus, refreshGetMenuProviders, setSearchInitialQuery, setSearchQueryKey, setDeleteTagConfirm, trashLabel, handleExportAsMixtapeRef, openPublishMusicSourceRef, openEditTrackInfoRef, userPlaylists, handleAddToPlaylist, handleAddToNewPlaylist, handleBrowsePlaylists]);
   useAssignRef(showNativeMenuRef, buildAndShowNativeMenu);
 
   // api.library.replaceTrackFile: a plugin offers a better copy of a local
@@ -5443,6 +5490,8 @@ function App() {
         } }, pluginItems, pluginTarget, plugins.dispatchContextMenuAction);
         specs.push(radio.spec);
         pluginItems = radio.rest;
+        specs.push(buildGetFromProvidersSpec("Get lyrics", getMenus.lyrics, (key) => getMenus.openLyrics({ title: t.title, artistName: t.artist_name, albumTitle: t.album_title, path: t.path }, key)));
+        refreshGetMenuProviders();
         // The playing entry is a QueueTrack (no album_id), so the library
         // album is resolved by name — album artist first, matching how albums
         // are keyed (find_album_by_name also accepts the track artist).

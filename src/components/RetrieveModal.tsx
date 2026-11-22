@@ -79,25 +79,55 @@ function ProviderChecklist({ providers, currentIndex }: { providers: ProviderRow
   );
 }
 
-function Preview({ modal }: { modal: RetrieveModalData }) {
-  if (modal.kind === "image" && modal.imagePreview) {
-    return <div className="rm-preview"><img className="rm-image" src={modal.imagePreview.src} alt="" /></div>;
+/** One value drawn as its tab would draw it: an image, or an info value
+ *  through its display kind's renderer. */
+function ValueView({ modal, imageSrc, info }: { modal: RetrieveModalData; imageSrc?: string; info?: Record<string, unknown> }) {
+  if (modal.kind === "image" && imageSrc) {
+    return <div className="rm-preview"><img className="rm-image" src={imageSrc} alt="" /></div>;
   }
-  if (modal.kind === "info" && modal.infoPreview && modal.displayKind) {
+  if (modal.kind === "info" && info && modal.displayKind) {
     // An interactive tab, drawn as it will be — with no plugin to route to, so
     // its buttons do nothing in the preview.
     if (modal.displayKind === "plugin_view") {
       return (
         <div className="rm-preview rm-preview--info">
-          <PluginViewSection data={modal.infoPreview} pluginId={undefined} pluginName={modal.label} entity={null} />
+          <PluginViewSection data={info} pluginId={undefined} pluginName={modal.label} entity={null} />
         </div>
       );
     }
     const Renderer = renderers[modal.displayKind];
-    if (Renderer) return <div className="rm-preview rm-preview--info"><Renderer data={modal.infoPreview} /></div>;
-    return <div className="rm-preview rm-preview--info"><pre className="rm-json">{JSON.stringify(modal.infoPreview, null, 2)}</pre></div>;
+    if (Renderer) return <div className="rm-preview rm-preview--info"><Renderer data={info} /></div>;
+    return <div className="rm-preview rm-preview--info"><pre className="rm-json">{JSON.stringify(info, null, 2)}</pre></div>;
   }
   return null;
+}
+
+function Preview({ modal }: { modal: RetrieveModalData }) {
+  const found = <ValueView modal={modal} imageSrc={modal.imagePreview?.src} info={modal.infoPreview} />;
+  // A `get` shows what it would replace beside the new value, so Replace is a
+  // decision made with both in view.
+  if (modal.mode === "get" && modal.current?.status === "ok") {
+    const source = modal.providers[modal.currentIndex]?.name ?? "the provider";
+    return (
+      <div className="rm-compare">
+        <div className="rm-compare-col">
+          <div className="rm-compare-label">Current</div>
+          <ValueView modal={modal} imageSrc={modal.current.imageSrc} info={modal.current.info} />
+        </div>
+        <div className="rm-compare-col">
+          <div className="rm-compare-label">From {source}</div>
+          {found}
+        </div>
+      </div>
+    );
+  }
+  return found;
+}
+
+/** The apply button's words: a `get` says whether it adds or replaces. */
+export function applyLabel(modal: RetrieveModalData): string {
+  if (modal.mode === "get") return modal.current?.status === "ok" ? "Replace" : "Add";
+  return modal.countdown != null ? `Apply now (${modal.countdown})` : "Apply";
 }
 
 /**
@@ -118,6 +148,9 @@ export function RetrieveModal({
   const paused = phase === "paused";
   const busy = phase === "running" || phase === "applying";
   const applied = phase === "applied";
+  const isGet = modal.mode === "get";
+  // Replace can't be offered until we know what it would replace.
+  const currentPending = isGet && modal.current?.status === "loading";
 
   const statusLine = (() => {
     if (phase === "running") return `Searching ${modal.providers[modal.currentIndex]?.name ?? ""}…`;
@@ -154,7 +187,7 @@ export function RetrieveModal({
           />
         )}
 
-        {!applied && (
+        {!applied && !isGet && (
           <label className="rm-keepopen">
             <ToggleSwitch checked={modal.keepOpen} onChange={onSetKeepOpen} />
             <span className="rm-keepopen-label">Keep open (don’t auto-close)</span>
@@ -163,7 +196,7 @@ export function RetrieveModal({
 
         <div className="ds-modal-actions">
           <button className="ds-btn ds-btn--ghost" onClick={onCancel}>
-            {applied ? "Close" : "Cancel"}
+            {applied ? "Close" : isGet && paused && modal.current?.status === "ok" ? "Keep current" : "Cancel"}
           </button>
           {paused && (
             <button className="ds-btn ds-btn--secondary" onClick={onTryNext} disabled={modal.currentIndex >= modal.providers.length - 1}>
@@ -171,8 +204,8 @@ export function RetrieveModal({
             </button>
           )}
           {paused && (
-            <button className="ds-btn ds-btn--primary" onClick={onApplyNow}>
-              {modal.countdown != null ? `Apply now (${modal.countdown})` : "Apply"}
+            <button className="ds-btn ds-btn--primary" onClick={onApplyNow} disabled={currentPending}>
+              {applyLabel(modal)}
             </button>
           )}
           {busy && (

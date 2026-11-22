@@ -116,6 +116,28 @@
   box-shadow: 0 4px 16px rgba(var(--overlay-inverse), 0.3);
 }
 
+/* A "get" that would replace something: the current value beside the new one. */
+.rm-compare {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.rm-compare-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.rm-compare-label {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.rm-compare .rm-preview--info,
+.rm-compare .rm-image {
+  max-height: 34vh;
+}
+
 .rm-json {
   font-family: monospace;
   font-size: var(--fs-2xs);

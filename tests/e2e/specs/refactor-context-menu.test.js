@@ -42,7 +42,8 @@ async function buildSpecTexts(page, target, dataOverrides = {}) {
       artistImageCache: { requestFetch: noop },
       albumImageCache: { requestFetch: noop },
       tagImageCache: { requestFetch: noop },
-      beginRetrieveImage: noop,
+      // Get lyrics / Get image: no providers switched on.
+      getMenus: { lyrics: [], images: { artist: [], album: [], tag: [] }, openLyrics: noop, openImage: noop },
       setSearchInitialQuery: noop, setSearchQueryKey: noop, setDeleteTagConfirm: noop,
       trashLabel: 'Trash',
       // "Add to Playlist ▸" submenu inputs.
@@ -111,10 +112,16 @@ test('multi-tag target offers delete-N-tags', async ({ page }) => {
   expect(texts).toContain('Delete 3 tags');
 });
 
-test('artist target offers Play All / Retrieve Image', async ({ page }) => {
+test('artist target offers Play All / Get image', async ({ page }) => {
   const texts = await buildSpecTexts(page, { kind: 'artist', artistId: 7, name: 'Some Artist' });
   expect(texts).toContain('Play');
-  expect(texts).toContain('Retrieve Image');
+  expect(texts).toContain('Get image');
+  expect(texts).not.toContain('Retrieve Image');
+});
+
+test('a track with a title offers Get lyrics', async ({ page }) => {
+  const texts = await buildSpecTexts(page, { kind: 'track', trackId: 1, title: 'Teardrop', artistName: 'Massive Attack', albumTitle: null, isLocal: true });
+  expect(texts).toContain('Get lyrics');
 });
 
 // There are deliberately NO host download entries in any context menu — the

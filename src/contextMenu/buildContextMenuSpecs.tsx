@@ -7,6 +7,7 @@ import type { ContextMenuTarget } from "../types/contextMenu";
 import type { PluginMenuItem } from "../types/plugin";
 import { toPluginTarget } from "../types/contextMenu";
 import { buildPluginMenuSpecs, mergeHostAction } from "./pluginMenuGroups";
+import { buildGetFromProvidersSpec, type ProviderChoice } from "./providerMenus";
 import { buildAddToPlaylistSubmenu } from "./addToPlaylistMenu";
 import type { UserPlaylist } from "../hooks/useUserPlaylists";
 import { isLocalTrack, librarySelection } from "../queueEntry";
@@ -17,6 +18,28 @@ import type { useQueue } from "../hooks/useQueue";
 import type { useVideoLayout } from "../hooks/useVideoLayout";
 import type { useImageCache } from "../hooks/useImageCache";
 
+/** A track as Get lyrics needs it: its names, plus its file as a hint. */
+export interface GetLyricsTrack {
+  title: string;
+  artistName?: string | null;
+  albumTitle?: string | null;
+  path?: string | null;
+}
+
+/** What the Get lyrics / Get image rows offer (switched-on providers, the
+ *  user's order) and what they open — the Retrieve modal in "get" mode. */
+export interface GetMenus {
+  lyrics: ProviderChoice[];
+  images: Record<"artist" | "album" | "tag", ProviderChoice[]>;
+  openLyrics: (track: GetLyricsTrack, providerKey: string | null) => void;
+  openImage: (kind: "artist" | "album" | "tag", name: string, artistName: string | null, providerKey: string | null) => void;
+}
+
+/** The track menu's Get lyrics row. */
+export function getLyricsSpec(menus: GetMenus, track: GetLyricsTrack): MenuItemSpec {
+  return buildGetFromProvidersSpec("Get lyrics", menus.lyrics, (key) => menus.openLyrics(track, key));
+}
+
 export interface ContextMenuDeps {
   contextMenuActions: ReturnType<typeof useContextMenuActions>;
   videoLayout: ReturnType<typeof useVideoLayout>;
@@ -26,8 +49,8 @@ export interface ContextMenuDeps {
   artistImageCache: ReturnType<typeof useImageCache>;
   albumImageCache: ReturnType<typeof useImageCache>;
   tagImageCache: ReturnType<typeof useImageCache>;
-  /** Opens the centered Retrieve modal (preview → Apply) for the Refresh Image action. */
-  beginRetrieveImage: (kind: "artist" | "album" | "tag", name: string, artistName?: string | null) => void;
+  /** Get lyrics / Get image: the providers to offer and the openers. */
+  getMenus: GetMenus;
   setSearchInitialQuery: (q: string | null) => void;
   setSearchQueryKey: (fn: (k: number) => number) => void;
   setDeleteTagConfirm: (tags: { id: number; name: string }[] | null) => void;
@@ -88,6 +111,7 @@ export function buildContextMenuSpecs(target: ContextMenuTarget, d: ContextMenuD
           pluginTarget, d.plugins.dispatchContextMenuAction,
         );
         specs.push(radio.spec);
+        specs.push(getLyricsSpec(d.getMenus, { title: t.title, artistName: t.artistName, albumTitle: t.albumTitle, path: t.path }));
         const libId = t.libraryId;
         if (libId != null) {
           specs.push({ kind: "item", text: "View Details", action: () => d.library.handleTrackClick(librarySelection(libId)) });
@@ -175,6 +199,10 @@ export function buildContextMenuSpecs(target: ContextMenuTarget, d: ContextMenuD
         }}, pluginItems, pluginTarget, d.plugins.dispatchContextMenuAction);
         specs.push(radio.spec);
         pluginItems = radio.rest;
+        const queued = d.queueHook.queue[target.indices[0]];
+        if (queued) {
+          specs.push(getLyricsSpec(d.getMenus, { title: queued.title, artistName: queued.artist_name, albumTitle: queued.album_title, path: queued.path }));
+        }
 
         // View Details — needs d.library ID
         if (target.trackIds[0] != null) {
@@ -244,16 +272,14 @@ export function buildContextMenuSpecs(target: ContextMenuTarget, d: ContextMenuD
           onBrowse: () => d.onBrowsePlaylists(target),
         }));
       }
-      if (hasId && (target.kind === "artist" || target.kind === "album" || target.kind === "tag")) {
-        const refreshAction = target.kind === "artist"
-          ? () => d.beginRetrieveImage("artist", target.name)
-          : target.kind === "album"
-          ? () => d.beginRetrieveImage("album", target.title, target.artistName)
-          : target.kind === "tag"
-          ? () => d.beginRetrieveImage("tag", target.name)
-          : null;
-        if (refreshAction) {
-          specs.push({ kind: "item", text: "Retrieve Image", action: refreshAction });
+      // Get image: from any switched-on image provider, confirmed before it's
+      // saved. Entity images are keyed by name, so no library id is needed.
+      if (target.kind === "artist" || target.kind === "album" || target.kind === "tag") {
+        const kind = target.kind;
+        const name = target.kind === "album" ? target.title : target.name;
+        const artistName = target.kind === "album" ? target.artistName ?? null : null;
+        if (name) {
+          specs.push(buildGetFromProvidersSpec("Get image", d.getMenus.images[kind], (key) => d.getMenus.openImage(kind, name, artistName, key)));
         }
       }
       if (d.contextMenuActions.handleBulkEdit && (isMulti || (target.kind === "track" && target.trackId))) {
@@ -273,6 +299,7 @@ export function buildContextMenuSpecs(target: ContextMenuTarget, d: ContextMenuD
         }}, pluginItems, pluginTarget, d.plugins.dispatchContextMenuAction);
         specs.push(radio.spec);
         pluginItems = radio.rest;
+        specs.push(getLyricsSpec(d.getMenus, { title: target.title, artistName: target.artistName, albumTitle: target.albumTitle }));
       }
       if (target.kind === "track" && target.trackId) {
         // Captured, not read off `target` inside the closure: the guard's

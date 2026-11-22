@@ -75,16 +75,20 @@ function groupBy<T>(items: T[], keyOf: (t: T) => string): Map<string, T[]> {
   return out;
 }
 
-/** One leaf per provider of a shared action, sorted by provider name. A plugin
- *  offering the action twice keeps its labels apart ("Last.fm: Start radio"). */
-function sharedActionLeaves(items: PluginMenuItem[]): PluginMenuNode[] {
-  const perPlugin = groupBy(items, (it) => it.pluginId);
-  return items
-    .map((it): PluginMenuNode => ({
-      kind: "leaf",
-      text: (perPlugin.get(it.pluginId)?.length ?? 0) > 1 ? pluginMenuItemLabel(it) : providerName(it),
-      item: it,
-    }))
+/** One entry per provider of a shared action, sorted by provider name: a leaf
+ *  named after the plugin, or — for a plugin offering the action more than
+ *  once (Soulseek's Download / Download and let me choose…) — a submenu named
+ *  after the plugin holding its own labels. */
+function sharedActionLeaves(items: PluginMenuItem[], action: string): PluginMenuNode[] {
+  return [...groupBy(items, (it) => it.pluginId)]
+    .map(([pluginId, own]): PluginMenuNode => own.length === 1
+      ? { kind: "leaf", text: providerName(own[0]), item: own[0] }
+      : {
+          kind: "submenu",
+          key: `action:${action}:${pluginId}`,
+          text: providerName(own[0]),
+          children: [...own].sort(byOrderThenLabel).map((it) => ({ kind: "leaf", text: it.label, item: it })),
+        })
     .sort(byText);
 }
 
@@ -97,7 +101,7 @@ export function layoutPluginMenu(matching: PluginMenuItem[]): PluginMenuNode[] {
     if (items.length === 1) {
       top.push({ kind: "leaf", text: `${title} (${providerName(items[0])})`, item: items[0] });
     } else {
-      top.push({ kind: "submenu", key: `action:${action}`, text: title, children: sharedActionLeaves(items) });
+      top.push({ kind: "submenu", key: `action:${action}`, text: title, children: sharedActionLeaves(items, action) });
     }
   }
   const plain = matching.filter((it) => !sharedActionOf(it));
@@ -187,7 +191,7 @@ export function mergeHostAction(
       text: SHARED_MENU_ACTIONS[host.action],
       items: [
         { kind: "item", text: HOST_PROVIDER_LABEL, action: host.run },
-        ...sharedActionLeaves(joined).map(nodeToSpec(target, dispatch)),
+        ...sharedActionLeaves(joined, host.action).map(nodeToSpec(target, dispatch)),
       ],
     },
     rest: matching.filter((it) => !joined.includes(it)),
