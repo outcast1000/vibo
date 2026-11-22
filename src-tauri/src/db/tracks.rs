@@ -607,10 +607,8 @@ impl Database {
     }
 
     /// Find a track by metadata (title, artist, album) with diacritic-insensitive matching.
-    /// Matching cascade: title+artist+album → title+artist → the artist's
-    /// tracks by `loose_title_key` (punctuation and edition tags ignored), or
-    /// title only when no artist is given (never as a fallback for a missed
-    /// artist).
+    /// Matching cascade: title+artist+album → title+artist, or title only
+    /// when no artist is given (never as a fallback for a missed artist).
     /// When multiple matches exist, prefers local > subsonic > other.
     pub fn find_track_by_metadata(
         &self,
@@ -625,8 +623,8 @@ impl Database {
     }
 
     /// Every enabled-collection copy in the first cascade tier that matches
-    /// (title+artist+album → title+artist → loose title+artist; title only
-    /// when no artist is given), ordered local >
+    /// (title+artist+album → title+artist; title only when no artist is
+    /// given), ordered local >
     /// subsonic > other and capped at 10. The single-result
     /// `find_track_by_metadata` is the head of this list; callers that can
     /// *verify* a copy walk the whole list instead — the playback Library
@@ -638,6 +636,34 @@ impl Database {
         title: &str,
         artist_name: Option<&str>,
         album_name: Option<&str>,
+    ) -> SqlResult<Vec<Track>> {
+        self.find_tracks_by_metadata_tiers(title, artist_name, album_name, false)
+    }
+
+    /// `find_tracks_by_metadata` plus a last tier, when an artist is given and
+    /// its exact title missed: that artist's tracks by `loose_title_key`
+    /// (punctuation and edition-only tags ignored). **For playback only** —
+    /// the Library stream resolver, where playing the 2010 remaster for
+    /// Spotify's 2020 one is what the user wants. Everything that *writes*
+    /// by this match (the like mirror, lyrics saves, the tag editor, import
+    /// de-duplication) stays on the exact tiers: the like store and its
+    /// reconcile key on the exact folded title, and a lyrics save must not
+    /// land in a different cut's file.
+    pub fn find_tracks_by_metadata_loose(
+        &self,
+        title: &str,
+        artist_name: Option<&str>,
+        album_name: Option<&str>,
+    ) -> SqlResult<Vec<Track>> {
+        self.find_tracks_by_metadata_tiers(title, artist_name, album_name, true)
+    }
+
+    fn find_tracks_by_metadata_tiers(
+        &self,
+        title: &str,
+        artist_name: Option<&str>,
+        album_name: Option<&str>,
+        loose: bool,
     ) -> SqlResult<Vec<Track>> {
         let conn = self.reader();
 
@@ -696,43 +722,67 @@ impl Database {
                 TRACK_SELECT, placeholders(title_v.len()), placeholders(artist_v.len()),
                 enabled_filter, order_clause
             );
-            let result = query_tier(&sql, [title_v, artist_v.clone()].concat())?;
-            if !result.is_empty() {
-                return Ok(result);
-            }
-
-            // Loose tier: the same artist's tracks whose title differs only by
-            // punctuation or an edition tag ("Transmission (2010 Remaster)"
-            // for Spotify's "Transmission - 2020 Digital Remaster"; "What
-            // Difference Does It Make" for "…Make?"). Compared in Rust over the
-            // artist's rows (indexed artist lookup, then a scan of that one
-            // artist's tracks) — the key is not an indexed expression. A copy
-            // on the asked-for album ranks first, then local > subsonic > other.
-            //
             // With an artist in hand, a title-only match is a different
             // artist's song of the same name ("Intro", "Creep") — never the
             // track asked for. Stop here rather than hand that to playback,
             // the like mirror or the tag editor.
+            let result = query_tier(&sql, [title_v, artist_v.clone()].concat())?;
+            if !result.is_empty() || !loose {
+                return Ok(result);
+            }
+
+            // Loose tier (opt-in — playback only): the same artist's tracks
+            // whose title differs only by punctuation or an edition tag
+            // ("Transmission (2010 Remaster)" for Spotify's "Transmission -
+            // 2020 Digital Remaster"; "What Difference Does It Make" for
+            // "…Make?"). The key is not an indexed expression, so it is
+            // compared in Rust over that one artist's ids and titles (indexed
+            // artist lookup, no other joins), and only the matches are read
+            // in full. A copy on the asked-for album ranks first, then local >
+            // subsonic > other.
             let key = loose_title_key(title);
             if key.is_empty() {
                 return Ok(Vec::new());
             }
             let sql = format!(
-                "{} WHERE ar.name IS NOT NULL AND strip_diacritics(unicode_lower(ar.name)) IN ({}) \
-                 {} ORDER BY CASE WHEN co.kind = 'local' THEN 0 WHEN co.kind = 'subsonic' THEN 1 ELSE 2 END",
-                TRACK_SELECT, placeholders(artist_v.len()), enabled_filter
+                "SELECT t.id, t.title FROM tracks t JOIN artists ar ON t.artist_id = ar.id \
+                 LEFT JOIN collections co ON t.collection_id = co.id \
+                 WHERE strip_diacritics(unicode_lower(ar.name)) IN ({}) {}",
+                placeholders(artist_v.len()), enabled_filter
             );
-            let album_key = album_name.map(loose_title_key).filter(|k| !k.is_empty());
-            let mut loose: Vec<Track> = query_tier(&sql, artist_v)?
-                .into_iter()
-                .filter(|t| loose_title_key(&t.title) == key)
-                .collect();
-            if let Some(ak) = album_key {
-                // Stable: keeps the source preference inside each group.
-                loose.sort_by_key(|t| t.album_title.as_deref().map(loose_title_key).as_ref() != Some(&ak));
+            let ids: Vec<i64> = {
+                let mut stmt = conn.prepare(&sql)?;
+                let rows = stmt.query_map(rusqlite::params_from_iter(artist_v), |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?;
+                let mut ids = Vec::new();
+                for row in rows {
+                    let (id, t) = row?;
+                    if loose_title_key(&t) == key {
+                        ids.push(id);
+                    }
+                }
+                ids
+            };
+            if ids.is_empty() {
+                return Ok(Vec::new());
             }
-            loose.truncate(10);
-            return Ok(loose);
+            let sql = format!(
+                "{} WHERE t.id IN ({}) ORDER BY CASE WHEN co.kind = 'local' THEN 0 \
+                 WHEN co.kind = 'subsonic' THEN 1 ELSE 2 END, t.id",
+                TRACK_SELECT, placeholders(ids.len())
+            );
+            let mut found: Vec<Track> = {
+                let mut stmt = conn.prepare(&sql)?;
+                let rows = stmt.query_map(rusqlite::params_from_iter(ids), |row| track_from_row(row))?;
+                rows.collect::<SqlResult<_>>()?
+            };
+            if let Some(ak) = album_name.map(loose_title_key).filter(|k| !k.is_empty()) {
+                // Stable: keeps the source preference inside each group.
+                found.sort_by_key(|t| t.album_title.as_deref().map(loose_title_key).as_ref() != Some(&ak));
+            }
+            found.truncate(10);
+            return Ok(found);
         }
 
         // No artist to go on: title only

@@ -76,10 +76,15 @@ async function resolveFromLibrary(
   albumName: string | null,
   opts: { preferVideo?: boolean } | undefined,
 ): Promise<ChainResult | null> {
+  // `loose`: also match the artist's copy whose title differs only by
+  // punctuation or an edition tag ("Transmission (2010 Remaster)" for
+  // "Transmission - 2020 Digital Remaster"). Playback only — every lookup that
+  // writes by the match stays exact (backend `find_tracks_by_metadata_loose`).
   const matches = await invoke<Track[]>("find_tracks_by_metadata", {
     title: stripRemasterSuffix(title) ?? title,
     artistName,
     albumName: stripRemasterSuffix(albumName),
+    loose: true,
   });
   // The prefer-video pass wants a VIDEO copy specifically — a user's own
   // music-video file should beat fetching one from the network. Only video

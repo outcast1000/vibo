@@ -2238,12 +2238,24 @@ fn test_loose_title_key() {
     assert_eq!(loose_title_key("What Difference Does It Make?"), "whatdifferencedoesitmake");
     assert_eq!(loose_title_key("What Difference Does It Make? - 2011 Remaster"), "whatdifferencedoesitmake");
     assert_eq!(loose_title_key("Song [Explicit]"), "song");
+    assert_eq!(loose_title_key("Song (Album Version)"), "song");
+    assert_eq!(loose_title_key("Song (Bonus Track)"), "song");
     assert_eq!(loose_title_key("Jóga"), "joga");
     assert_eq!(loose_title_key("Rock & Roll"), loose_title_key("Rock and Roll"));
-    // A different recording keeps its tag.
+    // En and em dashes, and stacked edition suffixes, peel from the right.
+    assert_eq!(loose_title_key("Song \u{2013} 2011 Remaster"), "song");
+    assert_eq!(loose_title_key("Song \u{2014} Remastered"), "song");
+    assert_eq!(loose_title_key("Song - 2009 Remaster - Explicit"), "song");
+    // A different recording keeps its tag — also when it mentions a remaster.
     assert_ne!(loose_title_key("Transmission (Live)"), "transmission");
+    assert_ne!(loose_title_key("Transmission - Live at Les Bains Douches / 2007 Remaster"), "transmission");
+    assert_ne!(loose_title_key("Song (Live) [Bonus Track]"), "song");
+    assert_ne!(loose_title_key("Song (Bonus Track - Live)"), "song");
+    assert_ne!(loose_title_key("Song - 2009 Remaster - Mono"), "song");
     assert_ne!(loose_title_key("Handsome Devil - John Peel Session 18/05/83"), "handsomedevil");
     assert_ne!(loose_title_key("Song (Remix)"), "song");
+    // "Album" alone is part of the title, not an edition.
+    assert_ne!(loose_title_key("Song (Album)"), "song");
     // Nothing alphanumeric left: never matches.
     assert_eq!(loose_title_key("???"), "");
 }
@@ -2259,17 +2271,30 @@ fn test_find_tracks_by_metadata_loose_tier_matches_edition_and_punctuation() {
     let wddim = insert_track(&db, "80s/wddim.mp3", "What Difference Does It Make", Some(smiths), None);
 
     let found = db
-        .find_tracks_by_metadata("Transmission - 2020 Digital Remaster", Some("Joy Division"), Some("Transmission"))
+        .find_tracks_by_metadata_loose("Transmission - 2020 Digital Remaster", Some("Joy Division"), Some("Transmission"))
         .unwrap();
     assert_eq!(found.iter().map(|t| t.id).collect::<Vec<_>>(), vec![transmission]);
 
     let found = db
-        .find_track_by_metadata("What Difference Does It Make?", Some("The Smiths"), Some("Best... I (2011 Remaster)"))
+        .find_tracks_by_metadata_loose("What Difference Does It Make?", Some("The Smiths"), Some("Best... I (2011 Remaster)"))
         .unwrap();
-    assert_eq!(found.map(|t| t.id), Some(wddim));
+    assert_eq!(found.iter().map(|t| t.id).collect::<Vec<_>>(), vec![wddim]);
 
     // Still artist-bound: the loose tier never crosses to another artist.
-    assert!(db.find_track_by_metadata("Transmission", Some("The Smiths"), None).unwrap().is_none());
+    assert!(db.find_tracks_by_metadata_loose("Transmission", Some("The Smiths"), None).unwrap().is_empty());
+}
+
+#[test]
+fn test_find_track_by_metadata_stays_exact() {
+    // The like mirror, lyrics saves, the tag editor and import de-duplication
+    // all go through the exact lookup: a remaster or punctuation variant is
+    // not the song they were asked about.
+    let db = test_db();
+    let smiths = db.get_or_create_artist("The Smiths").unwrap();
+    insert_track(&db, "80s/wddim.mp3", "What Difference Does It Make", Some(smiths), None);
+
+    assert!(db.find_track_by_metadata("What Difference Does It Make?", Some("The Smiths"), None).unwrap().is_none());
+    assert!(db.find_tracks_by_metadata("What Difference Does It Make - 2011 Remaster", Some("The Smiths"), None).unwrap().is_empty());
 }
 
 #[test]
@@ -2279,7 +2304,7 @@ fn test_find_tracks_by_metadata_exact_title_beats_loose() {
     let exact = insert_track(&db, "jd/a.mp3", "Atmosphere", Some(jd), None);
     insert_track(&db, "jd/b.mp3", "Atmosphere (2007 Remaster)", Some(jd), None);
 
-    let found = db.find_tracks_by_metadata("Atmosphere", Some("Joy Division"), None).unwrap();
+    let found = db.find_tracks_by_metadata_loose("Atmosphere", Some("Joy Division"), None).unwrap();
     assert_eq!(found.iter().map(|t| t.id).collect::<Vec<_>>(), vec![exact]);
 }
 
@@ -2292,7 +2317,7 @@ fn test_find_tracks_by_metadata_loose_tier_prefers_the_named_album() {
     let on_substance = insert_track(&db, "jd/s.mp3", "Transmission (Remastered)", Some(jd), Some(substance));
     let on_best = insert_track(&db, "jd/b.mp3", "Transmission [2010 Remaster]", Some(jd), Some(best));
 
-    let found = db.find_tracks_by_metadata("Transmission - Remaster", Some("Joy Division"), Some("The Best Of")).unwrap();
+    let found = db.find_tracks_by_metadata_loose("Transmission - Remaster", Some("Joy Division"), Some("The Best Of")).unwrap();
     assert_eq!(found.iter().map(|t| t.id).collect::<Vec<_>>(), vec![on_best, on_substance]);
 }
 

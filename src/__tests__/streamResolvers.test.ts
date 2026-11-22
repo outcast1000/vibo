@@ -57,6 +57,7 @@ describe("createLibraryStreamResolver", () => {
       title: "Fire Spirit",
       artistName: "The Gun Club",
       albumName: "Fire Of Love",
+      loose: true,
     });
   });
 

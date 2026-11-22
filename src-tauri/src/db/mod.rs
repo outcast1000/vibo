@@ -51,36 +51,52 @@ pub fn match_variants(s: &str) -> Vec<String> {
     out
 }
 
-/// A version tag that names an edition of the *same* recording — a remaster,
-/// the explicit cut, a bonus-track or album-version label — as opposed to a
-/// different recording ("Live", "Demo", "Remix", "John Peel Session"), which
-/// must keep its title distinct.
-static EDITION_TAG: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"\b(re-?master\w*|explicit|bonus track|album version)\b").unwrap()
-});
 static BRACKET_GROUP: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"\(([^)]*)\)|\[([^\]]*)\]").unwrap());
 
+/// Whether a version tag (a bracket group's inside, or a dashed suffix) names
+/// only an edition of the *same* recording — a remaster, the explicit cut, a
+/// bonus-track or album-version label, with years and filler — and nothing
+/// else. Any other word ("Live", "Demo", "Remix", "Mono", "John Peel
+/// Session", "Live / 2007 Remaster") makes it a different recording, whose
+/// title must stay distinct.
+fn is_edition_only(tag: &str) -> bool {
+    let joined = tag.replace("re-master", "remaster");
+    let words: Vec<&str> = joined.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let is_edition_word = |w: &str| w.starts_with("remaster") || w == "explicit" || w == "bonus";
+    // "Album" alone is a title word; it names an edition only as "Album Version".
+    let names_edition = words.iter().any(|w| is_edition_word(w))
+        || (words.contains(&"album") && words.contains(&"version"));
+    names_edition
+        && words.iter().all(|w| {
+            is_edition_word(w)
+                || w.chars().all(|c| c.is_ascii_digit())
+                || matches!(*w, "album" | "track" | "version" | "digital" | "digitally" | "edition" | "original")
+        })
+}
+
 /// The title identity of the metadata lookup's loose tier: case and accents
-/// folded, edition tags dropped — `(2010 Remaster)`, `[Explicit]`, or a dashed
-/// suffix like Spotify's `- 2020 Digital Remaster` — a standalone `&` read as
-/// "and", then only letters and digits kept. So "Transmission (2010
+/// folded, edition-only tags dropped — `(2010 Remaster)`, `[Explicit]`, and
+/// dashed suffixes like Spotify's `- 2020 Digital Remaster` (en and em dashes
+/// too, peeled from the right while each is edition-only) — a standalone `&`
+/// read as "and", then only letters and digits kept. So "Transmission (2010
 /// Remaster)" ≡ "Transmission - 2020 Digital Remaster" and "What Difference
 /// Does It Make?" ≡ "What Difference Does It Make", while "Transmission
 /// (Live)" stays its own song. Empty when nothing alphanumeric is left (such a
 /// title never matches loosely).
 pub fn loose_title_key(s: &str) -> String {
-    let mut t = strip_diacritics(&s.to_lowercase());
+    let mut t = strip_diacritics(&s.to_lowercase()).replace(" \u{2013} ", " - ").replace(" \u{2014} ", " - ");
     t = BRACKET_GROUP
         .replace_all(&t, |c: &regex::Captures| {
             let inner = c.get(1).or_else(|| c.get(2)).map_or("", |m| m.as_str());
-            if EDITION_TAG.is_match(inner) { String::new() } else { c[0].to_string() }
+            if is_edition_only(inner) { String::new() } else { c[0].to_string() }
         })
         .into_owned();
-    if let Some(i) = t.rfind(" - ") {
-        if EDITION_TAG.is_match(&t[i + 3..]) {
-            t.truncate(i);
+    while let Some(i) = t.rfind(" - ") {
+        if !is_edition_only(&t[i + 3..]) {
+            break;
         }
+        t.truncate(i);
     }
     t.replace(" & ", " and ").chars().filter(|c| c.is_alphanumeric()).collect()
 }

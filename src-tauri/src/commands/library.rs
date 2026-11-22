@@ -221,16 +221,23 @@ pub async fn find_track_by_metadata(
 /// subsonic > other. Backs the playback Library resolver, which verifies a
 /// local copy still exists on disk and falls through to the next copy —
 /// `find_track_by_metadata` can only ever answer with the preferred row.
+/// `loose` adds the edition/punctuation-insensitive tier
+/// (`Database::find_tracks_by_metadata_loose`) — playback only.
 #[tauri::command]
 pub async fn find_tracks_by_metadata(
     state: State<'_, AppState>,
     title: String,
     artist_name: Option<String>,
     album_name: Option<String>,
+    loose: Option<bool>,
 ) -> Result<Vec<Track>, String> {
     with_db(&state, move |db| {
-        db
-            .find_tracks_by_metadata(&title, artist_name.as_deref(), album_name.as_deref())
+        let (artist, album) = (artist_name.as_deref(), album_name.as_deref());
+        if loose.unwrap_or(false) {
+            db.find_tracks_by_metadata_loose(&title, artist, album)
+        } else {
+            db.find_tracks_by_metadata(&title, artist, album)
+        }
     })
     .await
 }
