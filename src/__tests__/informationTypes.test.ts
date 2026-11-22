@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { cacheTtlForRow, CORE_LOCAL_LYRICS_PROVIDER, LOCAL_INFO_TTL, NEVER_EXPIRES, isSyncedLyricsValue, decideCacheAction as realDecideCacheAction } from "../utils/infoFetchChain";
+import { cacheTtlForRow, CORE_LOCAL_LYRICS_PROVIDER, LOCAL_INFO_TTL, MISS_TTL, NEVER_EXPIRES, isSyncedLyricsValue, decideCacheAction as realDecideCacheAction } from "../utils/infoFetchChain";
 
 const ERROR_TTL = 3600; // 1 hour
 
@@ -92,10 +92,22 @@ describe("cacheTtlForRow", () => {
     expect(cacheTtlForRow(providers, 9, "error", WEB_TTL)).toBe(LOCAL_INFO_TTL);
   });
 
-  it("types with no local provider are untouched, misses included", () => {
+  it("types with no local provider keep the type TTL for an answer", () => {
     const webOnly: Array<[string, number]> = [["lastfm", 3], ["genius", 4]];
     expect(cacheTtlForRow(webOnly, 3, "ok", WEB_TTL)).toBe(WEB_TTL);
-    expect(cacheTtlForRow(webOnly, 4, "not_found", WEB_TTL)).toBe(WEB_TTL);
+  });
+
+  it("a miss on a web-only type is re-asked after a week, not the type TTL", () => {
+    // A provider may add the bio / review later; 90 days of "nothing" is too long.
+    const webOnly: Array<[string, number]> = [["lastfm", 3], ["genius", 4]];
+    expect(cacheTtlForRow(webOnly, 4, "not_found", WEB_TTL)).toBe(MISS_TTL);
+    expect(realDecideCacheAction("not_found", 1_000_000 - MISS_TTL - 1, cacheTtlForRow(webOnly, 4, "not_found", WEB_TTL), 1_000_000)).toBe("loading");
+    expect(realDecideCacheAction("not_found", 1_000_000 - MISS_TTL + 60, cacheTtlForRow(webOnly, 4, "not_found", WEB_TTL), 1_000_000)).toBe("empty");
+  });
+
+  it("a miss never outlives a type TTL that is already shorter than a week", () => {
+    const webOnly: Array<[string, number]> = [["community", 5]];
+    expect(cacheTtlForRow(webOnly, 5, "not_found", 300)).toBe(300);
   });
 
   it("never raises a TTL that is already shorter than a day", () => {

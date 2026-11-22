@@ -31,6 +31,12 @@ export function isSyncedLyricsValue(raw: string | null | undefined): boolean {
 /** How long a cache row that depends on the user's own disk stays fresh. */
 export const LOCAL_INFO_TTL = 86400; // 1 day in seconds
 
+/** Longest a "nothing found" row stays fresh on a web-only type. A miss is not
+ *  an answer: a provider may add the lyrics / bio / review tomorrow, and at the
+ *  type's TTL (90 days for most) the page would keep saying "nothing" for three
+ *  months. Errors are shorter still (`ERROR_TTL`, applied by decideCacheAction). */
+export const MISS_TTL = 7 * 86400; // 7 days in seconds
+
 /** The built-in local-lyrics provider row (seeded by `ensure_builtin_rows` in db/mod.rs; the
  *  frontend answers it in usePlugins.invokeInfoFetch via `get_local_lyrics`).
  *  Mirrors the image chain's `core:` rows — the prefix can never collide with
@@ -47,6 +53,10 @@ export const CORE_LOCAL_LYRICS_PROVIDER = "core:local-lyrics";
  * - any non-ok row (a chain-wide "no lyrics found" must not mask an .lrc the
  *   user adds tomorrow — with the old 90-day miss, a track whose lyrics were
  *   looked up once before the file existed stayed lyric-less for 3 months).
+ *
+ * A miss on a type with no local provider is capped at `MISS_TTL` (7 days):
+ * at the type's TTL a song looked up before LRCLIB had it, or an artist whose
+ * bio was written later, stayed empty for 90 days.
  *
  * Ok rows from web providers — including a user's manual edit, which is
  * saved under the web row — are never re-asked (`NEVER_EXPIRES`) when they are
@@ -72,8 +82,8 @@ export function cacheTtlForRow(
   // expiring too.
   if (typeId === "lyrics" && status === "ok" && !rowIsCore && isSyncedLyricsValue(rawValue)) return NEVER_EXPIRES;
   const hasCore = providers.some(([pluginId]) => pluginId.startsWith("core:"));
-  if (!hasCore) return typeTtl;
-  if (rowIsCore || status !== "ok") return Math.min(typeTtl, LOCAL_INFO_TTL);
+  if (rowIsCore || (hasCore && status !== "ok")) return Math.min(typeTtl, LOCAL_INFO_TTL);
+  if (status !== "ok") return Math.min(typeTtl, MISS_TTL);
   return typeTtl;
 }
 
