@@ -87,8 +87,12 @@
   margin-bottom: 8px;
   position: relative;
   min-width: 0;
-  /* Before the first measurement every tab is on the row; never let that
-     frame widen the page. `clip` (not `hidden`) leaves the tooltips above. */
+}
+
+/* Before the first measurement every tab is on the row; never let that
+   frame widen the page. Only then: once measured the row fits, and a clip
+   would cut the tab tooltips off at the row's sides. */
+.info-sections-tabs--measuring {
   overflow-x: clip;
 }
 
@@ -122,10 +126,6 @@
   content: attr(data-label);
 }
 
-.info-sections-more {
-  opacity: 0.7;
-}
-
 .info-sections-tab,
 .info-sections-measure-tab {
   padding: 6px 14px;
@@ -145,6 +145,11 @@
 }
 
 .info-sections-tab:hover {
+  opacity: 0.7;
+}
+
+/* After the base rule: same specificity, so order decides. */
+.info-sections-tab.info-sections-more {
   opacity: 0.7;
 }
 

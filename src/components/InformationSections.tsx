@@ -467,7 +467,7 @@ export function InformationSections({
 
   return (
     <div className="information-sections">
-      <div className="info-sections-tabs" ref={tabsRowRef}>
+      <div className={`info-sections-tabs${measure.available > 0 ? "" : " info-sections-tabs--measuring"}`} ref={tabsRowRef}>
         <div className="info-sections-measure" aria-hidden="true">
           <div className="info-sections-measure-row" ref={measureRef}>
             {/* The label is drawn by ::before from data-label, so these copies
