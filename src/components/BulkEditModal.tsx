@@ -57,27 +57,41 @@ interface BulkEditModalProps {
 
 type Tab = "details" | "tags" | "lyrics" | "file";
 
-/** One editable text field: its value, whether the user touched it, and the
- *  three ways to change it. "Cleared" = touched and empty, which saves as
- *  null; untouched leaves the field alone. */
-function useField(initial: string) {
+/** One editable text field. Changed means *differs from what the tracks
+ *  have* — retyping the same value is no edit, and leaves no dot behind.
+ *  "Cleared" saves as null. On one track an emptied field is a clear; across
+ *  several (`multi`) an empty box means "leave alone" and only the Clear
+ *  button clears, so typing and deleting can't wipe a field on every track. */
+function useField(initial: string, { multi = false, mixed = false } = {}) {
   const [value, setValue] = useState(initial);
-  const [dirty, setDirty] = useState(false);
+  const [clearRequested, setClearRequested] = useState(false);
+  const cleared = clearRequested || (!multi && initial !== "" && value === "");
+  const dirty = cleared || (value !== initial && !(multi && value === ""));
   return {
     value,
     dirty,
-    cleared: dirty && value === "",
-    set: (v: string) => { setValue(v); setDirty(true); },
-    clear: () => { setValue(""); setDirty(true); },
-    revert: () => { setValue(initial); setDirty(false); },
+    cleared,
+    /** There is something to clear: a value, or (several tracks) differing ones. */
+    canClear: initial !== "" || mixed,
+    set: (v: string) => { setValue(v); setClearRequested(false); },
+    clear: () => { setValue(""); setClearRequested(true); },
+    revert: () => { setValue(initial); setClearRequested(false); },
   };
 }
 type Field = ReturnType<typeof useField>;
 
-function FieldRow({ label, field, clearable, children }: {
+/** What an empty box says: what Save will do with it. */
+function fieldPlaceholder(field: Field, initial: string, mixedPlaceholder: string | undefined, clearedText = "Will be cleared") {
+  if (field.cleared) return clearedText;
+  if (mixedPlaceholder) return mixedPlaceholder;
+  return initial !== "" ? `Unchanged (${initial})` : undefined;
+}
+
+function FieldRow({ label, field, clearable, hint, children }: {
   label: string;
   field: Field;
   clearable?: boolean;
+  hint?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -85,21 +99,37 @@ function FieldRow({ label, field, clearable, children }: {
       {/* Not a <label>: it holds interactive buttons and has no associated input.
           In WKWebView a button nested in a <label> can have its click swallowed. */}
       <div className="bulk-edit-field-label">
-        <span>{label}{field.dirty && <span className="bulk-edit-dirty-dot" aria-label="modified" />}</span>
+        <span>{label}{field.dirty && <DirtyDot />}</span>
         <span className="bulk-edit-field-actions">
-          {field.cleared && <span className="bulk-edit-cleared-tag">Will be cleared</span>}
-          {clearable && !field.cleared && (
-            <button type="button" className="bulk-edit-clear" onClick={field.clear} title="Clear this field (set to empty)">Clear</button>
+          {clearable && field.cleared && <span className="bulk-edit-cleared-tag">Will be cleared</span>}
+          {clearable && field.canClear && !field.cleared && (
+            <button type="button" className="bulk-edit-clear" onClick={field.clear} title="Clear this field (set to empty)" aria-label={`Clear ${label}`}>Clear</button>
           )}
           {field.dirty && (
-            <button type="button" className="bulk-edit-revert" onClick={field.revert} title="Revert this field">↺</button>
+            <button type="button" className="bulk-edit-revert" onClick={field.revert} title="Revert this field" aria-label={`Revert ${label}`}>↺</button>
           )}
         </span>
       </div>
       {children}
+      {hint && <p className="bulk-edit-hint">{hint}</p>}
     </div>
   );
 }
+
+/** The "has unsaved changes" dot, with words for screen readers. */
+function DirtyDot() {
+  return (
+    <span className="bulk-edit-dirty-dot">
+      <span className="bulk-edit-sr">(modified)</span>
+    </span>
+  );
+}
+
+const IS_MAC = typeof navigator !== "undefined" && navigator.platform.includes("Mac");
+const SAVE_SHORTCUT = IS_MAC ? "⌘S" : "Ctrl+S";
+
+/** After this long the lyrics wait says how long it has been. */
+const LYRICS_SLOW_MS = 3000;
 
 const NUMBER_INPUT_PROPS = { type: "number", autoComplete: "off", autoCorrect: "off", spellCheck: false, style: { width: 120 } } as const;
 
@@ -133,12 +163,18 @@ export default function BulkEditModal({
     album: sharedValue(tracks, (t) => t.album_title),
     year: sharedValue(tracks, (t) => t.year),
   }), [tracks]);
+  const multi = count > 1;
   const title = useField(single?.title ?? "");
   const trackNumber = useField(single?.track_number != null ? String(single.track_number) : "");
-  const artist = useField(shared.artist.value);
-  const albumArtist = useField(shared.albumArtist.value);
-  const album = useField(shared.album.value);
-  const year = useField(shared.year.value);
+  const artist = useField(shared.artist.value, { multi, mixed: !!shared.artist.placeholder });
+  const albumArtist = useField(shared.albumArtist.value, { multi, mixed: !!shared.albumArtist.placeholder });
+  const album = useField(shared.album.value, { multi, mixed: !!shared.album.placeholder });
+  const year = useField(shared.year.value, { multi, mixed: !!shared.year.placeholder });
+  // Several tracks: say how many albums they span, so the reach of a save is visible.
+  const albumCount = useMemo(
+    () => new Set(tracks.map((t) => `${t.album_title ?? ""}\u0001${t.album_artist_name ?? t.artist_name ?? ""}`)).size,
+    [tracks],
+  );
   const fields = [title, trackNumber, artist, albumArtist, album, year];
   const detailsDirty = fields.some((f) => f.dirty);
   const titleInvalid = title.dirty && title.value.trim() === "";
@@ -187,6 +223,9 @@ export default function BulkEditModal({
   const [lyricsLoadError, setLyricsLoadError] = useState<string | null>(null);
   const [lyricsRequested, setLyricsRequested] = useState(false);
   const lyricsDirty = lyricsInitial != null && lyricsText.trim() !== "" && lyricsText !== lyricsInitial;
+  // Emptying the editor saves nothing (there is no "remove lyrics" write) —
+  // said, so a disabled Save isn't a mystery.
+  const lyricsEmptied = lyricsInitial != null && lyricsInitial.trim() !== "" && lyricsText.trim() === "";
 
   async function loadLyrics(entity: InfoEntity) {
     setLyricsLoadError(null);
@@ -344,13 +383,38 @@ export default function BulkEditModal({
   ];
 
   const fileName = fileNameOf(single?.path);
+  const [folderError, setFolderError] = useState<string | null>(null);
+  async function showInFolder(trackId: number) {
+    setFolderError(null);
+    try {
+      await invoke("show_in_folder", { trackId });
+    } catch (e) {
+      console.error("Failed to open containing folder:", e);
+      setFolderError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  // Tabs: arrow keys move between them (and open the one they land on).
+  const tabRefs = useRef(new Map<Tab, HTMLButtonElement>());
+  function onTabKeyDown(e: React.KeyboardEvent, index: number) {
+    let next: number | null = null;
+    if (e.key === "ArrowRight") next = (index + 1) % tabs.length;
+    else if (e.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = tabs.length - 1;
+    if (next == null) return;
+    e.preventDefault();
+    const id = tabs[next].id;
+    openTab(id);
+    tabRefs.current.get(id)?.focus();
+  }
 
   return (
     <div className="ds-modal-overlay">
       <div
         className="ds-modal bulk-edit-modal"
         role="dialog"
-        aria-label={single ? `Edit “${single.title}”` : `Edit ${count} tracks`}
+        aria-label={single ? `Edit properties of “${single.title}”` : `Edit properties of ${count} tracks`}
         onKeyDown={(e) => {
           // Never let Escape reach the page behind (it would close a track page).
           if (e.key === "Escape") e.stopPropagation();
@@ -367,32 +431,44 @@ export default function BulkEditModal({
         }}
       >
         <div className="bulk-edit-head">
-          <h3 className="ds-modal-title">{single ? "Edit Track" : `Edit ${count} Tracks`}</h3>
-          {single && (
+          {/* Named like the menu item that opens it ("Edit Properties") — the
+              queue's "Edit info…" is a different dialog that never writes files. */}
+          <h3 className="ds-modal-title">Edit Properties</h3>
+          {single ? (
             <p className="bulk-edit-subtitle" title={single.path ?? undefined}>
               {[single.title, single.artist_name].filter(Boolean).join(" · ")}
               {fileName && <span className="bulk-edit-filename">{fileName}</span>}
+            </p>
+          ) : (
+            <p className="bulk-edit-subtitle">
+              {count} tracks{albumCount > 1 ? ` from ${albumCount} albums` : ""} — saving changes every one of their files.
             </p>
           )}
         </div>
 
         <div className="ds-tabs bulk-edit-tabs" role="tablist" aria-label="Edit">
-          {tabs.map((t) => (
+          {tabs.map((t, i) => (
             <button
               key={t.id}
+              ref={(el) => { if (el) tabRefs.current.set(t.id, el); else tabRefs.current.delete(t.id); }}
+              id={`bulk-edit-tab-${t.id}`}
               role="tab"
               aria-selected={tab === t.id}
+              aria-controls={`bulk-edit-panel-${t.id}`}
+              tabIndex={tab === t.id ? 0 : -1}
               className={`ds-tab${tab === t.id ? " active" : ""}`}
               onClick={() => openTab(t.id)}
+              onKeyDown={(e) => onTabKeyDown(e, i)}
             >
               {t.label}
-              {t.dirty && <span className="bulk-edit-dirty-dot" aria-label="modified" />}
+              {t.dirty && <DirtyDot />}
             </button>
           ))}
         </div>
 
         <div className="bulk-edit-body">
-          <fieldset className="bulk-edit-fieldset" disabled={!!metadataSaved} hidden={tab !== "details"}>
+          <fieldset className="bulk-edit-fieldset" disabled={!!metadataSaved} hidden={tab !== "details"}
+            id="bulk-edit-panel-details" role="tabpanel" aria-labelledby="bulk-edit-tab-details">
             {single && (
               <>
                 <FieldRow label="Title" field={title}>
@@ -400,6 +476,7 @@ export default function BulkEditModal({
                     className="ds-input"
                     aria-label="Title"
                     type="text"
+                    autoFocus
                     value={title.value}
                     onChange={(e) => title.set(e.target.value)}
                     autoComplete="off"
@@ -427,19 +504,25 @@ export default function BulkEditModal({
                 onChange={artist.set}
                 ariaLabel="Artist"
                 suggestions={artistOptions}
-                placeholder={artist.cleared ? "Will be cleared" : shared.artist.placeholder}
+                placeholder={fieldPlaceholder(artist, shared.artist.value, shared.artist.placeholder)}
+                autoFocus={!single}
               />
             </FieldRow>
             {/* ALBUMARTIST: which artist the album files under. Setting it (e.g.
                 "Various Artists") merges per-track-artist forks of a compilation
                 into one album; clearing falls back to each track's own artist. */}
-            <FieldRow label="Album artist" field={albumArtist} clearable>
+            <FieldRow
+              label="Album artist"
+              field={albumArtist}
+              clearable
+              hint="Who the album is filed under. Set “Various Artists” to keep a compilation together as one album."
+            >
               <AutocompleteInput
                 value={albumArtist.value}
                 onChange={albumArtist.set}
                 ariaLabel="Album artist"
                 suggestions={artistOptions}
-                placeholder={albumArtist.cleared ? "Will follow each track's artist" : shared.albumArtist.placeholder}
+                placeholder={fieldPlaceholder(albumArtist, shared.albumArtist.value, shared.albumArtist.placeholder, "Will follow each track's artist")}
               />
             </FieldRow>
             <FieldRow label="Album" field={album} clearable>
@@ -448,7 +531,7 @@ export default function BulkEditModal({
                 onChange={album.set}
                 ariaLabel="Album"
                 suggestions={albumOptions}
-                placeholder={album.cleared ? "Will be cleared" : shared.album.placeholder}
+                placeholder={fieldPlaceholder(album, shared.album.value, shared.album.placeholder)}
               />
             </FieldRow>
             <FieldRow label="Year" field={year} clearable>
@@ -457,17 +540,18 @@ export default function BulkEditModal({
                 className="ds-input"
                 aria-label="Year"
                 value={year.value}
-                placeholder={year.cleared ? "Will be cleared" : shared.year.placeholder}
+                placeholder={fieldPlaceholder(year, shared.year.value, shared.year.placeholder)}
                 onChange={(e) => year.set(e.target.value)}
               />
             </FieldRow>
           </fieldset>
 
-          <fieldset className="bulk-edit-fieldset" disabled={!!metadataSaved} hidden={tab !== "tags"}>
+          <fieldset className="bulk-edit-fieldset" disabled={!!metadataSaved} hidden={tab !== "tags"}
+            id="bulk-edit-panel-tags" role="tabpanel" aria-labelledby="bulk-edit-tab-tags">
             <p className="bulk-edit-hint">
               {single
                 ? "Tags are written into the file's genre field as well as the library."
-                : `Added tags go on all ${count} tracks; removed ones come off all of them. A tag only some tracks have shows how many — ↑ puts it on all, × takes it off all. Tags you leave alone stay as they are.`}
+                : `Tags you add or remove change all ${count} tracks. Tags you don't touch stay as they are.`}
             </p>
             <TagEditor
               tags={tagSel.applied}
@@ -491,7 +575,8 @@ export default function BulkEditModal({
               (and the place in Sync), and a remount would show the original
               text while Save still wrote the edited one. */}
           {single && lyricsRequested && (
-            <div className="bulk-edit-lyrics" hidden={tab !== "lyrics"}>
+            <div className="bulk-edit-lyrics" hidden={tab !== "lyrics"}
+              id="bulk-edit-panel-lyrics" role="tabpanel" aria-labelledby="bulk-edit-tab-lyrics">
               {lyricsLoadError ? (
                 <div className="bulk-edit-hint bulk-edit-hint--error">
                   Couldn't read the current lyrics: {lyricsLoadError}
@@ -500,15 +585,18 @@ export default function BulkEditModal({
                   )}
                 </div>
               ) : lyricsInitial == null ? (
-                <p className="bulk-edit-hint"><span className="ds-spinner ds-spinner--sm" /> Loading lyrics…</p>
+                <LyricsWait />
               ) : (
                 <>
                   <p className="bulk-edit-hint">
-                    {isLocalTrack(single)
-                      ? lyricsFromFile ? "From the track's own files. Saving writes them back there." : "Saving writes them into the track's file."
-                      : "This track has no local file, so the lyrics are kept in Vibo."}
+                    {lyricsSourceHint(isLocalTrack(single), lyricsFromFile, lyricsInitial.trim() !== "")}
                   </p>
                   {lyricsError && <p className="bulk-edit-hint bulk-edit-hint--error">Couldn't save the lyrics: {lyricsError}</p>}
+                  {lyricsEmptied && (
+                    <p className="bulk-edit-hint bulk-edit-hint--warning">
+                      Lyrics can't be removed here — an empty editor saves nothing. Revert, or write the lyrics you want instead.
+                    </p>
+                  )}
                   {metadataSaved && errors.length === 0 && <p className="bulk-edit-hint">Details and tags are saved.</p>}
                   <LyricsEditor initialText={lyricsInitial} live={live} seek={live ? seek : undefined} onTextChange={setLyricsText} />
                 </>
@@ -517,6 +605,15 @@ export default function BulkEditModal({
           )}
 
           {single && tab === "file" && (
+            <div id="bulk-edit-panel-file" role="tabpanel" aria-labelledby="bulk-edit-tab-file">
+            {single.id != null && isLocalTrack(single) && (
+              <div className="bulk-edit-file-actions">
+                <button type="button" className="ds-btn ds-btn--secondary ds-btn--sm" onClick={() => { if (single.id != null) void showInFolder(single.id); }}>
+                  {IS_MAC ? "Show in Finder" : "Show in Folder"}
+                </button>
+                {folderError && <span className="bulk-edit-hint bulk-edit-hint--error">Couldn't open the folder: {folderError}</span>}
+              </div>
+            )}
             <dl className="bulk-edit-file">
               <FileRow label="Path">{single.path ? <span className="bulk-edit-path">{single.path}</span> : null}</FileRow>
               <FileRow label="Format">{formatAudioSummary(single.format, audioProps) || null}</FileRow>
@@ -529,6 +626,7 @@ export default function BulkEditModal({
                 <FileRow key={k} label={prettifyTagKey(k)}>{String(v)}</FileRow>
               ))}
             </dl>
+            </div>
           )}
         </div>
 
@@ -549,14 +647,42 @@ export default function BulkEditModal({
           ) : (
             <>
               <button className="ds-btn ds-btn--ghost" onClick={requestClose}>{metadataSaved && !hasChanges ? "Close" : "Cancel"}</button>
-              <button className="ds-btn ds-btn--primary" onClick={() => void handleSave()} disabled={!canSave} title="⌘S">
-                {saving ? "Saving..." : "Save Changes"}
+              <button className="ds-btn ds-btn--primary" onClick={() => void handleSave()} disabled={!canSave} title={SAVE_SHORTCUT}>
+                {saving ? "Saving…" : "Save changes"}
               </button>
             </>
           )}
         </div>
       </div>
     </div>
+  );
+}
+
+/** Where the lyrics in the editor came from, and where Save puts them. Text
+ *  that didn't come from the files was found by a lyrics provider online. */
+function lyricsSourceHint(local: boolean, fromFile: boolean, hasText: boolean): string {
+  if (!local) return "This track has no local file, so the lyrics are kept in Vibo.";
+  if (fromFile) return "From the track's own files. Saving writes them back there.";
+  if (hasText) return "Found online — not in the track's file yet. Saving writes them into it.";
+  return "No lyrics yet. Saving writes them into the track's file.";
+}
+
+/** The wait for the lyrics chain, which may ask web providers one by one —
+ *  after a moment it says how long, so a slow provider doesn't read as a hang. */
+function LyricsWait() {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const started = Date.now();
+    const id = window.setInterval(() => setElapsed(Date.now() - started), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  return (
+    <p className="bulk-edit-hint">
+      <span className="ds-spinner ds-spinner--sm" />
+      {elapsed < LYRICS_SLOW_MS
+        ? "Loading lyrics…"
+        : `Asking the lyrics providers… ${Math.round(elapsed / 1000)}s`}
+    </p>
   );
 }
 

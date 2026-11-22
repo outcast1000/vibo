@@ -72,6 +72,31 @@
   color: var(--error);
 }
 
+.bulk-edit-hint--warning {
+  color: var(--warning);
+}
+
+.bulk-edit-file-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.bulk-edit-file-actions .bulk-edit-hint {
+  margin: 0;
+}
+
+/* Words for screen readers only (the dirty dot). */
+.bulk-edit-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .bulk-edit-confirm {
   margin-right: auto;
   font-size: var(--fs-sm);

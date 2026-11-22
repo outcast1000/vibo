@@ -54,13 +54,49 @@ afterEach(() => {
 });
 
 describe("BulkEditModal", () => {
+  const saveButton = () => screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement;
+
+  it("retyping a field's own value is no change", () => {
+    renderModal([track(1, "A")]);
+    const album = screen.getByLabelText("Album");
+    fireEvent.change(album, { target: { value: "LP2" } });
+    expect(saveButton().disabled).toBe(false);
+    fireEvent.change(album, { target: { value: "LP" } });
+    expect(saveButton().disabled).toBe(true);
+  });
+
+  it("across several tracks, typing into a field and deleting it again clears nothing", () => {
+    renderModal([track(1, "A"), { ...track(2, "B"), artist_name: "Other" }]);
+    const artist = screen.getByLabelText("Artist");
+    fireEvent.change(artist, { target: { value: "X" } });
+    fireEvent.change(artist, { target: { value: "" } });
+    expect(saveButton().disabled).toBe(true);
+    expect(screen.queryByText("Will be cleared")).toBeNull();
+  });
+
+  it("across several tracks, only the Clear button clears", async () => {
+    const onSave = renderModal([track(1, "A"), { ...track(2, "B"), artist_name: "Other" }]);
+    fireEvent.click(screen.getByRole("button", { name: "Clear Artist" }));
+    expect(screen.getByText("Will be cleared")).toBeTruthy();
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    const call = invoke.mock.calls.find(([cmd]) => cmd === "bulk_update_tracks");
+    expect((call?.[1] as { fields: Record<string, unknown> }).fields).toHaveProperty("artist_name");
+  });
+
+  it("offers no Clear on a field that is already empty", () => {
+    renderModal([{ ...track(1, "A"), year: null }]);
+    expect(screen.queryByRole("button", { name: "Clear Year" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Clear Album" })).toBeTruthy();
+  });
+
   it("adding a tag to two tracks sends only that tag — the tag one track has stays", async () => {
     const onSave = renderModal([track(1, "A"), track(2, "B")]);
     fireEvent.click(screen.getByRole("tab", { name: "Tags" }));
     const input = await screen.findByPlaceholderText("Add a tag…");
     fireEvent.change(input, { target: { value: "Live" } });
     fireEvent.keyDown(input, { key: "Enter" });
-    fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(onSave).toHaveBeenCalled());
     const call = invoke.mock.calls.find(([cmd]) => cmd === "bulk_update_tracks");
     expect(call?.[1]).toEqual({ trackIds: [1, 2], fields: { tags_add: ["Live"] } });
@@ -69,9 +105,9 @@ describe("BulkEditModal", () => {
   it("lyrics edited in the Lyrics tab are saved with the editor's save", async () => {
     const onSave = renderModal([track(1, "A")]);
     fireEvent.click(screen.getByRole("tab", { name: "Lyrics" }));
-    const area = await screen.findByLabelText("Lyrics");
+    const area = await screen.findByRole("textbox", { name: "Lyrics" });
     fireEvent.change(area, { target: { value: "new line" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(onSave).toHaveBeenCalled());
     expect(saveSongLyrics).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "track", name: "A", id: 1, path: "file:///m/A.flac" }),
@@ -86,12 +122,12 @@ describe("BulkEditModal", () => {
     const onSave = renderModal([track(1, "A")]);
     fireEvent.change(screen.getByLabelText("Year"), { target: { value: "1999" } });
     fireEvent.click(screen.getByRole("tab", { name: "Lyrics" }));
-    fireEvent.change(await screen.findByLabelText("Lyrics"), { target: { value: "new line" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+    fireEvent.change(await screen.findByRole("textbox", { name: "Lyrics" }), { target: { value: "new line" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     expect(await screen.findByText(/Couldn't save the lyrics: disk full/)).toBeTruthy();
     expect(onSave).not.toHaveBeenCalled();
     // Retry: only the lyrics are saved again.
-    fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(onSave).toHaveBeenCalled());
     expect(invoke.mock.calls.filter(([cmd]) => cmd === "bulk_update_tracks")).toHaveLength(1);
     expect(saveSongLyrics).toHaveBeenCalledTimes(2);
@@ -100,11 +136,11 @@ describe("BulkEditModal", () => {
   it("an edit survives leaving the Lyrics tab and coming back", async () => {
     renderModal([track(1, "A")]);
     fireEvent.click(screen.getByRole("tab", { name: "Lyrics" }));
-    fireEvent.change(await screen.findByLabelText("Lyrics"), { target: { value: "new line" } });
+    fireEvent.change(await screen.findByRole("textbox", { name: "Lyrics" }), { target: { value: "new line" } });
     fireEvent.click(screen.getByRole("tab", { name: "Details" }));
     // Its name now carries the unsaved dot ("Lyrics modified").
     fireEvent.click(screen.getByRole("tab", { name: /^Lyrics/ }));
-    expect((screen.getByLabelText("Lyrics") as HTMLTextAreaElement).value).toBe("new line");
+    expect((screen.getByRole("textbox", { name: "Lyrics" }) as HTMLTextAreaElement).value).toBe("new line");
   });
 
   it("Escape with unsaved changes asks first, and stops at the dialog", async () => {
@@ -131,9 +167,9 @@ describe("BulkEditModal", () => {
     renderModal([track(1, "A")]);
     fireEvent.click(screen.getByRole("tab", { name: "Lyrics" }));
     expect(await screen.findByText(/Couldn't read the current lyrics/)).toBeTruthy();
-    expect(screen.queryByLabelText("Lyrics")).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Lyrics" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
-    expect(await screen.findByLabelText("Lyrics")).toBeTruthy();
+    expect(await screen.findByRole("textbox", { name: "Lyrics" })).toBeTruthy();
   });
 
   it("some files failing still reports the change on Close, and nothing is written twice", async () => {
@@ -141,9 +177,9 @@ describe("BulkEditModal", () => {
     invoke.mockImplementationOnce(async () => ["/m/A.flac: read-only"]);
     const onSave = renderModal([track(1, "A")]);
     fireEvent.change(screen.getByLabelText("Album"), { target: { value: "New LP" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     expect(await screen.findByText(/read-only/)).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Save Changes" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ albumChanged: true, newAlbum: "New LP" }));
   });

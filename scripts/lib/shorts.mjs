@@ -138,9 +138,9 @@ export const SHORTS = [
       },
       {
         at: 11000,
-        focus: { target: { role: "button", name: "Save Changes" }, pad: 260 },
+        focus: { target: { role: "button", name: "Save changes" }, pad: 260 },
         caption: "Written to the files,\nnot just the app",
-        steps: [{ click: { role: "button", name: "Save Changes" }, moveMs: 550 }],
+        steps: [{ click: { role: "button", name: "Save changes" }, moveMs: 550 }],
       },
       {
         at: 13800,
