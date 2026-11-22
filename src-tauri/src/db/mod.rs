@@ -51,7 +51,39 @@ pub fn match_variants(s: &str) -> Vec<String> {
     out
 }
 
+/// A version tag that names an edition of the *same* recording — a remaster,
+/// the explicit cut, a bonus-track or album-version label — as opposed to a
+/// different recording ("Live", "Demo", "Remix", "John Peel Session"), which
+/// must keep its title distinct.
+static EDITION_TAG: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"\b(re-?master\w*|explicit|bonus track|album version)\b").unwrap()
+});
+static BRACKET_GROUP: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\(([^)]*)\)|\[([^\]]*)\]").unwrap());
 
+/// The title identity of the metadata lookup's loose tier: case and accents
+/// folded, edition tags dropped — `(2010 Remaster)`, `[Explicit]`, or a dashed
+/// suffix like Spotify's `- 2020 Digital Remaster` — a standalone `&` read as
+/// "and", then only letters and digits kept. So "Transmission (2010
+/// Remaster)" ≡ "Transmission - 2020 Digital Remaster" and "What Difference
+/// Does It Make?" ≡ "What Difference Does It Make", while "Transmission
+/// (Live)" stays its own song. Empty when nothing alphanumeric is left (such a
+/// title never matches loosely).
+pub fn loose_title_key(s: &str) -> String {
+    let mut t = strip_diacritics(&s.to_lowercase());
+    t = BRACKET_GROUP
+        .replace_all(&t, |c: &regex::Captures| {
+            let inner = c.get(1).or_else(|| c.get(2)).map_or("", |m| m.as_str());
+            if EDITION_TAG.is_match(inner) { String::new() } else { c[0].to_string() }
+        })
+        .into_owned();
+    if let Some(i) = t.rfind(" - ") {
+        if EDITION_TAG.is_match(&t[i + 3..]) {
+            t.truncate(i);
+        }
+    }
+    t.replace(" & ", " and ").chars().filter(|c| c.is_alphanumeric()).collect()
+}
 
 /// SQL expression that reconstructs the full URI from the relative path stored in
 /// `tracks.path` and the parent collection's root (path or url).

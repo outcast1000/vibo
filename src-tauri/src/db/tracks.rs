@@ -607,8 +607,10 @@ impl Database {
     }
 
     /// Find a track by metadata (title, artist, album) with diacritic-insensitive matching.
-    /// Matching cascade: title+artist+album → title+artist, or title only
-    /// when no artist is given (never as a fallback for a missed artist).
+    /// Matching cascade: title+artist+album → title+artist → the artist's
+    /// tracks by `loose_title_key` (punctuation and edition tags ignored), or
+    /// title only when no artist is given (never as a fallback for a missed
+    /// artist).
     /// When multiple matches exist, prefers local > subsonic > other.
     pub fn find_track_by_metadata(
         &self,
@@ -623,8 +625,8 @@ impl Database {
     }
 
     /// Every enabled-collection copy in the first cascade tier that matches
-    /// (title+artist+album → title+artist; title only when no artist is
-    /// given), ordered local >
+    /// (title+artist+album → title+artist → loose title+artist; title only
+    /// when no artist is given), ordered local >
     /// subsonic > other and capped at 10. The single-result
     /// `find_track_by_metadata` is the head of this list; callers that can
     /// *verify* a copy walk the whole list instead — the playback Library
@@ -694,11 +696,43 @@ impl Database {
                 TRACK_SELECT, placeholders(title_v.len()), placeholders(artist_v.len()),
                 enabled_filter, order_clause
             );
+            let result = query_tier(&sql, [title_v, artist_v.clone()].concat())?;
+            if !result.is_empty() {
+                return Ok(result);
+            }
+
+            // Loose tier: the same artist's tracks whose title differs only by
+            // punctuation or an edition tag ("Transmission (2010 Remaster)"
+            // for Spotify's "Transmission - 2020 Digital Remaster"; "What
+            // Difference Does It Make" for "…Make?"). Compared in Rust over the
+            // artist's rows (indexed artist lookup, then a scan of that one
+            // artist's tracks) — the key is not an indexed expression. A copy
+            // on the asked-for album ranks first, then local > subsonic > other.
+            //
             // With an artist in hand, a title-only match is a different
             // artist's song of the same name ("Intro", "Creep") — never the
             // track asked for. Stop here rather than hand that to playback,
             // the like mirror or the tag editor.
-            return query_tier(&sql, [title_v, artist_v].concat());
+            let key = loose_title_key(title);
+            if key.is_empty() {
+                return Ok(Vec::new());
+            }
+            let sql = format!(
+                "{} WHERE ar.name IS NOT NULL AND strip_diacritics(unicode_lower(ar.name)) IN ({}) \
+                 {} ORDER BY CASE WHEN co.kind = 'local' THEN 0 WHEN co.kind = 'subsonic' THEN 1 ELSE 2 END",
+                TRACK_SELECT, placeholders(artist_v.len()), enabled_filter
+            );
+            let album_key = album_name.map(loose_title_key).filter(|k| !k.is_empty());
+            let mut loose: Vec<Track> = query_tier(&sql, artist_v)?
+                .into_iter()
+                .filter(|t| loose_title_key(&t.title) == key)
+                .collect();
+            if let Some(ak) = album_key {
+                // Stable: keeps the source preference inside each group.
+                loose.sort_by_key(|t| t.album_title.as_deref().map(loose_title_key).as_ref() != Some(&ak));
+            }
+            loose.truncate(10);
+            return Ok(loose);
         }
 
         // No artist to go on: title only

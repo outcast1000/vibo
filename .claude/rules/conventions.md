@@ -292,6 +292,7 @@ Cross-cutting rules that apply to all code everywhere.
 - When checking if a track already exists in the library, **always use the backend** `invoke("find_track_by_metadata", { title, artistName, albumName })` command
 - Never do JS-side title/artist string comparison for library lookups — the backend uses `strip_diacritics(unicode_lower())` in SQL which correctly handles accented characters (Björk↔Bjork, Jóga↔Joga), Greek, Cyrillic, and other Unicode
 - The backend searches across all collection types (local, subsonic, and plugin-registered kinds) and prefers local copies
+- When the exact title misses, it tries the same artist's tracks by `loose_title_key` (`db/mod.rs`): punctuation ignored and edition tags dropped — remaster, explicit, bonus track, album version, bracketed or after ` - ` — so Spotify's "Transmission - 2020 Digital Remaster" finds a file tagged "Transmission (2010 Remaster)". A different recording ("Live", "Remix", "… Session") keeps its title distinct, and the tier never crosses to another artist
 - Use this for: duplicate detection before downloads, library existence checks, track matching in modals
 
 ### Default Startup View
