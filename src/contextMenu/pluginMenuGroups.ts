@@ -4,9 +4,12 @@
 // overflow menu (heroOverflow). The goal is one row per plugin, not one per
 // action, so the menu stays short however many plugins are installed:
 //
-// - An action label offered by several plugins ("Play the Full Album" from
-//   Last.fm and Spotify) becomes one submenu named after the action, with one
-//   entry per plugin.
+// - An item that declares a shared `action` (see SHARED_MENU_ACTIONS) is laid
+//   out by that action, never under its plugin: several providers become one
+//   submenu under the host's title ("Start radio ▸ Last.fm / Spotify"), a
+//   single provider a flat row named by the action ("Start radio (Last.fm)").
+//   Either way the row sorts under the action, so it stays put as providers
+//   come and go. Matching labels alone never merge.
 // - A plugin left with two or more entries gets one submenu named after the
 //   plugin, holding its bare labels and its own `submenuLabel` groups.
 // - A plugin left with a single entry stays flat, labelled "Plugin: Label".
@@ -15,8 +18,13 @@
 //
 // The top level is sorted alphabetically, so a row keeps its position as other
 // plugins are installed or removed.
+//
+// A menu that has its own entry for a shared action (the library radio, the
+// library album) joins the plugins' items to it with `mergeHostAction`, which
+// keeps the row where the host entry always was.
 import type { MenuItemSpec } from "../nativeMenu";
-import type { PluginMenuItem, PluginContextMenuTarget } from "../types/plugin";
+import type { PluginMenuItem, PluginContextMenuTarget, SharedMenuAction } from "../types/plugin";
+import { SHARED_MENU_ACTIONS, isSharedMenuAction } from "../types/plugin";
 
 /**
  * Prefix a label with the plugin that owns it ("Last.fm: Play the Full Album"),
@@ -48,8 +56,13 @@ const byOrderThenLabel = (a: PluginMenuItem, b: PluginMenuItem) =>
   (a.order ?? 0) - (b.order ?? 0) || a.label.localeCompare(b.label);
 const byText = (a: PluginMenuNode, b: PluginMenuNode) =>
   a.text.localeCompare(b.text, undefined, { sensitivity: "base" });
-const labelKey = (label: string) => label.trim().toLowerCase();
 const pluginCount = (items: PluginMenuItem[]) => new Set(items.map((it) => it.pluginId)).size;
+const providerName = (it: PluginMenuItem) => it.pluginName ?? it.pluginId;
+
+/** The shared action an item is laid out by, or null for a plain item. */
+function sharedActionOf(it: PluginMenuItem): SharedMenuAction | null {
+  return !it.submenuLabel && isSharedMenuAction(it.action) ? it.action : null;
+}
 
 /** Group `items` by `keyOf`, keeping first-seen order. */
 function groupBy<T>(items: T[], keyOf: (t: T) => string): Map<string, T[]> {
@@ -62,28 +75,36 @@ function groupBy<T>(items: T[], keyOf: (t: T) => string): Map<string, T[]> {
   return out;
 }
 
+/** One leaf per provider of a shared action, sorted by provider name. A plugin
+ *  offering the action twice keeps its labels apart ("Last.fm: Start radio"). */
+function sharedActionLeaves(items: PluginMenuItem[]): PluginMenuNode[] {
+  const perPlugin = groupBy(items, (it) => it.pluginId);
+  return items
+    .map((it): PluginMenuNode => ({
+      kind: "leaf",
+      text: (perPlugin.get(it.pluginId)?.length ?? 0) > 1 ? pluginMenuItemLabel(it) : providerName(it),
+      item: it,
+    }))
+    .sort(byText);
+}
+
 export function layoutPluginMenu(matching: PluginMenuItem[]): PluginMenuNode[] {
-  const flat = matching.filter((it) => !it.submenuLabel);
   const top: PluginMenuNode[] = [];
 
-  // The same action from several plugins → one submenu named after the action.
-  const shared = new Set<string>();
-  for (const [key, items] of groupBy(flat, (it) => labelKey(it.label))) {
-    if (pluginCount(items) < 2) continue;
-    shared.add(key);
-    top.push({
-      kind: "submenu",
-      key: `action:${key}`,
-      text: items[0].label,
-      children: items
-        .map((it): PluginMenuNode => ({ kind: "leaf", text: it.pluginName ?? it.pluginId, item: it }))
-        .sort(byText),
-    });
+  // Shared actions → laid out by the action, whatever plugin offers them.
+  for (const [action, items] of groupBy(matching.filter((it) => sharedActionOf(it)), (it) => it.action!)) {
+    const title = SHARED_MENU_ACTIONS[action as SharedMenuAction];
+    if (items.length === 1) {
+      top.push({ kind: "leaf", text: `${title} (${providerName(items[0])})`, item: items[0] });
+    } else {
+      top.push({ kind: "submenu", key: `action:${action}`, text: title, children: sharedActionLeaves(items) });
+    }
   }
+  const plain = matching.filter((it) => !sharedActionOf(it));
 
   // A submenuLabel group spanning several plugins stays top level, leaves named.
   const ownGroups: PluginMenuItem[] = [];
-  for (const [label, items] of groupBy(matching.filter((it) => it.submenuLabel), (it) => it.submenuLabel!)) {
+  for (const [label, items] of groupBy(plain.filter((it) => it.submenuLabel), (it) => it.submenuLabel!)) {
     if (pluginCount(items) < 2) { ownGroups.push(...items); continue; }
     top.push({
       kind: "submenu",
@@ -95,7 +116,7 @@ export function layoutPluginMenu(matching: PluginMenuItem[]): PluginMenuNode[] {
   }
 
   // Everything left belongs to exactly one plugin.
-  const rest = [...flat.filter((it) => !shared.has(labelKey(it.label))), ...ownGroups];
+  const rest = [...plain.filter((it) => !it.submenuLabel), ...ownGroups];
   for (const [pluginId, items] of groupBy(rest, (it) => it.pluginId)) {
     const entries: PluginMenuNode[] = items
       .filter((it) => !it.submenuLabel)
@@ -119,15 +140,56 @@ export function layoutPluginMenu(matching: PluginMenuItem[]): PluginMenuNode[] {
   return top.sort(byText);
 }
 
-/** Native context-menu specs for the plugin items matching one target. */
-export function buildPluginMenuSpecs(
-  matching: PluginMenuItem[],
-  target: PluginContextMenuTarget,
-  dispatch: (pluginId: string, actionId: string, t: PluginContextMenuTarget) => void,
-): MenuItemSpec[] {
+type Dispatch = (pluginId: string, actionId: string, t: PluginContextMenuTarget) => void;
+
+const nodeToSpec = (target: PluginContextMenuTarget, dispatch: Dispatch) => {
   const toSpec = (node: PluginMenuNode): MenuItemSpec =>
     node.kind === "leaf"
       ? { kind: "item", text: node.text, action: () => dispatch(node.item.pluginId, node.item.id, target) }
       : { kind: "submenu", text: node.text, items: node.children.map(toSpec) };
-  return layoutPluginMenu(matching).map(toSpec);
+  return toSpec;
+};
+
+/** Native context-menu specs for the plugin items matching one target. */
+export function buildPluginMenuSpecs(
+  matching: PluginMenuItem[],
+  target: PluginContextMenuTarget,
+  dispatch: Dispatch,
+): MenuItemSpec[] {
+  return layoutPluginMenu(matching).map(nodeToSpec(target, dispatch));
+}
+
+/** The leaf the host's own entry takes inside a shared-action submenu. */
+export const HOST_PROVIDER_LABEL = "Library";
+
+/**
+ * Join the host's own entry for a shared action with the plugins' items for
+ * the same action, so the menu has one "Start radio" rather than a host item
+ * plus a plugin submenu next to it. With no plugin offering the action the
+ * host entry is returned as it always was (`text`); otherwise one submenu
+ * under the action's title, the host first as "Library", then each plugin.
+ * Returns the spec for the host entry's position and the plugin items still
+ * to lay out (`buildPluginMenuSpecs(rest, …)`), the joined ones removed.
+ */
+export function mergeHostAction(
+  host: { action: SharedMenuAction; text: string; run: () => void },
+  matching: PluginMenuItem[],
+  target: PluginContextMenuTarget,
+  dispatch: Dispatch,
+): { spec: MenuItemSpec; rest: PluginMenuItem[] } {
+  const joined = matching.filter((it) => sharedActionOf(it) === host.action);
+  if (joined.length === 0) {
+    return { spec: { kind: "item", text: host.text, action: host.run }, rest: matching };
+  }
+  return {
+    spec: {
+      kind: "submenu",
+      text: SHARED_MENU_ACTIONS[host.action],
+      items: [
+        { kind: "item", text: HOST_PROVIDER_LABEL, action: host.run },
+        ...sharedActionLeaves(joined).map(nodeToSpec(target, dispatch)),
+      ],
+    },
+    rest: matching.filter((it) => !joined.includes(it)),
+  };
 }

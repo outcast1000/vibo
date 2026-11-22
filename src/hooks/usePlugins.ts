@@ -1398,6 +1398,7 @@ export function usePlugins(
               targets: item.targets,
               submenuLabel: item.submenuLabel,
               order: item.order,
+              action: item.action,
             };
             return trackUnsubscribe(registerKeyed(dynamicMenuItemsRef.current, key, entry, () => setDynamicMenuItemsVersion((v) => v + 1)));
           },
@@ -3184,6 +3185,7 @@ export function usePlugins(
                 id: item.id,
                 label: item.label,
                 targets: item.targets,
+                action: item.action,
               });
             }
           }

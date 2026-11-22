@@ -143,7 +143,7 @@ import { useLikeActions } from "./hooks/useLikeActions";
 import { useControlApi } from "./hooks/useControlApi";
 import { useCollectionActions } from "./hooks/useCollectionActions";
 import { useContextMenuActions } from "./hooks/useContextMenuActions";
-import type { PluginTrack, PluginBadge, PluginPlayContext, ReplaceTrackFileRequest, ReplaceTrackFileResult, RowMenuAction, TrackRowItem, PluginSidebarItem } from "./types/plugin";
+import type { PluginTrack, PluginBadge, PluginMenuItem, PluginPlayContext, ReplaceTrackFileRequest, ReplaceTrackFileResult, RowMenuAction, TrackRowItem, PluginSidebarItem } from "./types/plugin";
 import { ReplaceTrackFileModal } from "./components/ReplaceTrackFileModal";
 import { isTrackBeingReplaced, type StagedReplacement } from "./utils/replaceTrackFile";
 import { HOST_SEARCH_ACTION } from "./types/plugin";
@@ -169,7 +169,7 @@ import { VideoSubtitles } from "./components/VideoSubtitles";
 import { AddServerModal } from "./components/AddServerModal";
 import { showNativeMenu, type MenuItemSpec } from "./nativeMenu";
 import { buildPluginNavMenuSpecs } from "./contextMenu/buildPluginNavMenuSpecs";
-import { buildPluginMenuSpecs } from "./contextMenu/pluginMenuGroups";
+import { buildPluginMenuSpecs, mergeHostAction } from "./contextMenu/pluginMenuGroups";
 import { toPluginTarget } from "./types/contextMenu";
 import { buildRatingMenuSpecs } from "./contextMenu/ratingMenu";
 import { buildContextMenuSpecs } from "./contextMenu/buildContextMenuSpecs";
@@ -5433,15 +5433,22 @@ function App() {
           like: () => { likeActions.handleToggleLike(t); },
           dislike: () => { likeActions.handleToggleDislike(t); },
         }) });
-        specs.push({ kind: "item", text: "Start radio from this track", action: () => {
+        // Plugin-registered track actions (Universal Track Actions). A plugin
+        // radio or full album joins the library one under a single row
+        // ("Start radio ▸ Library / Last.fm"); the rest follow below.
+        const pluginTarget = toPluginTarget({ kind: "track" as const, trackId: t.libraryId ?? undefined, title: t.title, artistName: t.artist_name ?? null, albumTitle: t.album_title ?? null, isLocal: isLocalTrack(t) });
+        let pluginItems: PluginMenuItem[] = plugins.menuItems.filter((mi) => mi.targets.includes("track"));
+        const radio = mergeHostAction({ action: "radio", text: "Start radio from this track", run: () => {
           contextMenuActions.startRadio({ title: t.title, artistName: t.artist_name, coverPath: t.image_url ?? null });
-        } });
+        } }, pluginItems, pluginTarget, plugins.dispatchContextMenuAction);
+        specs.push(radio.spec);
+        pluginItems = radio.rest;
         // The playing entry is a QueueTrack (no album_id), so the library
         // album is resolved by name — album artist first, matching how albums
         // are keyed (find_album_by_name also accepts the track artist).
         const albumTitle = t.album_title;
         if (albumTitle) {
-          specs.push({ kind: "item", text: "Play Full Album", action: async () => {
+          const album = mergeHostAction({ action: "play-full-album", text: "Play Full Album", run: async () => {
             try {
               const a = await invoke<Album | null>("find_album_by_name", { title: albumTitle, artistName: t.album_artist_name ?? t.artist_name ?? null });
               if (a) await playActions.playAlbum(a.id);
@@ -5450,13 +5457,11 @@ function App() {
               console.error("Failed to play full album:", e);
               notify("Couldn't play the album", { kind: "error" });
             }
-          } });
+          } }, pluginItems, pluginTarget, plugins.dispatchContextMenuAction);
+          specs.push(album.spec);
+          pluginItems = album.rest;
         }
-        // Plugin-registered track actions (Universal Track Actions) — e.g.
-        // Last.fm's "Play the Full Album" for the playing track.
-        const matching = plugins.menuItems.filter((mi) => mi.targets.includes("track"));
-        const target = { kind: "track" as const, trackId: t.libraryId ?? undefined, title: t.title, artistName: t.artist_name ?? null, albumTitle: t.album_title ?? null, isLocal: isLocalTrack(t) };
-        const pluginSpecs = buildPluginMenuSpecs(matching, toPluginTarget(target), plugins.dispatchContextMenuAction);
+        const pluginSpecs = buildPluginMenuSpecs(pluginItems, pluginTarget, plugins.dispatchContextMenuAction);
         if (pluginSpecs.length > 0) specs.push({ kind: "separator" }, ...pluginSpecs);
         specs.push({ kind: "separator" });
       }

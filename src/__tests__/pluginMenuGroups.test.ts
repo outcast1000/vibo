@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { buildPluginMenuSpecs, layoutPluginMenu, withPluginName, type PluginMenuNode } from "../contextMenu/pluginMenuGroups";
+import { buildPluginMenuSpecs, HOST_PROVIDER_LABEL, layoutPluginMenu, mergeHostAction, withPluginName, type PluginMenuNode } from "../contextMenu/pluginMenuGroups";
 import type { MenuItemSpec } from "../nativeMenu";
 import type { PluginMenuItem, PluginContextMenuTarget } from "../types/plugin";
 
@@ -21,11 +21,11 @@ describe("layoutPluginMenu", () => {
       item("llm", "AI Assistant", "titles", "Clean up titles…"),
       item("ytdlp", "yt-dlp", "dl", "Download…"),
       item("llm", "AI Assistant", "better", "Find better copies…"),
-      item("lastfm", "Last.fm", "full", "Play the Full Album"),
+      item("lastfm", "Last.fm", "full", "Play the Full Album", { action: "play-full-album" }),
       item("ytdlp", "yt-dlp", "watch", "Watch YouTube video"),
       item("ffmpeg", "FFmpeg Tools", "info", "Media Info (FFmpeg)"),
-      item("spotify", "Spotify", "radio", "Start radio"),
-      item("spotify", "Spotify", "full", "Play the Full Album"),
+      item("spotify", "Spotify", "radio", "Start radio", { action: "radio" }),
+      item("spotify", "Spotify", "full", "Play the Full Album", { action: "play-full-album" }),
       item("ffmpeg", "FFmpeg Tools", "mp3", "MP3", { submenuLabel: "Convert to…", order: 1 }),
       item("ffmpeg", "FFmpeg Tools", "flac", "FLAC", { submenuLabel: "Convert to…", order: 0 }),
     ];
@@ -33,8 +33,52 @@ describe("layoutPluginMenu", () => {
       { "AI Assistant": ["Ask AI about this…", "Clean up titles…", "Find better copies…"] },
       { "FFmpeg Tools": ["Media Info (FFmpeg)", { "Convert to…": ["FLAC", "MP3"] }] },
       { "Play the Full Album": ["Last.fm", "Spotify"] },
-      "Spotify: Start radio",
+      "Start radio (Spotify)",
       { "yt-dlp": ["Download…", "Watch YouTube video"] },
+    ]);
+  });
+
+  it("groups a shared action under the host's title, whatever the plugins call it", () => {
+    const items: PluginMenuItem[] = [
+      item("b", "Beta", "x", "Beta Radio", { action: "radio" }),
+      item("a", "Alpha", "y", "Start radio…", { action: "radio" }),
+    ];
+    expect(shape(layoutPluginMenu(items))).toEqual([{ "Start radio": ["Alpha", "Beta"] }]);
+  });
+
+  it("names a lone provider of a shared action by the action, so the row keeps its place", () => {
+    const items: PluginMenuItem[] = [
+      item("lastfm", "Last.fm", "radio", "Start radio", { action: "radio" }),
+      item("lastfm", "Last.fm", "love", "Love"),
+    ];
+    // The radio leaves Last.fm's own row; what's left of Last.fm stays flat.
+    expect(shape(layoutPluginMenu(items))).toEqual(["Last.fm: Love", "Start radio (Last.fm)"]);
+  });
+
+  it("does not merge same-label items that declare no action", () => {
+    const items: PluginMenuItem[] = [
+      item("b", "Beta", "x", "Play the Full Album"),
+      item("a", "Alpha", "y", "Play the Full Album"),
+    ];
+    expect(shape(layoutPluginMenu(items))).toEqual(["Alpha: Play the Full Album", "Beta: Play the Full Album"]);
+  });
+
+  it("ignores an unknown action rather than starting a group of one", () => {
+    const items = [
+      item("a", "Alpha", "x", "Do it", { action: "typo" as never }),
+      item("b", "Beta", "y", "Do it", { action: "typo" as never }),
+    ];
+    expect(shape(layoutPluginMenu(items))).toEqual(["Alpha: Do it", "Beta: Do it"]);
+  });
+
+  it("keeps two entries for one action from the same plugin apart", () => {
+    const items: PluginMenuItem[] = [
+      item("a", "Alpha", "song", "Song radio", { action: "radio" }),
+      item("a", "Alpha", "artist", "Artist radio", { action: "radio" }),
+      item("b", "Beta", "r", "Start radio", { action: "radio" }),
+    ];
+    expect(shape(layoutPluginMenu(items))).toEqual([
+      { "Start radio": ["Alpha: Artist radio", "Alpha: Song radio", "Beta"] },
     ]);
   });
 
@@ -48,14 +92,6 @@ describe("layoutPluginMenu", () => {
       "Last.fm: Play the Full Album",
       { "yt-dlp: Download as": ["FLAC", "MP3"] },
     ]);
-  });
-
-  it("merges a shared action label case-insensitively, keeping the first label's spelling", () => {
-    const items: PluginMenuItem[] = [
-      item("b", "Beta", "x", "Play the full album"),
-      item("a", "Alpha", "y", "Play the Full Album"),
-    ];
-    expect(shape(layoutPluginMenu(items))).toEqual([{ "Play the full album": ["Alpha", "Beta"] }]);
   });
 
   it("does not merge two same-label items from one plugin", () => {
@@ -91,8 +127,8 @@ describe("buildPluginMenuSpecs", () => {
   it("renders the layout as native specs and dispatches leaves to their plugin", () => {
     const dispatch = vi.fn();
     const items: PluginMenuItem[] = [
-      item("lastfm", "Last.fm", "full", "Play the Full Album"),
-      item("spotify", "Spotify", "full-sp", "Play the Full Album"),
+      item("lastfm", "Last.fm", "full", "Play the Full Album", { action: "play-full-album" }),
+      item("spotify", "Spotify", "full-sp", "Play the Full Album", { action: "play-full-album" }),
       item("zz", "Zephyr", "scrobble", "Scrobble"),
     ];
     const specs = buildPluginMenuSpecs(items, target, dispatch);
@@ -109,6 +145,48 @@ describe("buildPluginMenuSpecs", () => {
 
   it("returns [] for no matching items", () => {
     expect(buildPluginMenuSpecs([], target, vi.fn())).toEqual([]);
+  });
+});
+
+describe("mergeHostAction", () => {
+  const text = (s: MenuItemSpec) => (s.kind === "item" || s.kind === "submenu" ? s.text : "");
+
+  it("keeps the host entry as it was when no plugin offers the action", () => {
+    const run = vi.fn();
+    const items = [item("lastfm", "Last.fm", "full", "Play the Full Album", { action: "play-full-album" })];
+    const { spec, rest } = mergeHostAction({ action: "radio", text: "Start radio from this track", run }, items, target, vi.fn());
+    expect(spec.kind === "item" && spec.text).toBe("Start radio from this track");
+    if (spec.kind === "item") spec.action();
+    expect(run).toHaveBeenCalled();
+    expect(rest).toBe(items);
+  });
+
+  it("joins the plugins' items under the action's title, Library first, and takes them out of the rest", () => {
+    const run = vi.fn();
+    const dispatch = vi.fn();
+    const items: PluginMenuItem[] = [
+      item("spotify", "Spotify", "sp-radio", "Start radio", { action: "radio" }),
+      item("lastfm", "Last.fm", "lfm-radio", "Start radio", { action: "radio" }),
+      item("lastfm", "Last.fm", "full", "Play the Full Album", { action: "play-full-album" }),
+      item("zz", "Zephyr", "radio-ish", "Start radio"), // no action: not joined
+    ];
+    const { spec, rest } = mergeHostAction({ action: "radio", text: "Start radio from this track", run }, items, target, dispatch);
+    if (spec.kind !== "submenu") throw new Error("expected a submenu");
+    expect(spec.text).toBe("Start radio");
+    expect(spec.items.map(text)).toEqual([HOST_PROVIDER_LABEL, "Last.fm", "Spotify"]);
+    const [library, lastfm] = spec.items;
+    if (library.kind === "item") library.action();
+    if (lastfm.kind === "item") lastfm.action();
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(dispatch).toHaveBeenCalledWith("lastfm", "lfm-radio", target);
+    expect(rest.map((it) => it.id)).toEqual(["full", "radio-ish"]);
+  });
+
+  it("joins a single plugin too, so a radio is always one row", () => {
+    const items = [item("lastfm", "Last.fm", "lfm-radio", "Start radio", { action: "radio" })];
+    const { spec, rest } = mergeHostAction({ action: "radio", text: "Start radio from this track", run: vi.fn() }, items, target, vi.fn());
+    expect(spec.kind === "submenu" && spec.items.map(text)).toEqual([HOST_PROVIDER_LABEL, "Last.fm"]);
+    expect(rest).toEqual([]);
   });
 });
 

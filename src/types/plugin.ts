@@ -56,10 +56,31 @@ export interface PluginManifestViewHeader {
   hidden?: boolean;
 }
 
+/**
+ * Context-menu actions several sources can offer. An item that declares one
+ * (`action`) is grouped with every other plugin's item for the same action
+ * under the host's title ("Start radio ▸ Last.fm / Spotify"), and the host's
+ * own entry for it, where a menu has one, joins as "Library". The host owns
+ * the list and the titles: a new shared action is one entry here plus a line
+ * in plugins.md. An unknown value is ignored (the item is laid out as a plain
+ * one), so a typo can't start a group of one.
+ */
+export const SHARED_MENU_ACTIONS = {
+  "play-full-album": "Play the Full Album",
+  "radio": "Start radio",
+} as const;
+export type SharedMenuAction = keyof typeof SHARED_MENU_ACTIONS;
+
+export function isSharedMenuAction(value: unknown): value is SharedMenuAction {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(SHARED_MENU_ACTIONS, value);
+}
+
 export interface PluginManifestContextMenuItem {
   id: string;
   label: string;
   targets: PluginTargetKind[];
+  /** Which shared action this item is (see `SHARED_MENU_ACTIONS`). */
+  action?: SharedMenuAction;
 }
 
 export type PluginTargetKind = "track" | "album" | "artist" | "multi-track" | "playlist";
@@ -1454,6 +1475,8 @@ export interface PluginDynamicMenuItem {
   targets: PluginTargetKind[];
   submenuLabel?: string;
   order?: number;
+  /** Which shared action this item is (see `SHARED_MENU_ACTIONS`). */
+  action?: SharedMenuAction;
 }
 
 export interface PluginContextMenuAPI {
@@ -2936,6 +2959,8 @@ export interface PluginMenuItem {
   /** When set, the host groups same-label items (per target) into one submenu. */
   submenuLabel?: string;
   order?: number;
+  /** Which shared action this item is; only a known `SharedMenuAction` groups. */
+  action?: SharedMenuAction;
   /** Owning plugin's display name, stamped by `usePlugins` on the items every
    *  menu surface consumes so the rendered label can name its plugin. */
   pluginName?: string;

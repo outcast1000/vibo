@@ -4,8 +4,9 @@
 // keeps a thin useCallback wrapper that owns setContextMenu + showNativeMenu.
 import type { MenuItemSpec } from "../nativeMenu";
 import type { ContextMenuTarget } from "../types/contextMenu";
+import type { PluginMenuItem } from "../types/plugin";
 import { toPluginTarget } from "../types/contextMenu";
-import { buildPluginMenuSpecs } from "./pluginMenuGroups";
+import { buildPluginMenuSpecs, mergeHostAction } from "./pluginMenuGroups";
 import { buildAddToPlaylistSubmenu } from "./addToPlaylistMenu";
 import type { UserPlaylist } from "../hooks/useUserPlaylists";
 import { isLocalTrack, librarySelection } from "../queueEntry";
@@ -78,7 +79,15 @@ export function buildContextMenuSpecs(target: ContextMenuTarget, d: ContextMenuD
         if (t.isLocal) {
           specs.push({ kind: "item", text: "Open Containing Folder", action: d.contextMenuActions.handleShowInFolder });
         }
-        specs.push({ kind: "item", text: "Start radio from this track", action: () => d.contextMenuActions.startRadio({ title: t.title, artistName: t.artistName, coverPath: null }) });
+        // Plugin-registered track actions (Universal Track Actions convention);
+        // a plugin radio joins the library one under one "Start radio".
+        const pluginTarget = toPluginTarget(target);
+        const radio = mergeHostAction(
+          { action: "radio", text: "Start radio from this track", run: () => d.contextMenuActions.startRadio({ title: t.title, artistName: t.artistName, coverPath: null }) },
+          d.plugins.menuItems.filter(item => item.targets.includes("track")),
+          pluginTarget, d.plugins.dispatchContextMenuAction,
+        );
+        specs.push(radio.spec);
         const libId = t.libraryId;
         if (libId != null) {
           specs.push({ kind: "item", text: "View Details", action: () => d.library.handleTrackClick(librarySelection(libId)) });
@@ -87,9 +96,7 @@ export function buildContextMenuSpecs(target: ContextMenuTarget, d: ContextMenuD
           specs.push({ kind: "separator" });
           specs.push({ kind: "item", text: `Move to ${d.trashLabel}`, action: d.contextMenuActions.handleDeleteRequest });
         }
-        // Plugin-registered track actions (Universal Track Actions convention).
-        const matching = d.plugins.menuItems.filter(item => item.targets.includes("track"));
-        const pluginSpecs = buildPluginMenuSpecs(matching, toPluginTarget(target), d.plugins.dispatchContextMenuAction);
+        const pluginSpecs = buildPluginMenuSpecs(radio.rest, pluginTarget, d.plugins.dispatchContextMenuAction);
         if (pluginSpecs.length > 0) {
           specs.push({ kind: "separator" });
           specs.push(...pluginSpecs);
@@ -98,6 +105,10 @@ export function buildContextMenuSpecs(target: ContextMenuTarget, d: ContextMenuD
     } else if (target.kind === "queue-multi") {
       const count = target.indices.length;
       const selectedTracks = target.indices.map(i => d.queueHook.queue[i]).filter(Boolean);
+      const pluginTargetKind = count === 1 ? "track" : "multi-track";
+      const pluginTarget = toPluginTarget(target);
+      // Plugin items still to lay out; a single track's radio takes its share.
+      let pluginItems: PluginMenuItem[] = d.plugins.menuItems.filter(item => item.targets.includes(pluginTargetKind));
 
       // Queue operations — always available
       if (d.contextMenuActions.handleQueueRemove) {
@@ -150,8 +161,9 @@ export function buildContextMenuSpecs(target: ContextMenuTarget, d: ContextMenuD
           specs.push({ kind: "item", text: "Edit info…", action: () => d.openEditTrackInfoRef.current?.(target.indices[0]) });
         }
 
-        // Start radio from this track (single track only)
-        specs.push({ kind: "item", text: "Start radio from this track", action: () => {
+        // Start radio from this track (single track only), joined by any
+        // plugin radio.
+        const radio = mergeHostAction({ action: "radio", text: "Start radio from this track", run: () => {
           const track = d.queueHook.queue[target.indices[0]];
           if (track) {
             d.contextMenuActions.startRadio({
@@ -160,7 +172,9 @@ export function buildContextMenuSpecs(target: ContextMenuTarget, d: ContextMenuD
               coverPath: track.image_url ?? null,
             });
           }
-        }});
+        }}, pluginItems, pluginTarget, d.plugins.dispatchContextMenuAction);
+        specs.push(radio.spec);
+        pluginItems = radio.rest;
 
         // View Details — needs d.library ID
         if (target.trackIds[0] != null) {
@@ -183,9 +197,7 @@ export function buildContextMenuSpecs(target: ContextMenuTarget, d: ContextMenuD
       }
 
       // Plugin actions
-      const pluginTargetKind = count === 1 ? "track" : "multi-track";
-      const matching = d.plugins.menuItems.filter(item => item.targets.includes(pluginTargetKind as "track" | "multi-track"));
-      const pluginSpecs = buildPluginMenuSpecs(matching, toPluginTarget(target), d.plugins.dispatchContextMenuAction);
+      const pluginSpecs = buildPluginMenuSpecs(pluginItems, pluginTarget, d.plugins.dispatchContextMenuAction);
       if (pluginSpecs.length > 0) {
         specs.push({ kind: "separator" });
         specs.push(...pluginSpecs);
@@ -209,6 +221,9 @@ export function buildContextMenuSpecs(target: ContextMenuTarget, d: ContextMenuD
       }
     } else {
       const isMulti = target.kind === "multi-track";
+      const pluginTarget = toPluginTarget(target);
+      // Plugin items still to lay out; the track radio takes its share.
+      let pluginItems: PluginMenuItem[] = d.plugins.menuItems.filter(item => item.targets.includes(target.kind as "track" | "album" | "artist" | "multi-track"));
       const hasId = target.kind === "artist" ? !!target.artistId
                   : target.kind === "album" ? !!target.albumId
                   : target.kind === "track" ? !!target.trackId
@@ -248,14 +263,16 @@ export function buildContextMenuSpecs(target: ContextMenuTarget, d: ContextMenuD
         specs.push({ kind: "item", text: "Open Containing Folder", action: d.contextMenuActions.handleShowInFolder });
       }
       if (target.kind === "track" && target.title) {
-        specs.push({ kind: "item", text: "Start radio from this track", action: () => {
+        const radio = mergeHostAction({ action: "radio", text: "Start radio from this track", run: () => {
           if (target.kind !== "track") return;
           d.contextMenuActions.startRadio({
             title: target.title,
             artistName: target.artistName,
             coverPath: null,
           });
-        }});
+        }}, pluginItems, pluginTarget, d.plugins.dispatchContextMenuAction);
+        specs.push(radio.spec);
+        pluginItems = radio.rest;
       }
       if (target.kind === "track" && target.trackId) {
         // Captured, not read off `target` inside the closure: the guard's
@@ -284,9 +301,7 @@ export function buildContextMenuSpecs(target: ContextMenuTarget, d: ContextMenuD
           }
         }
       }
-      const targetKind = target.kind as string;
-      const matching = d.plugins.menuItems.filter(item => item.targets.includes(targetKind as "track" | "album" | "artist" | "multi-track"));
-      const pluginSpecs = buildPluginMenuSpecs(matching, toPluginTarget(target), d.plugins.dispatchContextMenuAction);
+      const pluginSpecs = buildPluginMenuSpecs(pluginItems, pluginTarget, d.plugins.dispatchContextMenuAction);
       if (pluginSpecs.length > 0) {
         specs.push({ kind: "separator" });
         specs.push(...pluginSpecs);
