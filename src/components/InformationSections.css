@@ -85,9 +85,49 @@
   gap: 0;
   border-bottom: 1px solid var(--border);
   margin-bottom: 8px;
+  position: relative;
+  min-width: 0;
+  /* Before the first measurement every tab is on the row; never let that
+     frame widen the page. `clip` (not `hidden`) leaves the tooltips above. */
+  overflow-x: clip;
 }
 
-.info-sections-tab {
+/* The tabs that don't fit go behind "More" (fitTabs), so a label never wraps
+   or squeezes. */
+.info-sections-tabs > .info-sections-tab {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* Every tab again at its natural width, invisible, for measuring. */
+.info-sections-measure {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.info-sections-measure-row {
+  display: flex;
+  width: max-content;
+}
+
+.info-sections-measure-row > .info-sections-measure-tab {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.info-sections-measure-tab::before {
+  content: attr(data-label);
+}
+
+.info-sections-more {
+  opacity: 0.7;
+}
+
+.info-sections-tab,
+.info-sections-measure-tab {
   padding: 6px 14px;
   font-size: var(--fs-xs);
   text-transform: uppercase;

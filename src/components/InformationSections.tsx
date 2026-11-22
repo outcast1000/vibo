@@ -17,7 +17,27 @@ import { entityIdentity, onDetailTabRequest, takeDetailTab } from "../utils/pend
 import { useLatestRef } from "../hooks/useLatestRef";
 import { PluginViewSection } from "./renderers/PluginViewSection";
 import { parseProviderKey } from "../utils/providerKey";
+import { fitTabs } from "../utils/tabOverflow";
+import { showNativeMenu } from "../nativeMenu";
 import "./InformationSections.css";
+
+/** Row width kept free for the refresh icon (14px + its gap), whether or not
+ *  the shown tab has one — so switching tabs never reshuffles the row. */
+const REFRESH_RESERVE_PX = 24;
+const MORE_MEASURE_ID = "__more__";
+
+interface TabMeasure {
+  widths: Record<string, number>;
+  available: number;
+  more: number;
+}
+
+function sameMeasure(a: TabMeasure, b: TabMeasure): boolean {
+  if (a.available !== b.available || a.more !== b.more) return false;
+  const ak = Object.keys(a.widths);
+  if (ak.length !== Object.keys(b.widths).length) return false;
+  return ak.every((k) => a.widths[k] === b.widths[k]);
+}
 
 export interface CustomTab {
   id: string;
@@ -29,6 +49,14 @@ export interface CustomTab {
  *  Currently empty — only title_line (handled by TitleLineInfo) goes in headers.
  *  All other display kinds render below the track list. */
 const HEADER_DISPLAY_KINDS = new Set<string>();
+
+function MoreChevron() {
+  return (
+    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="6 9 12 15 18 9" />
+    </svg>
+  );
+}
 
 interface InformationSectionsProps {
   entity: InfoEntity | null;
@@ -371,7 +399,62 @@ export function InformationSections({
     if (shownTypeId) activate(shownTypeId);
   }, [shownTypeId, entityKey, sections, activate]);
 
+  // ── Tabs that don't fit go behind "More" ──
+  // Every tab is laid out once more in a hidden row, at its natural width, and
+  // a ResizeObserver reports those widths plus the bar's own. What fits is then
+  // decided during render (fitTabs), so the active tab is always on the row.
+  const tabsRowRef = useRef<HTMLDivElement | null>(null);
+  const measureRef = useRef<HTMLDivElement | null>(null);
+  const [measure, setMeasure] = useState<TabMeasure>({ widths: {}, available: 0, more: 0 });
+  const tabStateOf = (tab: TabEntry): string | null => {
+    // A tab waiting to be shown has nothing in flight: no loading dot.
+    const st = tab.kind === "plugin" ? tab.section.state : null;
+    return st && !(st.kind === "loading" && st.deferred) ? st.kind : null;
+  };
+  const tabsKey = tabs.map((t) => `${getTabId(t)}\u0001${t.name}\u0001${tabStateOf(t) ?? ""}`).join("\u0002");
+  const rendered = !!activeEntry;
+  useEffect(() => {
+    const row = tabsRowRef.current;
+    const meas = measureRef.current;
+    if (!row || !meas || typeof ResizeObserver === "undefined") return;
+    const read = () => {
+      const widths: Record<string, number> = {};
+      let more = 0;
+      for (const el of Array.from(meas.children) as HTMLElement[]) {
+        const id = el.dataset.measureId;
+        const width = el.getBoundingClientRect().width;
+        if (id === MORE_MEASURE_ID) more = width;
+        else if (id) widths[id] = width;
+      }
+      const next = { widths, available: Math.max(0, row.clientWidth - REFRESH_RESERVE_PX), more };
+      setMeasure((prev) => (sameMeasure(prev, next) ? prev : next));
+    };
+    const ro = new ResizeObserver(read);
+    ro.observe(row);
+    for (const el of Array.from(meas.children)) ro.observe(el);
+    return () => ro.disconnect();
+  }, [tabsKey, rendered]);
+
   if (!activeEntry) return null;
+
+  const fit = fitTabs({
+    ids: tabs.map(getTabId),
+    widths: measure.widths,
+    available: measure.available,
+    moreWidth: measure.more,
+    activeId: resolvedTab,
+  });
+  const overflowIds = new Set(fit.overflow);
+  const overflowTabs = tabs.filter((t) => overflowIds.has(getTabId(t)));
+
+  const openMoreMenu = (e: React.MouseEvent<HTMLElement> | React.KeyboardEvent<HTMLElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    showNativeMenu(
+      rect.left,
+      rect.bottom,
+      overflowTabs.map((t) => ({ kind: "item" as const, text: t.name, action: () => setActiveTab(getTabId(t)) })),
+    ).catch((err) => console.error("Failed to show the More tabs menu:", err));
+  };
 
   // Extract meta for provider attribution (plugin sections only)
   let meta: { url?: string; providerName?: string; homepageUrl?: string } | undefined;
@@ -384,12 +467,28 @@ export function InformationSections({
 
   return (
     <div className="information-sections">
-      <div className="info-sections-tabs">
+      <div className="info-sections-tabs" ref={tabsRowRef}>
+        <div className="info-sections-measure" aria-hidden="true">
+          <div className="info-sections-measure-row" ref={measureRef}>
+            {/* The label is drawn by ::before from data-label, so these copies
+                add no text (or tab nodes) for anything that looks tabs up. */}
+            {tabs.map(tab => {
+              const tabState = tabStateOf(tab);
+              return (
+                <div key={getTabId(tab)} data-measure-id={getTabId(tab)} data-label={tab.name} className="info-sections-measure-tab">
+                  {(tabState === "loading" || tabState === "loaded") && <span className="info-tab-dot" />}
+                </div>
+              );
+            })}
+            <div data-measure-id={MORE_MEASURE_ID} data-label="More" className="info-sections-measure-tab">
+              <MoreChevron />
+            </div>
+          </div>
+        </div>
         {tabs.map(tab => {
           const tabId = getTabId(tab);
-          // A tab waiting to be shown has nothing in flight: no loading dot.
-          const st = tab.kind === "plugin" ? tab.section.state : null;
-          const tabState = st && !(st.kind === "loading" && st.deferred) ? st.kind : null;
+          if (overflowIds.has(tabId)) return null;
+          const tabState = tabStateOf(tab);
           return (
             <div
               key={tabId}
@@ -405,6 +504,22 @@ export function InformationSections({
             </div>
           );
         })}
+        {overflowTabs.length > 0 && (
+          <div
+            className="info-sections-tab info-sections-more"
+            role="button"
+            tabIndex={0}
+            aria-haspopup="menu"
+            aria-label={`More tabs (${overflowTabs.length})`}
+            title={overflowTabs.map(t => t.name).join(", ")}
+            onClick={openMoreMenu}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openMoreMenu(e); }
+            }}
+          >
+            More<MoreChevron />
+          </div>
+        )}
         {activeEntry.kind === "plugin" && (
           <svg
             className="info-sections-refresh"
