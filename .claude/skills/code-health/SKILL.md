@@ -5,172 +5,168 @@ description: Use when the user wants to audit the frontend (React/TS) and backen
 
 # Code Health Review
 
-On-demand audit of frontend and backend code for convention compliance, performance issues, code reuse / duplication, and dead code. **Reports findings only** — surfaces a prioritized list of issues with file:line references and concrete suggestions. The user decides what to fix.
+On-demand audit of frontend and backend code for convention compliance, performance issues, code reuse / duplication, and dead code. **Reports findings only.** It produces a prioritized list of issues with file:line references and concrete suggestions, and the user decides what to fix.
 
-This skill complements (does not replace) `css-review` (skin compliance) and `architect` (feature design). It focuses on cross-cutting code quality, not styling or new-feature planning.
+The audit has two halves:
+
+1. **Mechanical (scripts):** canonical-action call sites, removed features coming back, dead Tauri commands, dead exports, lint and cargo. Scripted so it is fast, repeatable, and does not depend on getting a grep right in the moment.
+2. **Judgment (you):** reading code for duplication, performance and design smells that no regex finds. This is where the time goes.
+
+It complements `css-review` (skin compliance) and `architect` (feature design). It does not replace them.
 
 ## Scope
 
-- **Frontend:** `src/**/*.{ts,tsx}` — React components, hooks, utilities
-- **Backend:** `src-tauri/src/**/*.rs` — Tauri commands, DB layer, background tasks
-- **Plugins:** `src-tauri/plugins/**/*.{js,json}` — plugin code when relevant to a finding
+- **Frontend:** `src/**/*.{ts,tsx}`: components, hooks, utilities
+- **Backend:** `src-tauri/src/**/*.rs`: `commands/`, `db/`, `mpv_engine/`, background tasks
+- **Plugins:** `src-tauri/plugins/**`, only when relevant to a finding
 
-## Mandatory Pre-Scan Reading
+## Step 0: Run the scripts
 
-Before scanning, build a model of the project's canonical patterns. **Do not skip this** — findings without grounding in these files are noise.
+```bash
+node .claude/skills/code-health/scripts/scan.mjs --tools   # ~35s: scripts + npm run lint + cargo check
+node .claude/skills/code-health/scripts/scan.mjs           # ~1s: scripts only
+```
 
-1. **`.claude/rules/conventions.md`** — canonical actions (Delete Tracks, Like/Unlike, Play/Enqueue, etc.) and behavioral rules (error logging, user feedback, skin compatibility, plugin-first)
-2. **`.claude/rules/frontend.md`** — hook responsibilities, state persistence, keyboard shortcuts
-3. **`.claude/rules/backend.md`** — file responsibilities, DB patterns, background task patterns
-4. **`.claude/rules/plugins.md`** — plugin API surface, information types
-5. **`.claude/rules/ui.md`** — entity system, context menu wiring, design system classes
-6. **`src/hooks/useContextMenuActions.ts`, `src/hooks/useLikeActions.ts`, `src/hooks/useQueue.ts`, `src/hooks/useDownloads.ts`** — the canonical action implementations referenced by `conventions.md`
+Each script also runs on its own (`--json` for machine output):
 
-## Review Dimensions
+| Script | Finds | Statuses |
+|---|---|---|
+| `canonical-actions.mjs` | `invoke("cmd")` outside the file that owns the action, plugin events dispatched from the wrong place, modal overlays with a dismiss handler, code shapes of removed features ("Do Not Reintroduce") and of a reimplemented scrobble threshold, `eslint-disable … no-restricted-syntax` without `-- reason` | `canonical`, `reintroduced`, `unjustified-disable` |
+| `unused-commands.mjs` | Commands registered via `generate_handler!` / `invoke_handler!` that no frontend, plugin, script or test names | `unused`, `rust-only` (drop from the handler), `test-only`; `[debug_assertions]` label |
+| `unused-exports.mjs` | `src/` exports nothing uses (values by default; `--types` adds types, `--local` lists exports used only in their own file) | `dead`, `test-only`, `local` |
 
-Run all six passes. Collect findings into a single prioritized report at the end.
+**The output is evidence, not findings.** Read every hit before reporting it. Known blind spots:
+- Comments are stripped and strings kept, so a regex literal containing `//` can hide code.
+- Identifier matching means two exports with the same name hide each other. This gives false negatives only.
+- `test-only` exports named `…ForTest` / `reset…` are deliberate test seams. Don't report those; report the others.
+- `lint` and `cargo` are already gated in CI. Report their **errors** and any **cargo warning**. The lint warning backlog is capped (`--max-warnings`) and documented in `eslint.config.js`, so mention only its count, **unless the header says `FAILED (warning cap exceeded)`**. That breaks `npm run lint` and CI, so it is a high finding: name the rules that grew.
+
+## Mandatory pre-scan reading
+
+Build a model of the canonical patterns before judging anything. **Do not skip this.** Findings without grounding in these files are noise.
+
+1. **`CLAUDE.md` → "Do Not Reintroduce"**: removed features. Anything resembling them is high priority.
+2. **`.claude/rules/conventions.md`**: Enforcement (what lint already checks), Canonical Actions, Behavioral Rules
+3. **`.claude/rules/frontend.md`**, **`backend.md`**, **`plugins.md`**, **`ui.md`**, **`queue.md`**: read the sections relevant to what you are reviewing
+4. The canonical implementations: `src/hooks/useContextMenuActions.ts`, `useLikeActions.ts`, `useQueue.ts`, `usePlayActions.ts`, `useDownloadOrchestration.ts`, `src/utils/tagOps.ts`, `src/utils/queueOps.ts`
+
+## Review dimensions
+
+Run all six passes. Collect findings into one prioritized report at the end.
 
 ---
 
-### Pass 1 — Canonical Action Violations
+### Pass 1: Canonical action violations
 
-For each canonical action in `conventions.md`, find callers that reimplement the flow instead of routing through the canonical hook.
+**Scripted:** `canonical-actions.mjs` covers every canonical action that reduces to "only this file may invoke command X / dispatch event Y". Its tables (`CANONICAL_COMMANDS`, `CANONICAL_EVENTS`, `FORBIDDEN`) mirror conventions.md and CLAUDE.md. **If you notice a canonical action in conventions.md that the table lacks, add the row** (see "Maintaining the scripts").
 
-**How to detect:**
-- **Delete Tracks:** Grep for `invoke("delete_tracks"` outside `useContextMenuActions.ts`. Flag each.
-- **YouTube playback (plugin-owned):** There is no core YouTube search action anymore — the yt-dlp plugin owns it (its "Watch YouTube video" context-menu item). Flag any reintroduction of a core helper: `invoke("search_youtube"` (command removed), a `watchOnYoutube` helper, or direct `youtube.com/results` URL construction in `src/`.
-- **Like/Unlike:** Grep for `invoke("set_entity_like_state"` outside `useLikeActions.ts`. Flag each (every like must go through `setTrackRating` / `writeEntityLike` so `like:changed` fires — see conventions.md).
-- **Play / Enqueue / Play Next:** Grep for direct queue mutation (`setQueue(`, `queue.push`) outside `useQueue.ts` and `usePlayback.ts`. Flag surfaces that bypass `playTracks` / `enqueueTracks` / `playNextInQueue`.
-- **Show in Folder:** Grep for `invoke("show_in_folder"` outside `useContextMenuActions.ts`.
-- **Download Track:** Grep for `invoke("download_track"` outside `useDownloads.ts`.
-- **Record Play / Scrobble:** Grep for `invoke("record_play"` outside `usePlayback.ts` / `App.tsx`. Grep for duplicated scrobble-threshold logic (look for `>= 240` or `0.5 * duration` patterns).
-- **Tag Operations:** One write path for library tags — grep for `invoke("plugin_apply_tags_bulk"` / `invoke("remove_tag_from_tracks"` / `invoke("refresh_tag_counts"` outside `utils/tagOps.ts` (and App's coalesced refresh, for the last). `bulk_update_tracks` belongs to `tagOps.writeFileMetadata` and `BulkEditModal` only.
+**By hand** (the shapes a grep can't pin down):
+- **Play / Enqueue / Play Next:** callers outside the queue UI (plugin bridge, Cmd+K results, control API) must use `utils/queueOps.ts` (`playNow` / `addToQueue` / `playWithBackfill`). Look for `playTracks(` / `enqueueTracks(` in those callers, and for `playTracks` + `insertTracks` used together (a hand-rolled backfill with no staleness guard).
+- **Play With Backfill:** a play whose list arrives later must go through `usePlayActions.playWithBackfill`. Watch for a call site that notifies "empty" itself after awaiting it (use `onEmpty`).
+- **Menus:** every menu is a native `MenuItemSpec[]` built via `showNativeMenu`. Plugin items come from `plugins.menuItems`, never from raw manifests, and are never re-filtered at the call site. Get lyrics / Get image rows come from `contextMenu/providerMenus.ts`.
+- **Universal Track Actions:** every surface that shows tracks must open a right-click menu that includes the plugins' track items. These are the files that pop a menu but never mention plugin items. Read each one; a menu that isn't about tracks is fine:
+  `rg -l 'showNativeMenu' src/components | xargs rg --files-without-match 'menuItems|buildContextMenuSpecs|buildAndShowNativeMenu|onTrackContextMenu'`
+  (Not `rg -L`, which means "follow symlinks".) Many hits are fine: TrackList and QueuePanel pop a local menu but get their track menu from an `onContextMenu` prop wired in App. Follow the prop. Also check track lists that have no `onContextMenu` at all.
+- **Scrobble threshold:** the script flags copies of `shouldScrobble`'s maths (`duration * 0.5`, `240`). Also look for a second "has this play counted yet" check outside `usePlayback.crossScrobbleThreshold`.
+- **Download:** the host offers a download only from the now-playing button via `decideDownload`. Flag any new host "Download…" menu entry, `decideMetadataDownload`, or per-provider "Download from X".
+- **Edit Track Info / Tags:** new metadata editors must reuse `EditTrackMetadataModal`, and new tag editors must reuse `TagEditor`.
+- **Track matching:** JS-side title/artist comparisons for library lookups instead of `find_track_by_metadata`.
+- **Startup:** writes to the `view` / `selected*` store keys for restore-on-start.
 
 **Report format:** `file:line — <action> reimplemented; route through <canonical hook/function>`
 
 ---
 
-### Pass 2 — Behavioral Rule Violations
+### Pass 2: Behavioral rule violations
 
-**Error logging** (from `conventions.md`):
-- Grep for `.catch(() => {})` and `.catch(()=>{})` — every match is a violation unless preceded by a comment explaining why.
-- Grep for `} catch {` (silent catch, no binding) — flag.
-- Grep for `} catch (e) {` blocks with no `console.error` inside — read each to confirm.
-- Grep for `.catch(` without `console.error` in the handler.
+**Already enforced by lint, so don't re-grep:** empty `catch {}` / `.catch(() => {})` without a disable comment, bare `console.log`, `any`, ref writes in render, rules of hooks. The script covers disable comments with no `-- reason`.
 
-**Skin compatibility** (from `conventions.md`):
-- Grep TSX files for inline `style=` with color literals. Report via pointer to `/css-review` rather than duplicating its work.
-
-**Plugin-first** (from `conventions.md`):
-- Flag new information-section-like code added directly in components rather than as a plugin. Heuristic: look in `src/components/` for hardcoded sections fetching external data (look for `fetch(` calls to external domains inside React components). Genuine plugin APIs live in `src-tauri/plugins/`.
-
-**Context menu wiring** (from `ui.md`):
-- Any component rendering track/album/artist rows must pass `pluginMenuItems` and `onPluginAction` to `ContextMenu`. Grep for `<ContextMenu` usages; flag those missing these props.
+**By hand:**
+- **Swallowed errors that lint allows:** `} catch {` (no binding) is legal syntax and lint doesn't flag it. Most hits are parse fallbacks (`JSON.parse`, `new URL`), which are fine. Flag only the ones wrapping real I/O (`invoke`, fs, network) with no `console.error`:
+  `rg -n -A3 '\} catch \{' src --glob '!**/__tests__/**'`
+  On the Rust side, `let _ = <fallible db/fs call>` in a background thread is the same smell.
+- **User feedback:** failures shown only via `console.error` on a user-initiated action, and new `notify(...)` calls for failures/warnings/successes that don't pass `{ kind }`.
+- **Success toasts** where conventions say the result itself is the feedback (delete, updates, tag quick-edit).
+- **Modals:** dismiss only via buttons. The script catches a dismiss handler on any tag that names `ds-modal-overlay`. Also check overlays built another way: a class from a variable, a wrapper component, or an Escape handler on a modal that has a Cancel button.
+- **Plugin-first:** new information-section-like content or external fetching hard-coded in `src/components/` instead of a plugin.
+- **Skin compatibility:** delegate to `/css-review`; don't duplicate.
 
 **Report format:** `file:line — <rule> — <what's wrong>`
 
 ---
 
-### Pass 3 — Code Reuse Opportunities
+### Pass 3: Code reuse opportunities
 
-Find duplicated logic that should consolidate into a shared hook/util/module.
+Find duplicated logic that should live in one shared helper. Report 3+ copies as medium.
 
-**Frontend heuristics:**
-- Grep for repeated `invoke(` patterns with similar argument shapes across >2 files — candidates for a shared hook.
-- Duplicate entity-key construction: look for patterns like `` `artist:${name}` ``, `` `album:${artist}:${name}` ``, `` `track:${artist}:${name}` `` — should live in one util.
-- Duplicate time formatting / duration formatting — `utils.ts` has `formatDuration`; flag reimplementations.
-- Duplicate URL-scheme parsing (`file://`, `subsonic://`, plugin schemes) — should live in `queueEntry.ts` helpers.
-- Duplicate "is this a local track" checks (`track.path.startsWith("file://")`) scattered across components.
-- Repeated `addLog(`...`)` error-handling patterns that could be wrapped.
+**Frontend:**
+- **Duration / clock formatting** (`m:ss`) reimplemented next to `utils.ts` → `formatDuration`:
+  `rg -n 'Math\.floor\(\w+ / 60\)' src --glob '!**/__tests__/**'`
+- **Entity keys** built by hand (`` `album:${…}:${…}` ``) instead of `types/informationTypes.ts` → `buildEntityKey`, or `likeKeys.ts` for like keys.
+- **Local-track checks** (`track.path.startsWith("file://")`) instead of `queueEntry.ts` → `isLocalTrack`.
+- **Repeated `invoke` shapes** across 3+ files, a candidate for a shared util or hook.
+- **Repeated relative-time / byte-size / plural formatting**: check `utils.ts` first.
 
-**Backend heuristics:**
-- Repeated SQL-building string concatenation across commands that could share a query builder.
-- Duplicate Last.fm / Subsonic request signing code.
-- Repeated `State<'_, AppState>` unwrap + `db.lock()` patterns that could collapse into helpers.
-- Duplicate filename-parsing regex patterns (scanner.rs has 4 canonical ones — flag any parallel implementations).
+**Backend:**
+- **HTTP clients:** `reqwest::…Client::builder()` / `Client::new()` / `reqwest::blocking::get` sprinkled across modules with differing timeouts and user agents. Point at the existing shared builder (`image_provider::http_client`).
+  `rg -n 'reqwest::(blocking::)?(Client::(new|builder)\(\)|get\()' src-tauri/src`
+- **SQL fragments** copy-pasted across `db/*.rs` (the same WHERE/JOIN for "visible tracks", the same accent-folded match).
+- **Filename / tag parsing** that duplicates `scanner.rs`.
 
 **Report format:** `<pattern> — seen at file1:line, file2:line, file3:line — consolidate into <suggested location>`
 
 ---
 
-### Pass 4 — Performance Issues
+### Pass 4: Performance issues
 
 **Frontend:**
-- Large list components (`TrackList`, `QueuePanel`, `HistoryView`, `AlbumListView`, `ArtistListView`) rendering without virtualization when list size is unbounded. Check if list length is user-controlled (library can have 100k+ tracks).
-- Missing `React.memo` on row components inside long lists — check if parent re-renders propagate.
-- Missing `useMemo` / `useCallback` for values passed into memoized children or into `useEffect` dep arrays (look for inline object/array/function literals as props or effect deps).
-- `useEffect` with missing deps that would cause stale closures, OR with object/array deps declared inline (recreates every render).
-- Grep for `.filter(...).map(...).filter(...)` chains on large arrays in render bodies — candidates for pre-computation.
-- Grep for `invoke(` calls inside render bodies (not in `useEffect`) — indicates wasted fetches per render.
-- Grep for `IntersectionObserver` duplication — image-card components should share.
-- Check `useImageCache` dedup guards — multiple callers racing on the same key.
-- Search inputs without debounce: grep for `onChange` handlers on search inputs that fire `invoke` or `setState` with search-heavy computation directly.
+- **Long lists:** `TrackList` and `QueuePanel` rows use `content-visibility: auto` (see their CSS) rather than windowing. That is the chosen approach, so don't flag it. Flag *new* unbounded lists that use neither.
+- **Rows** inside long lists without `React.memo`, or memoized rows receiving inline object/function props.
+- **`invoke(` in a render body** (outside an effect or handler): a fetch on every render.
+- **State-then-effect hops** where a direct call from the handler would do (project preference).
+- **Search inputs** firing `invoke` per keystroke without a debounce.
+- **`Math.random()` / `Date.now()` inside `useMemo`**: re-deals on every recompute (the `react-hooks/purity` lesson).
 
-**Backend:**
-- N+1 queries: Grep `db.rs` and `commands.rs` for patterns where a loop calls a per-row SQL query. Candidates: anywhere `for` loops iterate ids and issue `get_*_by_id` inside.
-- Missing indexes: cross-check common WHERE clauses in `db.rs` against schema. Flag WHERE clauses on non-indexed columns when the table has >1k rows at runtime.
-- Holding `db.lock()` across await/IO: grep for `let conn = db.lock()` followed by `.await` or HTTP calls in the same scope — holds the mutex during network I/O.
-- `thread::spawn` without cancellation `AtomicBool` — `backend.md` requires this for long tasks.
-- Background tasks emitting events without throttling on tight loops (look for `app.emit(` inside `for` loops without rate limiting).
-- Unbounded channels / unbounded growth (e.g., `Vec::new()` that appends per-file and never drains in a scanner).
-- String allocations in hot loops: `format!` inside tight parsing loops.
+**Backend** (read code; these are the files to sample first):
+- **Per-request client construction:** a new HTTP client per call in loops (e.g. a sync fetching per album) means a new TLS handshake each time. Start with `subsonic.rs`, `sync.rs`, `image_provider/`, `downloader.rs`.
+- **N+1 queries:** loops in `commands/*.rs` / `db/*.rs` calling a per-row `get_*_by_id` / `query_row`.
+- **Locks held across I/O:** a DB guard alive while doing HTTP or a long fs walk. Search `commands/` for a guard followed by `.send()` in the same scope.
+- **Long background work** without a cancellation `AtomicBool` (backend.md requires one), and `app.emit` inside tight loops without throttling.
+- **Missing indexes:** new WHERE clauses on large tables (`tracks`, `history`) against the schema in `db/`. Use `/db-bench` to measure.
 
 **Report format:** `file:line — <issue> — <suggested fix>`
 
 ---
 
-### Pass 5 — Dead Code
+### Pass 5: Dead code
 
-**Frontend:**
-- Unused exports: for each `export function`, `export const`, `export class` in `src/**/*.{ts,tsx}`, grep for imports. Zero imports = candidate (excluding entry points like `main.tsx`, `App.tsx`).
-- Unused types in `types.ts` / `types/*.ts`.
-- Unused hooks in `src/hooks/`.
-- Dead branches: `if (false)`, unreachable code after early returns, commented-out blocks >3 lines.
-- Reference `css-review` for dead CSS classes; do not duplicate.
+**Scripted:** `unused-commands.mjs`, `unused-exports.mjs`, and the cargo warnings from `scan.mjs --tools`.
 
-**Backend:**
-- `cargo check` already catches most unused items, but run `cargo check --message-format=short 2>&1 | grep "never used\|never read\|dead_code"` and surface findings.
-- Unused Tauri commands: for each `#[tauri::command] fn foo`, grep TypeScript for `invoke("foo"` — zero hits = candidate. Exclude commands gated behind `#[cfg(debug_assertions)]` if user is in release-only mode.
-- Unused DB functions in `db.rs`: grep `commands.rs` and the rest of the crate for the function name.
-- Unused model structs / fields in `models.rs`.
-
-**Plugins:**
-- Unused plugins: for each dir in `src-tauri/plugins/`, check if its `id` appears in any active manifest references or is reachable via plugin discovery. Plugins are user-installable — flag only if clearly orphaned (e.g., no manifest or manifest missing required fields).
+**By hand:**
+- **Unused `pub fn` in `db/*.rs`:** cargo doesn't warn on `pub` items. Spot-check functions added recently (`git log -p --since=…`), grepping the crate for each name.
+- **Unused fields in `models.rs` structs** that are serialized but never read on the TS side.
+- **Dead branches:** `if (false)`, code after an unconditional return, commented-out blocks longer than 3 lines.
+- **Retired store keys** still read outside `RETIRED_STORE_KEYS` / restore migration.
+- **Plugins:** flag only a plugin dir with no manifest or a broken one. Plugins are user-installable, so "unused" doesn't apply.
 
 **Report format:** `file:line — <symbol> — no external references found`
 
 ---
 
-### Pass 6 — Misc Smells
+### Pass 6: Misc smells
 
-- `console.log` / `console.debug` left in production paths (allowed in dev helpers, but flag in committed components).
-- `TODO` / `FIXME` / `HACK` / `XXX` comments — list with file:line for user awareness.
-- Magic numbers that should be named constants (thresholds like scrobble time, rate limits) — check against the values already declared in `backend.md` / `frontend.md` (e.g., 1100ms image rate limit, 50%/4min scrobble threshold).
-- Large components (>500 lines) in `src/components/` — candidates for extraction.
-- Large Rust files (>800 lines) — candidates for splitting.
-- Tests colocated where they shouldn't be (per `testing.md`: frontend tests in `src/__tests__/`, Rust tests in `#[cfg(test)] mod tests`).
+- **TODO / FIXME / HACK / XXX:** `rg -n '\b(TODO|FIXME|HACK|XXX)\b' src src-tauri/src`. Low priority unless the comment marks a bug.
+- **Magic numbers** that duplicate a documented constant (scrobble threshold, rate limits, timeouts).
+- **File size:**
+  `find src/components -name '*.tsx' | xargs wc -l | sort -rn | head` (flag >500 lines)
+  `find src-tauri/src -name '*.rs' ! -name tests.rs | xargs wc -l | sort -rn | head` (flag >800 lines)
+  Report the top few, plus counts. Don't list every file.
+- **Test placement:** frontend tests belong in `src/__tests__/`, Rust tests in `#[cfg(test)] mod tests` (see testing.md).
+- `console.debug` tracing that runs on every hot-path event (every resolve, every tick).
 
 ---
 
-## Running the Scan
-
-Use Grep and Read tools. For large greps, batch multiple patterns in parallel. Keep each grep narrow (specific pattern + path filter) to avoid output overflow.
-
-**Prefer `rg` via Bash** when scanning for multiple patterns with file-count aggregation:
-```bash
-rg -n "invoke\(\"set_entity_like_state\"" src/ --type ts --type tsx
-```
-
-**For cargo-based dead code:**
-```bash
-cd src-tauri && cargo check --message-format=short 2>&1 | grep -E "warning: (unused|dead|never)"
-```
-
-Do NOT run `cargo fix` or edit anything during scanning.
-
-## Report Format
-
-Produce a single markdown report with these sections, in this order:
+## Report format
 
 ```
 Code Health Report
@@ -178,9 +174,12 @@ Code Health Report
 Files scanned: N frontend + N backend + N plugin
 Findings: N total (H high / M medium / L low)
 
+─── Clean (checked, nothing found) ───
+- one line per check that passed: canonical commands (N checked), removed features,
+  Tauri commands (N/N have a caller), lint errors, cargo warnings, …
+
 ─── High Priority ───
 1. [Canonical Action] file:line — <issue> — <fix>
-2. [Performance]      file:line — <issue> — <fix>
 ...
 
 ─── Medium Priority ───
@@ -190,46 +189,59 @@ Findings: N total (H high / M medium / L low)
 ...
 
 ─── Summary by Dimension ───
-Canonical Actions:   N findings
-Behavioral Rules:    N findings
-Code Reuse:          N findings
-Performance:         N findings
-Dead Code:           N findings
-Misc:                N findings
+Canonical Actions:   N
+Behavioral Rules:    N
+Code Reuse:          N
+Performance:         N
+Dead Code:           N
+Misc:                N
 ```
 
-**Priority rubric:**
-- **High:** Canonical action violations, silent error handling in user-facing paths, performance issues affecting main-thread responsiveness (render-time invokes, unbounded lists, mutex-across-await).
-- **Medium:** Code reuse opportunities with 3+ duplicates, missing memoization with measurable render cost, dead code in public-facing modules, missing context menu wiring.
-- **Low:** TODOs, magic numbers, file-size smells, single-instance duplications, dead code in internal utilities.
+The **Clean** section matters: "nothing found" is only useful if it says what was checked.
 
-## After the Report
+**Priority rubric:**
+- **High:** anything matching "Do Not Reintroduce"; canonical action violations that skip a side effect (a like that doesn't fire `like:changed`, a delete that skips the confirmation gate); silently swallowed errors on user-initiated actions; main-thread stalls (render-time invokes, a lock held across network I/O).
+- **Medium:** canonical-route bypasses with no lost side effect; 3+ duplicates; per-request client construction in loops; dead exports or commands in public-facing modules; missing memoization with measurable render cost.
+- **Low:** TODOs, magic numbers, file size, single duplications, test-only exports, comment/behaviour mismatches.
+
+It is fine to report zero high findings. Don't promote a finding to fill the section.
+
+## After the report
 
 Ask the user how to proceed:
-- **Fix highest priority** — apply the top N findings with edits
-- **Fix by dimension** — pick a pass (e.g., "fix all canonical action violations")
-- **Fix by file** — walk through one file at a time
-- **Report only** — use as reference, no edits
+- **Fix highest priority:** apply the top N findings
+- **Fix by dimension:** pick a pass (e.g. "fix all dead code")
+- **Fix by file:** walk through one file at a time
+- **Report only:** keep it as a reference, no edits
 
 Do NOT start editing until the user picks an option.
 
-## What This Skill Does NOT Do
+## Maintaining the scripts
 
-- **Skin / CSS compliance** — delegate to `/css-review`.
-- **New feature design** — delegate to `/architect`.
-- **Release / version bumps** — delegate to `/release`.
-- **Running benchmarks** — delegate to `/db-bench`.
-- **Interactive refactors** — this is a review pass, not a pair-programming session.
-- **Autofixing** — always produce the report first; only edit when explicitly asked.
+- **The tables in `canonical-actions.mjs` are a copy of conventions.md and CLAUDE.md.** When a canonical action, a single-dispatcher event, or a "Do Not Reintroduce" entry is added or changed, update the table in the same change. A missing row is a check that silently never runs.
+- An `allow` entry is a decision, not a workaround. Add a file to `allow` only when conventions.md sanctions that caller, and say why in the `route` text (see `collect_diagnostics`).
+- After editing a script, run `node .claude/skills/code-health/scripts/selftest.mjs`. It pins the parsing the checks depend on: comment stripping (including Rust lifetimes and raw strings), the removed-feature patterns, the overlay walker, and handler-list parsing. When you add a pattern, add a fixture that must match and one that must not. Then run `scan.mjs` and check the known-good state stays quiet (no `reintroduced` hits on main).
+- Scripts are plain Node with no dependencies (`lib.mjs` has the walker and comment stripper). Keep it that way. The project minimizes dependencies.
 
-## Common Mistakes
+## What this skill does NOT do
+
+- **Skin / CSS compliance:** use `/css-review`.
+- **New feature design:** use `/architect`.
+- **Release / version bumps:** use `/release`.
+- **Running benchmarks:** use `/db-bench` (DB) or `npm run perf:probe` (host resources).
+- **Interactive refactors or autofixing:** report first, edit only when asked.
+
+## Common mistakes
 
 | Mistake | Fix |
 |---------|-----|
 | Skipping the pre-scan reading | Findings without grounding are low-signal noise. Read the rule files first. |
-| Flagging `SPEC.md`-documented exceptions as violations | Re-read `conventions.md`; some patterns have documented exceptions (e.g., fire-and-forget catches with comment). |
-| Listing every `TODO` as high priority | TODOs are Low unless the comment itself says "critical" or marks a bug. |
-| Editing during the scan | Never. Report first, edit only after user approval. |
-| Duplicating `/css-review` findings | Point to `/css-review` instead. |
-| Running Rust dead-code checks without reading `#[cfg(debug_assertions)]` gating | Debug-only commands are not "dead." |
-| Treating unused plugin files as dead | Plugins are user-visible; only flag if manifest is clearly orphaned. |
+| Reporting script output verbatim | Read each hit. The scripts find candidates; you decide what is a finding. |
+| Re-grepping what lint enforces | Run lint (`scan.mjs --tools`) and report its errors. Don't hand-scan for empty catches or `console.log`. |
+| Flagging documented exceptions | conventions.md documents some: fire-and-forget catches with a reason, the two fact-only `collect_diagnostics` readers (Report a Problem), non-track `show_in_folder_path` callers (Open Containing Folder), and the bulk like import. Re-read before flagging. |
+| Flagging `local` exports or `…ForTest` seams as dead | Harmless. Report only `dead` and genuine `test-only` production helpers. |
+| Flagging list virtualization on TrackList / QueuePanel | They use `content-visibility: auto` on purpose. |
+| Listing every TODO as high priority | TODOs are low unless the comment marks a bug. |
+| Treating `rust-only` commands as dead functions | The fn is used. Only its `generate_handler!` entry is unnecessary. |
+| Debug-only commands reported as dead | Check `#[cfg(debug_assertions)]` (the script labels it). |
+| Editing during the scan | Never. Report first, edit only after the user approves. |

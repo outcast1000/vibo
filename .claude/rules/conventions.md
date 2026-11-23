@@ -120,6 +120,7 @@ Each entry documents the gold standard implementation for a repeated user action
 - **Canonical:** `useContextMenuActions.ts` -> `handleShowInFolder()`
 - **Flow:** `invoke("show_in_folder", { trackId })` for library tracks, `invoke("show_in_folder_path", { filePath })` for paths
 - **Availability:** Local tracks only (`file://` scheme). Visibility controlled by `target.isLocal` flag on the context menu target.
+- **Paths that aren't a track** call `show_in_folder_path` directly: a Settings folder (`SettingsPanel`), a file a download just wrote (`SingleTrackDownload` / `MultiTrackDownload`), a plugin's `api.system.revealPath`. A track's file — library row, queue entry, playlist entry, the playing track — goes through `handleShowInFolder`.
 
 ### Download Track
 
@@ -197,7 +198,7 @@ Each entry documents the gold standard implementation for a repeated user action
 
 - **Canonical:** `ReportProblemModal.tsx` on top of `utils/diagnosticReport.ts` (`collectDiagnosticReport` → `buildDiagnosticReport`). App.tsx owns the modal state (`reportProblem`) and builds the host-only facts via `buildDiagnosticSources(context)`.
 - **Flow:** entry point sets `{ title, context }` → modal calls `collectDiagnosticReport` (backend `collect_diagnostics` + track/collection counts + the `errorLog` / `resolverLog` ring buffers) → renders the full markdown report → user copies it, optionally opening a prefilled GitHub issue via `issueUrl(LINKS.issues, title)`.
-- **Entry points:** Settings → Debug → Problems (no context), and `PlaybackErrorModal`'s "Report a problem" button (context = error / source / format / engine, and it pauses that modal's auto-skip countdown so the dialog isn't yanked away mid-report). New entry points supply a `DiagnosticContext` and reuse this modal — do not assemble a bundle anywhere else.
+- **Entry points:** Settings → Debug → Problems (no context), and `PlaybackErrorModal`'s "Report a problem" button (context = error / source / format / engine, and it pauses that modal's auto-skip countdown so the dialog isn't yanked away mid-report). New entry points supply a `DiagnosticContext` and reuse this modal — do not assemble a bundle anywhere else. Two callers read `collect_diagnostics` for its facts alone and assemble no report: the probe dump (`App.tsx` `writeProbeDumpRef`: version / profile / platform) and the control API's log reader (`useControlApi.ts`: `homeDir`, to scrub the lines it returns).
 - **Nothing is auto-submitted (hard rule).** The report is shown in full and the user copies it. That review step is the consent model, which is why the bundle may include log lines, resolver activity, and library metadata that anonymous telemetry deliberately never sends. Do not add a "send automatically" path, and do not fold any of this into the `telemetryEnabled` toggle — it covers a different, anonymous-only contract.
 - **Scrubbing:** `scrubPaths()` replaces the home directory with `~` everywhere, always. Usernames leak into every path in a log tail and a user skimming a wall of text will never spot them.
 - **Telemetry counterpart:** every error event carries a bucketed `error_kind` from `classifyErrorKind()` — the closed enum is the *only* error detail that leaves the app unprompted. Raw messages and stacks never do.
