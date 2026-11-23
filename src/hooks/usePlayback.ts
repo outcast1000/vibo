@@ -622,6 +622,15 @@ export function usePlayback(
           crossScrobbleThreshold(track);
         }
 
+        // A play still resolving its source means this session is the OUTGOING
+        // track and the queue around it is no longer its queue: `peekNext()`
+        // already answers for the play being resolved. Driving the machine now
+        // pre-resolved that play's second entry alongside its first (two yt-dlp
+        // walks at once on a new playlist when the old song was in its last
+        // 45s) and could start a crossfade or an auto-continue prefetch for a
+        // queue that is going away. The incoming play's own ticks drive it.
+        if (livePendingPlay()) return;
+
         const duration = payload.durationSecs ?? track?.duration_secs ?? 0;
         const actions = driveProgressMachine({
           position: payload.positionSecs,
