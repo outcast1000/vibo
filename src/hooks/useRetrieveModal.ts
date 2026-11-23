@@ -94,6 +94,9 @@ export interface RetrieveModalData {
   albumTitle?: string | null;
   /** A track's file, as a hint for lyrics lookups and saves (not part of its key). */
   entityPath?: string | null;
+  /** A track's length, when known: sent to providers that match on it
+   *  (LRCLIB) and shown against each copy's own length in the compare. */
+  entityDurationSecs?: number | null;
   displayKind?: DisplayKind;
   infoTypeId?: string;
   providers: ProviderRow[];
@@ -301,6 +304,7 @@ export function useRetrieveModal(
         const entity: InfoEntity = {
           kind: data.entityKind, name: data.name, id: 0,
           artistName: data.artistName ?? undefined, albumTitle: data.albumTitle ?? undefined, path: data.entityPath ?? undefined,
+          durationSecs: data.entityDurationSecs ?? undefined,
         };
         const result = await invokeInfoFetch(provider.pluginId!, data.infoTypeId!, entity);
         if (gen !== genRef.current) return { ok: false, status: "error" };
@@ -404,6 +408,7 @@ export function useRetrieveModal(
       title: entityTitle(args.entity.name, args.entity.artistName ?? null),
       entityKind: args.entity.kind, name: args.entity.name,
       artistName: args.entity.artistName ?? null, albumTitle: args.entity.albumTitle ?? null, entityPath: args.entity.path ?? null,
+      entityDurationSecs: args.entity.durationSecs ?? null,
       displayKind: args.displayKind, infoTypeId: args.infoTypeId,
       providers, currentIndex: 0,
       phase: providers.length ? "running" : "exhausted",

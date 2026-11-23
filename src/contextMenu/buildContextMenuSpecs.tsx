@@ -24,6 +24,9 @@ export interface GetLyricsTrack {
   artistName?: string | null;
   albumTitle?: string | null;
   path?: string | null;
+  /** The track's length, when known: LRCLIB matches on it, and the compare
+   *  shows how far each copy's own length is from it. */
+  durationSecs?: number | null;
 }
 
 /** What the Get lyrics / Get image rows offer (switched-on providers, the
@@ -162,7 +165,7 @@ export function buildContextMenuSpecs(target: ContextMenuTarget, d: ContextMenuD
         specs.push(radio.spec);
         const album = playFullAlbumSpec(d, albumOf(t.albumTitle, t.artistName), radio.rest, pluginTarget);
         if (album.spec) specs.push(album.spec);
-        specs.push(getLyricsSpec(d.getMenus, { title: t.title, artistName: t.artistName, albumTitle: t.albumTitle, path: t.path }));
+        specs.push(getLyricsSpec(d.getMenus, { title: t.title, artistName: t.artistName, albumTitle: t.albumTitle, path: t.path, durationSecs: t.durationSecs }));
         const plain = pushSharedActions(specs, album.rest, pluginTarget, d);
         const libId = t.libraryId;
         if (libId != null) {
@@ -265,7 +268,7 @@ export function buildContextMenuSpecs(target: ContextMenuTarget, d: ContextMenuD
         const album = playFullAlbumSpec(d, albumOf(queued.album_title, queued.album_artist_name ?? queued.artist_name), pluginItems, pluginTarget);
         if (album.spec) specs.push(album.spec);
         pluginItems = album.rest;
-        specs.push(getLyricsSpec(d.getMenus, { title: queued.title, artistName: queued.artist_name, albumTitle: queued.album_title, path: queued.path }));
+        specs.push(getLyricsSpec(d.getMenus, { title: queued.title, artistName: queued.artist_name, albumTitle: queued.album_title, path: queued.path, durationSecs: queued.duration_secs }));
       }
       pluginItems = pushSharedActions(specs, pluginItems, pluginTarget, d);
 

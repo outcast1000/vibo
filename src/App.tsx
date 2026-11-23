@@ -2303,7 +2303,7 @@ function App() {
       infoTypeId: "lyrics",
       label: "lyrics",
       displayKind: getMenuProviders.lyrics?.displayKind ?? "lyrics",
-      entity: { kind: "track", id: 0, name: track.title, artistName: track.artistName ?? undefined, albumTitle: track.albumTitle ?? undefined, path: track.path ?? undefined },
+      entity: { kind: "track", id: 0, name: track.title, artistName: track.artistName ?? undefined, albumTitle: track.albumTitle ?? undefined, path: track.path ?? undefined, durationSecs: track.durationSecs ?? undefined },
       providers: getMenuProviders.lyrics?.providers ?? [],
       pluginNames: plugins.pluginNames,
       mode: "get",
@@ -5554,7 +5554,7 @@ function App() {
           specs.push(album.spec);
           pluginItems = album.rest;
         }
-        specs.push(buildGetFromProvidersSpec("Get lyrics", getMenus.lyrics, (key) => getMenus.openLyrics({ title: t.title, artistName: t.artist_name, albumTitle: t.album_title, path: t.path }, key)));
+        specs.push(buildGetFromProvidersSpec("Get lyrics", getMenus.lyrics, (key) => getMenus.openLyrics({ title: t.title, artistName: t.artist_name, albumTitle: t.album_title, path: t.path, durationSecs: playback.durationSecs || t.duration_secs }, key)));
         refreshGetMenuProviders();
         // The other shared-action rows (Download, Find downloads) sit here with
         // the host's own actions, not in the plugin section below.

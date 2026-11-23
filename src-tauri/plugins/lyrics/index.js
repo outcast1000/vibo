@@ -46,13 +46,25 @@ function activate(api) {
   // different cut (radio edit, live, extended) drift out of step.
   var DURATION_TOLERANCE_SECS = 2;
 
+  // What the row says the lyrics are for. The host shows it beside the copy
+  // when the user compares it with the lyrics they have (Get lyrics), so a
+  // row for another cut or spelling can be told apart before Replace.
+  function lrclibSource(data) {
+    var source = {};
+    if (data.trackName) source.title = String(data.trackName);
+    if (data.artistName) source.artist = String(data.artistName);
+    if (data.albumName) source.album = String(data.albumName);
+    if (typeof data.duration === "number" && isFinite(data.duration) && data.duration > 0) source.durationSecs = data.duration;
+    return source;
+  }
+
   function lrclibValue(data) {
     // Prefer synced lyrics, fall back to plain.
     if (data.syncedLyrics && data.syncedLyrics.trim()) {
-      return { text: data.syncedLyrics, kind: "synced", _meta: LRCLIB_META };
+      return { text: data.syncedLyrics, kind: "synced", source: lrclibSource(data), _meta: LRCLIB_META };
     }
     if (data.plainLyrics && data.plainLyrics.trim()) {
-      return { text: data.plainLyrics, kind: "plain", _meta: LRCLIB_META };
+      return { text: data.plainLyrics, kind: "plain", source: lrclibSource(data), _meta: LRCLIB_META };
     }
     return null;
   }
@@ -62,7 +74,7 @@ function activate(api) {
   function lrclibPlainValue(data) {
     var text = data.plainLyrics && data.plainLyrics.trim() ? data.plainLyrics
       : (data.syncedLyrics || "").replace(/^\s*(\[\d+:\d+(?:[.:]\d+)?\]\s*)+/gm, "");
-    return text.trim() ? { text: text, kind: "plain", _meta: LRCLIB_META } : null;
+    return text.trim() ? { text: text, kind: "plain", source: lrclibSource(data), _meta: LRCLIB_META } : null;
   }
 
   function knownDuration(entity) {

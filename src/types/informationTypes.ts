@@ -103,6 +103,15 @@ export interface StatGridData {
   items: StatGridItem[];
 }
 
+/** What a lyrics provider says the lyrics are for (LRCLIB: the row it
+ *  answered with). Every field optional; a source that knows nothing omits it. */
+export interface LyricsSource {
+  title?: string;
+  artist?: string;
+  album?: string;
+  durationSecs?: number;
+}
+
 export interface LyricsData {
   text: string;
   kind: "plain" | "synced";
@@ -113,6 +122,11 @@ export interface LyricsData {
    *  saves an edit of these back into the track's files (`saveLocalLyrics`):
    *  a cache-only edit would be overwritten by the next scan of the file. */
   local?: boolean;
+  /** What the provider says these lyrics are for — the row it answered with
+   *  (LRCLIB: its title, artist, album and length). Shown beside the copy in
+   *  the Get lyrics compare (`utils/lyricsFacts.ts`); absent when the source
+   *  knows nothing beyond the text. */
+  source?: LyricsSource;
 }
 
 export interface TagListData {

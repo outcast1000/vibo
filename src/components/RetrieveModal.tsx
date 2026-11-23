@@ -4,6 +4,7 @@ import { PluginViewSection } from "./renderers/PluginViewSection";
 import { retrieveWantsSuggestions, type RetrieveModalData, type ProviderRow, type ProviderStatus } from "../hooks/useRetrieveModal";
 import type { ProviderSuggestion } from "../utils/providerSuggestions";
 import { ProviderSuggestionList } from "./ProviderSuggestionList";
+import { lyricsFacts } from "../utils/lyricsFacts";
 import "./RetrieveModal.css";
 
 interface RetrieveModalProps {
@@ -103,6 +104,27 @@ function ValueView({ modal, imageSrc, info }: { modal: RetrieveModalData; imageS
       );
     }
     const Renderer = renderers[modal.displayKind];
+    // A `get` of lyrics says what each copy is beside its words: where it came
+    // from, which song and cut the source filed it under, how far its timing
+    // runs — so Replace isn't decided on the words alone.
+    const facts = modal.mode === "get" && modal.displayKind === "lyrics"
+      ? lyricsFacts(info, { title: modal.name, artist: modal.artistName, album: modal.albumTitle, durationSecs: modal.entityDurationSecs })
+      : [];
+    if (Renderer && facts.length) {
+      return (
+        <>
+          <dl className="rm-facts">
+            {facts.map((f) => (
+              <div key={f.label} className={`rm-fact${f.differs ? " rm-fact--differs" : ""}`} title={f.hint}>
+                <dt>{f.label}</dt>
+                <dd>{f.value}</dd>
+              </div>
+            ))}
+          </dl>
+          <div className="rm-preview rm-preview--info"><Renderer data={info} context={{ showTimes: true }} /></div>
+        </>
+      );
+    }
     // Lyrics show their line times: when comparing two copies, the timing is
     // often the only thing that differs.
     if (Renderer) return <div className="rm-preview rm-preview--info"><Renderer data={info} context={{ showTimes: true }} /></div>;

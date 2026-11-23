@@ -1,7 +1,7 @@
 {
   "id": "lyrics",
   "name": "Lyrics",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "author": "Vibo",
   "description": "Synced and plain lyrics from LRCLIB, with Lyrics.ovh as a plain-text fallback. Order or switch off each source in Settings → Providers.",
   "icon": "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z",
