@@ -3,7 +3,7 @@ import type { RendererProps } from "./index";
 import type { LyricsData } from "../../types/informationTypes";
 import { usePlaybackPosition } from "../../playback/positionStore";
 import { currentSyncedLineIndex, parseLrc, scrollLineToCenter } from "../../utils/lyrics";
-import type { LyricsKind } from "../../utils/lyricsEditor";
+import { formatClock, type LyricsKind } from "../../utils/lyricsEditor";
 import { LyricsEditor } from "./LyricsEditor";
 
 /**
@@ -28,6 +28,7 @@ export function LyricsRenderer({ data, onAction, context }: RendererProps) {
 
   const live = context?.livePosition ?? false;
   const seek = context?.seek;
+  const showTimes = context?.showTimes ?? false;
   // Live position only when the host says this entity is the playing track;
   // otherwise the hook opts out of per-tick re-renders and returns 0. Not
   // while editing: the editor subscribes for itself.
@@ -124,10 +125,11 @@ export function LyricsRenderer({ data, onAction, context }: RendererProps) {
               <div
                 key={i}
                 ref={active ? activeLineRef : undefined}
-                className={`lyrics-line${active ? " is-active" : ""}${seek ? " is-seekable" : ""}`}
+                className={`lyrics-line${active ? " is-active" : ""}${seek ? " is-seekable" : ""}${showTimes ? " has-time" : ""}`}
                 onClick={seek ? () => seek(line.time) : undefined}
                 title={seek ? "Play from this line" : undefined}
               >
+                {showTimes && <span className="lyrics-line-time">{formatClock(line.time)}</span>}
                 {line.text}
               </div>
             );

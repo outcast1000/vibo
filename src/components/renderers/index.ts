@@ -23,8 +23,9 @@ export interface RendererProps {
   resolveEntity?: (kind: string, name: string) => { id?: number; imageSrc?: string } | undefined;
   /** `livePosition`: the entity is the playing track. `seek`: play the entity
    *  from a position (seeks when it is already playing); absent where the
-   *  page can't start it. */
-  context?: { livePosition?: boolean; seek?: (secs: number) => void };
+   *  page can't start it. `showTimes`: print each synced lyric line's time
+   *  (the Retrieve modal's compare, where the timing is what differs). */
+  context?: { livePosition?: boolean; seek?: (secs: number) => void; showTimes?: boolean };
   onTrackContextMenu?: (e: MouseEvent, trackInfo: { trackId?: number; title: string; artistName: string | null }) => void;
   onEntityContextMenu?: (e: MouseEvent, info: { kind: "track" | "artist" | "album"; id?: number; name: string; artistName?: string | null }) => void;
 }

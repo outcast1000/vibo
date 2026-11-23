@@ -71,6 +71,9 @@ a.gallery-source:hover { opacity: 0.8; text-decoration: underline; }
 .lyrics-line.is-seekable { cursor: pointer; }
 .lyrics-line.is-seekable:hover { opacity: 0.85; background: var(--bg-hover); }
 .lyrics-line.is-seekable.is-active:hover { opacity: 1; }
+/* Timestamps shown (Retrieve compare): every line full strength, the time in a fixed gutter. */
+.lyrics-line.has-time { opacity: 1; display: flex; gap: 10px; }
+.lyrics-line-time { flex: none; min-width: 5ch; font-variant-numeric: tabular-nums; color: var(--text-tertiary); }
 .lyrics-plain { white-space: pre-wrap; font-size: var(--fs-sm); line-height: 1.6; }
 
 /* Empty state: no lyrics found */

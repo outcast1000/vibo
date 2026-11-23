@@ -103,7 +103,9 @@ function ValueView({ modal, imageSrc, info }: { modal: RetrieveModalData; imageS
       );
     }
     const Renderer = renderers[modal.displayKind];
-    if (Renderer) return <div className="rm-preview rm-preview--info"><Renderer data={info} /></div>;
+    // Lyrics show their line times: when comparing two copies, the timing is
+    // often the only thing that differs.
+    if (Renderer) return <div className="rm-preview rm-preview--info"><Renderer data={info} context={{ showTimes: true }} /></div>;
     return <div className="rm-preview rm-preview--info"><pre className="rm-json">{JSON.stringify(info, null, 2)}</pre></div>;
   }
   return null;
