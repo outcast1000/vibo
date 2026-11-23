@@ -53,6 +53,9 @@ interface BulkEditModalProps {
   seek?: (secs: number) => void;
   onClose: () => void;
   onSave: (result: BulkEditResult) => void;
+  /** Reveal the track's file — useContextMenuActions.showTrackInFolder, the
+   *  one Open Containing Folder for a track (its failure dialog included). */
+  onShowInFolder?: (track: { libraryId: number; path: string | null }) => void;
 }
 
 type Tab = "details" | "tags" | "lyrics" | "file";
@@ -149,7 +152,7 @@ function sharedValue(tracks: Track[], pick: (t: Track) => string | number | null
 
 export default function BulkEditModal({
   tracks, artistOptions, albumOptions, tagOptions, invokeInfoFetch, pluginNames, pluginsLoaded,
-  live = false, seek, onClose, onSave,
+  live = false, seek, onClose, onSave, onShowInFolder,
 }: BulkEditModalProps) {
   const count = tracks.length;
   const single = count === 1 ? tracks[0] : null;
@@ -383,16 +386,6 @@ export default function BulkEditModal({
   ];
 
   const fileName = fileNameOf(single?.path);
-  const [folderError, setFolderError] = useState<string | null>(null);
-  async function showInFolder(trackId: number) {
-    setFolderError(null);
-    try {
-      await invoke("show_in_folder", { trackId });
-    } catch (e) {
-      console.error("Failed to open containing folder:", e);
-      setFolderError(e instanceof Error ? e.message : String(e));
-    }
-  }
 
   // Tabs: arrow keys move between them (and open the one they land on).
   const tabRefs = useRef(new Map<Tab, HTMLButtonElement>());
@@ -606,12 +599,11 @@ export default function BulkEditModal({
 
           {single && tab === "file" && (
             <div id="bulk-edit-panel-file" role="tabpanel" aria-labelledby="bulk-edit-tab-file">
-            {single.id != null && isLocalTrack(single) && (
+            {single.id != null && isLocalTrack(single) && onShowInFolder && (
               <div className="bulk-edit-file-actions">
-                <button type="button" className="ds-btn ds-btn--secondary ds-btn--sm" onClick={() => { if (single.id != null) void showInFolder(single.id); }}>
+                <button type="button" className="ds-btn ds-btn--secondary ds-btn--sm" onClick={() => { if (single.id != null) onShowInFolder({ libraryId: single.id, path: single.path }); }}>
                   {IS_MAC ? "Show in Finder" : "Show in Folder"}
                 </button>
-                {folderError && <span className="bulk-edit-hint bulk-edit-hint--error">Couldn't open the folder: {folderError}</span>}
               </div>
             )}
             <dl className="bulk-edit-file">

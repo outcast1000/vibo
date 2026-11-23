@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { FolderErrorModal } from "./modals/ConfirmModals";
 import { computeSelection } from "../utils/rowSelection";
 import { fetchLikeStates, applyLikeState } from "../utils/likeReconcile";
 import { invoke } from "@tauri-apps/api/core";
@@ -41,6 +40,7 @@ import { useQueueVideoFrames, shelfVideoKey } from "../hooks/useShelfVideoFrames
 import { resolveTrackImage, pickEntityImagePath } from "../utils/trackImage";
 import { buildPluginMenuSpecs } from "../contextMenu/pluginMenuGroups";
 import type { Notify } from "../hooks/useToasts";
+import type { ContextMenuTarget } from "../types/contextMenu";
 import "./PlaylistsView.css";
 
 interface Playlist {
@@ -113,6 +113,11 @@ interface PlaylistsViewProps {
   onBrowsePlaylists?: (tracks: QueueTrack[], excludeId?: number) => void;
   /** Lightweight feedback (useToasts.notify). */
   onNotify?: Notify;
+  /** Open the shared track menu (App's buildAndShowNativeMenu) for one entry,
+   *  with this view's own items (`leading`) above it — the same track actions
+   *  every other surface offers (radio, Get lyrics, Track Details, folder,
+   *  plugin items), so a playlist row is no longer a menu of its own. */
+  onShowTrackMenu?: (x: number, y: number, target: ContextMenuTarget, leading: MenuItemSpec[]) => void;
 }
 
 function isLocalPath(source: string | null): boolean {
@@ -150,7 +155,7 @@ interface PlaylistTracksViewSettings {
 type PlaylistTrackSortChains = Record<string, SortKey[]>;
 
 
-export function PlaylistsView({ searchQuery, onSearchChange, onPlayTracks, onEnqueueTracks, onStartRadio, onLocateTrack, onExportAsMixtape, pluginMenuItems, onPluginAction, onTrackDragStart, onToggleLike, onToggleDislike, userPlaylists, onAddTracksToPlaylist, onCreatePlaylistFromTracks, onBrowsePlaylists, onNotify }: PlaylistsViewProps) {
+export function PlaylistsView({ searchQuery, onSearchChange, onPlayTracks, onEnqueueTracks, onStartRadio, onLocateTrack, onExportAsMixtape, pluginMenuItems, onPluginAction, onTrackDragStart, onToggleLike, onToggleDislike, userPlaylists, onAddTracksToPlaylist, onCreatePlaylistFromTracks, onBrowsePlaylists, onNotify, onShowTrackMenu }: PlaylistsViewProps) {
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [selectedPlaylist, setSelectedPlaylist] = useState<Playlist | null>(null);
   const [tracks, setTracks] = useState<PlaylistTrack[]>([]);
@@ -161,7 +166,6 @@ export function PlaylistsView({ searchQuery, onSearchChange, onPlayTracks, onEnq
   // Drag-to-reorder insert indicator: rows at or after this display index shift
   // to show the drop line. Null while no reorder drag is live.
   const [reorderInsertIndex, setReorderInsertIndex] = useState<number | null>(null);
-  const [folderError, setFolderError] = useState<string | null>(null);
   const [refreshingAuto, setRefreshingAuto] = useState(false);
   // Detail-view multi-select (by playlist-track id) + drag-to-queue handshake.
   const [selectedTrackIds, setSelectedTrackIds] = useState<Set<number>>(new Set());
@@ -659,14 +663,25 @@ export function PlaylistsView({ searchQuery, onSearchChange, onPlayTracks, onEnq
         action: () => { handleRemoveTracks(sel).catch(console.error); },
       });
     }
-    if (isLocalPath(t.source)) {
-      specs.push({ kind: "separator" });
-      specs.push({ kind: "item", text: "Open Containing Folder", action: async () => {
-        try { await invoke("show_in_folder_path", { filePath: t.source! }); }
-        catch (err) { console.error("Failed to open containing folder:", err); setFolderError(String(err)); }
-      }});
+    // One entry: the shared track menu follows these items (radio, Play Full
+    // Album, Get lyrics, Track Details, Open Containing Folder, the plugins'
+    // items). The entry has no library id, so it is a by-name track target
+    // carrying its file for the folder action.
+    if (sel.length === 1 && onShowTrackMenu) {
+      onShowTrackMenu(e.clientX, e.clientY, {
+        kind: "track",
+        isLocal: isLocalPath(t.source),
+        path: t.source,
+        title: t.title,
+        artistName: t.artist_name,
+        albumTitle: t.album_name,
+      }, specs);
+      return;
     }
-    if (pluginMenuItems && pluginMenuItems.length > 0) {
+    // Several entries: only what applies to all of them. The plugin items used
+    // to be offered here for the clicked row alone, which read as acting on
+    // the whole selection.
+    if (sel.length === 1 && pluginMenuItems && pluginMenuItems.length > 0) {
       const matching = pluginMenuItems.filter(item => item.targets.includes("track"));
       if (matching.length > 0) {
         specs.push({ kind: "separator" });
@@ -674,7 +689,7 @@ export function PlaylistsView({ searchQuery, onSearchChange, onPlayTracks, onEnq
       }
     }
     showNativeMenu(e.clientX, e.clientY, specs);
-  }, [selectedPlaylist, playlistContext, onPlayTracks, onEnqueueTracks, pluginMenuItems, onPluginAction, effectiveSelection, userPlaylists, onAddTracksToPlaylist, onCreatePlaylistFromTracks, onBrowsePlaylists, handleRemoveTracks]);
+  }, [selectedPlaylist, playlistContext, onPlayTracks, onEnqueueTracks, pluginMenuItems, onPluginAction, effectiveSelection, userPlaylists, onAddTracksToPlaylist, onCreatePlaylistFromTracks, onBrowsePlaylists, handleRemoveTracks, onShowTrackMenu]);
 
   // Override a playlist entry's display metadata (title/artist/album). Persists
   // to the playlist_tracks row only — never rewrites the underlying source or
@@ -923,9 +938,6 @@ export function PlaylistsView({ searchQuery, onSearchChange, onPlayTracks, onEnq
     />
   );
 
-  const folderErrorModal = folderError && (
-    <FolderErrorModal message={folderError} onDismiss={() => setFolderError(null)} />
-  );
 
   // Detail view
   if (selectedPlaylist) {
@@ -1194,7 +1206,6 @@ export function PlaylistsView({ searchQuery, onSearchChange, onPlayTracks, onEnq
             {displayTracks.length === 0 && <div className="empty">{tracksEmptyMessage}</div>}
           </div>
         )}
-        {folderErrorModal}
         {deleteModal}
         {editTrack && (
           <EditTrackMetadataModal

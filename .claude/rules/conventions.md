@@ -120,7 +120,7 @@ Each entry documents the gold standard implementation for a repeated user action
 - **Canonical:** `useContextMenuActions.ts` -> `handleShowInFolder()`
 - **Flow:** `invoke("show_in_folder", { trackId })` for library tracks, `invoke("show_in_folder_path", { filePath })` for paths
 - **Availability:** Local tracks only (`file://` scheme). Visibility controlled by `target.isLocal` flag on the context menu target.
-- **Paths that aren't a track** call `show_in_folder_path` directly: a Settings folder (`SettingsPanel`), a file a download just wrote (`SingleTrackDownload` / `MultiTrackDownload`), a plugin's `api.system.revealPath`. A track's file — library row, queue entry, playlist entry, the playing track — goes through `handleShowInFolder`.
+- **Paths that aren't a track** call `show_in_folder_path` directly: a Settings folder (`SettingsPanel`), a file a download just wrote (`SingleTrackDownload` / `MultiTrackDownload`), a plugin's `api.system.revealPath`. A track's file — library row, queue entry, playlist entry, the playing track — goes through `handleShowInFolder` (a menu item) or `showTrackInFolder` (a button: Edit Properties' File tab, the source panel's Open folder), which tries the library row, falls back to the path, and shows the failure dialog. A row with no library id (a playlist entry) puts its file on the `track` target's `path`.
 
 ### Download Track
 

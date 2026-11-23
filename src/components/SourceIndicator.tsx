@@ -46,9 +46,13 @@ function SourceIcon({ s = 11, isLocal }: { s?: number; isLocal: boolean }) {
 interface SourceIndicatorProps {
   track: QueueTrack;
   resolvedSource: ResolvedSource | null;
+  /** Reveal the file this track is playing from — the host's one track
+   *  reveal (useContextMenuActions.showTrackInFolder), which also shows its
+   *  failure. Without it there is no Open folder button. */
+  onShowInFolder?: (path: string) => void;
 }
 
-export function SourceIndicator({ track, resolvedSource }: SourceIndicatorProps) {
+export function SourceIndicator({ track, resolvedSource, onShowInFolder }: SourceIndicatorProps) {
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null);
   const [audioProps, setAudioProps] = useState<{ sample_rate?: number; bit_depth?: number; channels?: number; bitrate?: number } | null>(null);
@@ -130,6 +134,7 @@ export function SourceIndicator({ track, resolvedSource }: SourceIndicatorProps)
           audioProps={audioProps}
           mediaInfo={mediaInfo}
           anchor={anchor}
+          onShowInFolder={onShowInFolder}
           onKeepOpen={() => {
             if (hoverTimerRef.current) { clearTimeout(hoverTimerRef.current); hoverTimerRef.current = null; }
           }}
@@ -147,11 +152,12 @@ interface SourcePanelProps {
   audioProps: { sample_rate?: number; bit_depth?: number; channels?: number; bitrate?: number } | null;
   mediaInfo: EngineMediaInfo | null;
   anchor: { x: number; y: number };
+  onShowInFolder?: (path: string) => void;
   onKeepOpen: () => void;
   onClose: () => void;
 }
 
-function SourcePanel({ track, resolvedSource, audioProps, mediaInfo, anchor, onKeepOpen, onClose }: SourcePanelProps) {
+function SourcePanel({ track, resolvedSource, audioProps, mediaInfo, anchor, onShowInFolder, onKeepOpen, onClose }: SourcePanelProps) {
   const path = track.path ?? "";
   const isSubsonic = path.startsWith("subsonic://");
   const isLocal = isLocalTrack(track);
@@ -281,12 +287,10 @@ function SourcePanel({ track, resolvedSource, audioProps, mediaInfo, anchor, onK
       )}
       {(displayPath || externalUrl) && (
         <div className="now-source-actions">
-          {displayPath && (
+          {displayPath && onShowInFolder && (
             <button
               className="ds-btn ds-btn--ghost ds-btn--sm"
-              onClick={() => {
-                invoke("show_in_folder_path", { filePath: displayPath }).catch(e => console.error("Failed to show in folder:", e));
-              }}
+              onClick={() => onShowInFolder(displayPath)}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
               Open folder

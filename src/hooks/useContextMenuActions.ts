@@ -281,8 +281,9 @@ export function useContextMenuActions(deps: UseContextMenuActionsDeps) {
 
   async function handleShowInFolder() {
     const cm = contextMenuRef.current;
-    if (cm && cm.target.kind === "track" && cm.target.trackId != null) {
-      await showTrackInFolder({ libraryId: cm.target.trackId });
+    if (cm && cm.target.kind === "track" && (cm.target.trackId != null || cm.target.path)) {
+      // A playlist entry has no library row, only its file.
+      await showTrackInFolder({ libraryId: cm.target.trackId, path: cm.target.path });
       setContextMenu(null);
     } else if (cm && cm.target.kind === "queue-multi" && cm.target.indices.length === 1) {
       const track = queueHook.queue[cm.target.indices[0]];

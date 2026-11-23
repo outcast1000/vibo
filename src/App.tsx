@@ -2670,9 +2670,12 @@ function App() {
     }
   }, [playActions, notify]);
 
-  const buildAndShowNativeMenu = useCallback((cm: { x: number; y: number; target: import("./types/contextMenu").ContextMenuTarget }) => {
+  // `leading`: items a surface puts above the shared menu — a playlist entry's
+  // Play / Enqueue / Remove from playlist, which the shared track menu can't
+  // offer for a row with no library id.
+  const buildAndShowNativeMenu = useCallback(({ leading, ...cm }: { x: number; y: number; target: import("./types/contextMenu").ContextMenuTarget; leading?: MenuItemSpec[] }) => {
     contextMenuActions.setContextMenu(cm);
-    const specs = buildContextMenuSpecs(cm.target, {
+    const shared = buildContextMenuSpecs(cm.target, {
       contextMenuActions, videoLayout, queueHook, library,
       plugins, artistImageCache,
       albumImageCache, tagImageCache, getMenus,
@@ -2683,6 +2686,9 @@ function App() {
     });
     // The provider lists are a snapshot; re-read them for the next menu.
     refreshGetMenuProviders();
+    const specs = leading?.length
+      ? [...leading, ...(shared ? [{ kind: "separator" } as const, ...shared] : [])]
+      : shared;
     if (!specs) {
       contextMenuActions.setContextMenu(null);
       return;
@@ -5508,6 +5514,9 @@ function App() {
       library.navigateToAlbumByName(name, artistName).catch((e) => console.error("Failed to open album from the player bar:", e));
     },
     onSkipError: () => { playback.clearPlaybackError(); handleNext(); },
+    // The source panel's Open folder: the file the track is actually playing
+    // from, through the one track reveal (its failure dialog included).
+    onShowSourceInFolder: (path: string) => { void contextMenuActions.showTrackInFolder({ path }); },
     // Defined unconditionally; the call site gates PRESENCE on currentTrack +
     // downloadPlan, so the bar still hides its download button.
     onDownloadTrack: () => {
@@ -5659,6 +5668,7 @@ function App() {
     playerBarPins,
     onPlayerBarPinsChange: setPlayerBarPins,
     resolvedSource,
+    onShowSourceInFolder: npBar.onShowSourceInFolder,
   };
 
   // Object prop for the bar's mini-search panel — memoized on its value
@@ -6211,6 +6221,7 @@ function App() {
               onCreatePlaylistFromTracks={openNewPlaylistDraft}
               onBrowsePlaylists={openPlaylistPicker}
               onNotify={notify}
+              onShowTrackMenu={(x, y, target, leading) => buildAndShowNativeMenu({ x, y, target, leading })}
             />
           )}
 
@@ -7030,6 +7041,7 @@ function App() {
           live={editLive}
           seek={editLive ? playback.handleSeek : undefined}
           onClose={() => contextMenuActions.setBulkEditTracks(null)}
+          onShowInFolder={(track) => { void contextMenuActions.showTrackInFolder(track); }}
           onSave={handleBulkEditSaved}
         />
         );
@@ -7454,6 +7466,7 @@ function App() {
         onNavigateToArtistByName={npBar.onNavigateToArtistByName}
         onNavigateToAlbumByName={npBar.onNavigateToAlbumByName}
         resolvedSource={resolvedSource}
+        onShowSourceInFolder={npBar.onShowSourceInFolder}
         loadingTrack={playback.loadingTrack}
         loadingPlay={queueHook.loadingPlay}
         playbackWaiting={queueHook.playbackWaiting}

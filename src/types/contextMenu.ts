@@ -25,8 +25,10 @@ export interface VideoMenuTrack {
 // target: plugin actions build metadata queries from it (e.g. an
 // "artist album" torrent hunt), and an optional field let every surface
 // silently omit it — so it was empty on all of them.
+// `path` on a track target is for rows with no library id (a playlist entry):
+// Open Containing Folder reveals the file by it. A library row leaves it out.
 export type ContextMenuTarget =
-  | { kind: "track"; trackId?: number; isLocal?: boolean; title: string; artistName: string | null; albumTitle: string | null }
+  | { kind: "track"; trackId?: number; isLocal?: boolean; path?: string | null; title: string; artistName: string | null; albumTitle: string | null }
   | { kind: "album"; albumId?: number; title: string; artistName: string | null }
   | { kind: "artist"; artistId?: number; name: string }
   | { kind: "tag"; tagId: number; name: string }

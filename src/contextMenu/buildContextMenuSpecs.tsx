@@ -373,7 +373,7 @@ export function buildContextMenuSpecs(target: ContextMenuTarget, d: ContextMenuD
         const album = playFullAlbumSpec(d, albumOf(target.albumTitle, target.artistName), pluginItems, pluginTarget);
         if (album.spec) specs.push(album.spec);
         pluginItems = album.rest;
-        specs.push(getLyricsSpec(d.getMenus, { title: target.title, artistName: target.artistName, albumTitle: target.albumTitle }));
+        specs.push(getLyricsSpec(d.getMenus, { title: target.title, artistName: target.artistName, albumTitle: target.albumTitle, path: target.path }));
       }
       pluginItems = pushSharedActions(specs, pluginItems, pluginTarget, d);
       // A `track` target carries no path, so it can only be deleted by id —

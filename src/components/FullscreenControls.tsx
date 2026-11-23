@@ -72,6 +72,8 @@ interface FullscreenControlsProps {
   /** The winning stream resolver, for the `SourceIndicator` on the subtitle line.
       Same prop, same component, same slot as the docked bar. */
   resolvedSource?: ResolvedSource | null;
+  /** The source panel's Open folder — same callback as the docked bar's. */
+  onShowSourceInFolder?: (path: string) => void;
   /**
    * This is a live fullscreen presentation. Both fullscreens are WINDOW
    * fullscreen — the audio / visualizer overlay (see AudioFullscreen) and video
@@ -92,7 +94,7 @@ export function FullscreenControls({
   onPause, onStop, onNext, onPrevious,
   onSeek, onVolume, onMute,
   onToggleLike, onToggleDislike, onToggleFullscreen, showQueue, onToggleQueue, hasSubtitles, subtitlesOn, onToggleSubtitles, onNavigateToArtistByName, onNavigateToAlbumByName,
-  eq, bitPerfect = null, playerBarPins, onPlayerBarPinsChange, resolvedSource = null,
+  eq, bitPerfect = null, playerBarPins, onPlayerBarPinsChange, resolvedSource = null, onShowSourceInFolder,
   active = false,
 }: FullscreenControlsProps) {
   // Subscribed here (not passed from App) so the ~4 Hz position tick — and the
@@ -219,7 +221,7 @@ export function FullscreenControls({
                       where a stream is most likely to be misbehaving, so it is
                       the last place the "where is this coming from" answer
                       should disappear. */}
-                  <SourceIndicator track={currentTrack} resolvedSource={resolvedSource ?? null} />
+                  <SourceIndicator track={currentTrack} resolvedSource={resolvedSource ?? null} onShowInFolder={onShowSourceInFolder} />
                   <span className="fs-link" onClick={currentTrack.artist_name ? () => onNavigateToArtistByName(currentTrack.artist_name!) : undefined}>{currentTrack.artist_name || "Unknown"}</span>
                   {currentTrack.album_title && (
                     <><span className="fs-sep"> — </span><span className="fs-link" onClick={() => onNavigateToAlbumByName(currentTrack.album_title!, currentTrack.album_artist_name ?? currentTrack.artist_name)}>{currentTrack.album_title}</span></>

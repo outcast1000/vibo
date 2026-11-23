@@ -168,6 +168,8 @@ interface NowPlayingBarProps {
   onNavigateToAlbumByName?: (name: string, artistName?: string) => void;
   playbackError?: string | null;
   resolvedSource?: ResolvedSource | null;
+  /** The source panel's Open folder (App → showTrackInFolder). */
+  onShowSourceInFolder?: (path: string) => void;
   loadingTrack?: QueueTrack | null;
   /** A play still being built (useQueue). A switch shows a "Switching to…"
    *  chip with a cancel; with `playbackWaiting` the bar shows it's waiting. */
@@ -227,7 +229,7 @@ export const NowPlayingBar = memo(function NowPlayingBar({
   eqShowBarControl, onEqShowBarControlChange,
   onToggleLike, onToggleDislike, likeDisabled, onTrackClick,
   onNavigateToArtistByName, onNavigateToAlbumByName,
-  playbackError, resolvedSource, loadingTrack, loadingPlay = null, playbackWaiting = false, onCancelLoadingPlay, onSkipError, bitPerfect = null, playerBarPins, onPlayerBarPinsChange,
+  playbackError, resolvedSource, onShowSourceInFolder, loadingTrack, loadingPlay = null, playbackWaiting = false, onCancelLoadingPlay, onSkipError, bitPerfect = null, playerBarPins, onPlayerBarPinsChange,
   onDownloadTrack,
   onContextMenu,
   nowPlayingInfo,
@@ -666,7 +668,7 @@ export const NowPlayingBar = memo(function NowPlayingBar({
                 </span>
                 ) : (
                 <span className="now-subtitle">
-                  <SourceIndicator track={currentTrack} resolvedSource={resolvedSource ?? null} />
+                  <SourceIndicator track={currentTrack} resolvedSource={resolvedSource ?? null} onShowInFolder={onShowSourceInFolder} />
                   {/* The cycling Now Playing info line (the same items as the mini
                       player), or — with "Show in player bar" off, or nothing
                       enabled resolving for this track — a static, clickable
