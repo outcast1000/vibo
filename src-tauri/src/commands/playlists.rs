@@ -137,7 +137,13 @@ pub fn save_playlist_record(
     std::thread::spawn(move || {
         let img_dir = app_dir.join("playlist_images");
         let _ = std::fs::create_dir_all(&img_dir);
-        let client = reqwest::blocking::Client::new();
+        let client = match playlist_image_client() {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("Playlist images not saved: {}", e);
+                return;
+            }
+        };
 
         // Download/copy playlist cover
         if let Some(url) = image_url_clone {
@@ -151,6 +157,16 @@ pub fn save_playlist_record(
     });
 
     Ok(playlist_id)
+}
+
+/// The client every playlist image download uses. Without a timeout, one image
+/// host that stops answering keeps the download thread alive for good.
+fn playlist_image_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))
 }
 
 /// Put one image — a remote URL or a local path — into `playlist_images/` as
@@ -254,7 +270,13 @@ pub fn append_playlist_tracks(
         std::thread::spawn(move || {
             let img_dir = app_dir.join("playlist_images");
             let _ = std::fs::create_dir_all(&img_dir);
-            let client = reqwest::blocking::Client::new();
+            let client = match playlist_image_client() {
+                Ok(c) => c,
+                Err(e) => {
+                    log::error!("Playlist track images not saved: {}", e);
+                    return;
+                }
+            };
             download_playlist_track_images(&img_dir, &client, &db_arc, playlist_id, track_image_urls);
         });
     }
@@ -501,30 +523,32 @@ pub fn copy_to_playlist_images(
     Ok(dest.to_string_lossy().to_string())
 }
 
+/// `async` + `run_blocking`: a sync command runs on the main thread, so the
+/// download froze the window for as long as the image host took to answer.
 #[tauri::command]
-pub fn download_url_to_playlist_images(
+pub async fn download_url_to_playlist_images(
     state: State<'_, AppState>,
     url: String,
 ) -> Result<String, String> {
     let img_dir = state.app_dir.join("playlist_images");
-    std::fs::create_dir_all(&img_dir).map_err(|e| e.to_string())?;
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let ext = if url.contains(".png") { "png" } else { "jpg" };
-    let dest = img_dir.join(format!("downloaded_{}.{}", timestamp, ext));
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
-    let mut response = client.get(&url).send().map_err(|e| format!("Download failed: {}", e))?;
-    if !response.status().is_success() {
-        return Err(format!("HTTP {}", response.status()));
-    }
-    let mut file = std::fs::File::create(&dest).map_err(|e| format!("Create file: {}", e))?;
-    std::io::copy(&mut response, &mut file).map_err(|e| format!("Write file: {}", e))?;
-    Ok(dest.to_string_lossy().to_string())
+    run_blocking(move || -> Result<String, String> {
+        std::fs::create_dir_all(&img_dir).map_err(|e| e.to_string())?;
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let ext = if url.contains(".png") { "png" } else { "jpg" };
+        let dest = img_dir.join(format!("downloaded_{}.{}", timestamp, ext));
+        let client = playlist_image_client()?;
+        let mut response = client.get(&url).send().map_err(|e| format!("Download failed: {}", e))?;
+        if !response.status().is_success() {
+            return Err(format!("HTTP {}", response.status()));
+        }
+        let mut file = std::fs::File::create(&dest).map_err(|e| format!("Create file: {}", e))?;
+        std::io::copy(&mut response, &mut file).map_err(|e| format!("Write file: {}", e))?;
+        Ok(dest.to_string_lossy().to_string())
+    })
+    .await
 }
 
 #[tauri::command]

@@ -80,8 +80,16 @@ pub trait AlbumImageProvider: Send + Sync {
     ) -> Result<String, String>;
 }
 
+/// Image downloads are small, so a host still silent after this long isn't
+/// coming back. Without a limit, one such host held up the serial image worker
+/// (`lib.rs` → `download_image_from_url`) and every image queued behind it.
+const IMAGE_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const IMAGE_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub fn http_client() -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
+        .connect_timeout(IMAGE_CONNECT_TIMEOUT)
+        .timeout(IMAGE_REQUEST_TIMEOUT)
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15")
         .build()
         .map_err(|e| e.to_string())

@@ -1,8 +1,35 @@
 use serde_json::Value;
 use std::fmt;
+use std::sync::OnceLock;
+use std::time::Duration;
 
 const API_VERSION: &str = "1.16.1";
 const CLIENT_NAME: &str = "viboplr";
+
+/// A server that accepts the connection but never answers would otherwise
+/// hold the caller (a sync thread, a collection probe) until the OS gives up.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Generous: `getAlbumList2` pages and big `getAlbum` answers from a slow NAS
+/// can take a while, and a sync that times out mid-way is worse than a slow one.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// One client for every Subsonic API call, so a sync reuses its connection
+/// (one TLS handshake, not one per album) instead of building a client per
+/// request. Built lazily and never dropped: a blocking client owns a runtime,
+/// and dropping that on an async thread panics.
+fn http() -> Result<&'static reqwest::blocking::Client, SubsonicError> {
+    static CLIENT: OnceLock<Result<reqwest::blocking::Client, String>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(|e| SubsonicError(format!("HTTP client error: {}", e)))
+}
 
 #[derive(Debug)]
 pub struct SubsonicError(pub String);
@@ -174,7 +201,9 @@ impl SubsonicClient {
     fn get_json(&self, endpoint: &str) -> Result<Value, SubsonicError> {
         let url = self.api_url(endpoint);
         let start = std::time::Instant::now();
-        let resp = reqwest::blocking::get(&url)
+        let resp = http()?
+            .get(&url)
+            .send()
             .map_err(|e| SubsonicError(format!("HTTP error: {}", e)))?;
         let status_code = resp.status();
         let endpoint_name = endpoint.split('?').next().unwrap_or(endpoint);
