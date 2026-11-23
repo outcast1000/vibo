@@ -304,6 +304,12 @@ pub async fn open_browse_window(
         .title(title.unwrap_or_else(|| "Vibo Browse".to_string()))
         .inner_size(width.unwrap_or(1200.0), height.unwrap_or(800.0))
         .visible(visible.unwrap_or(true))
+        // A hidden window must not take focus. Plugins open these in the
+        // background (Google lyrics/artwork, Getty photos) on a track change or
+        // an image lookup, and Tauri's default `focused: true` made the new
+        // window — and on Windows its WebView2, which moves focus to itself on
+        // creation — pull keyboard focus out of the main window mid-typing.
+        .focused(visible.unwrap_or(true))
         // Hidden/occluded WKWebViews are suspended by default on macOS, which
         // freezes the timer-driven scrape loop (it only resumes when the window
         // is shown). Disable throttling so background scraping keeps running.
@@ -389,6 +395,9 @@ pub async fn browse_window_set_visible(
         .ok_or("Browse window not found")?;
     if visible {
         window.show().map_err(|e| e.to_string())?;
+        // Created unfocused while hidden (see open_browse_window): a plugin
+        // shows it because the user has to act there, so bring it forward.
+        let _ = window.set_focus();
     } else {
         window.hide().map_err(|e| e.to_string())?;
     }
