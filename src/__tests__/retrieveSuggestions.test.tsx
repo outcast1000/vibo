@@ -10,7 +10,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (p: string) => `asset://${p}`,
 }));
 
-import { useRetrieveModal, type RetrieveModalData } from "../hooks/useRetrieveModal";
+import { exhaustedMessage, useRetrieveModal, type RetrieveModalData } from "../hooks/useRetrieveModal";
 import { RetrieveModal } from "../components/RetrieveModal";
 import type { ProviderSuggestion } from "../utils/providerSuggestions";
 
@@ -42,10 +42,30 @@ function show(modal: RetrieveModalData, suggestions: ProviderSuggestion[] | null
 
 describe("RetrieveModal suggestions", () => {
   it("shows them once nothing was found, and opens the one picked", () => {
-    const onShowPlugin = show(exhausted(), [DDG]);
+    const onShowPlugin = show(exhausted({ providers: [
+      { id: "a", name: "Deezer", pluginId: "a", status: "not_found" },
+      { id: "b", name: "iTunes", pluginId: "b", status: "not_found" },
+    ] }), [DDG]);
     expect(screen.getByText(/None of your providers had it\. These plugins can look for artist images too/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "View plugin…" }));
     expect(onShowPlugin).toHaveBeenCalledWith("duckduckgo");
+  });
+
+  it("names the provider when only one was asked", () => {
+    show(exhausted(), [DDG]);
+    expect(screen.getByText(/Deezer didn't have it\. These plugins can look for artist images too/)).toBeTruthy();
+    cleanup();
+    show(exhausted({ providers: [{ id: "a", name: "Deezer", pluginId: "a", status: "error" }] }), [DDG]);
+    expect(screen.getByText(/Deezer couldn't be reached\. These plugins can look/)).toBeTruthy();
+  });
+
+  it("words the exhausted message by how many providers ran", () => {
+    expect(exhaustedMessage([{ id: "a", name: "Viboplr Community", pluginId: "a", status: "not_found" }])).toBe("Viboplr Community found nothing");
+    expect(exhaustedMessage([{ id: "a", name: "LRCLIB", pluginId: "a", status: "error" }])).toBe("Couldn't reach LRCLIB");
+    expect(exhaustedMessage([
+      { id: "a", name: "A", pluginId: "a", status: "not_found" },
+      { id: "b", name: "B", pluginId: "b", status: "not_found" },
+    ])).toBe("No result found from any provider");
   });
 
   it("words the no-provider case", () => {

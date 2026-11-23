@@ -27,6 +27,13 @@ function suggestionHeading(modal: RetrieveModalData): string {
   // No rows can also mean an installed plugin's rows are all switched off in
   // Settings → Providers, so don't claim nothing installed provides it.
   if (modal.providers.length === 0) return `No provider for ${what} is switched on. These plugins can supply it:`;
+  // One provider asked (Get lyrics ▸ a single source): name it rather than
+  // talk about "your providers".
+  if (modal.providers.length === 1) {
+    const only = modal.providers[0];
+    if (only.status === "error") return `${only.name} couldn't be reached. These plugins can look for ${what} too:`;
+    if (only.status !== "found") return `${only.name} didn't have it. These plugins can look for ${what} too:`;
+  }
   // Something was found and passed over with Try next, so "had nothing" would be untrue.
   if (modal.providers.some((p) => p.status === "found")) return `These plugins can also look for ${what}:`;
   // A provider that errored couldn't look, which is not the same as not having it.

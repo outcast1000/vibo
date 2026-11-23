@@ -34,6 +34,17 @@ const APPLIED_CLOSE_MS = 1400; // show "✓ Applied" briefly, then close
 
 export type ProviderStatus = "pending" | "fetching" | "found" | "not_found" | "error";
 
+/** What the modal says once the chain ran out. A single-provider run (Get
+ *  lyrics from one plugin) names that provider: "from any provider" was
+ *  untrue when only one was asked. */
+export function exhaustedMessage(providers: ProviderRow[]): string {
+  if (providers.length === 1) {
+    const p = providers[0];
+    return p.status === "error" ? `Couldn't reach ${p.name}` : `${p.name} found nothing`;
+  }
+  return "No result found from any provider";
+}
+
 export interface ProviderRow {
   id: string;
   name: string;
@@ -335,7 +346,7 @@ export function useRetrieveModal(
     }
     // Exhausted — nothing usable from any provider.
     if (gen !== genRef.current) return;
-    setModal((m) => m && { ...m, phase: "exhausted", imagePreview: undefined, infoPreview: undefined, message: "No result found from any provider" });
+    setModal((m) => m && { ...m, phase: "exhausted", imagePreview: undefined, infoPreview: undefined, message: exhaustedMessage(data.providers) });
     const keepOpen = modalRef.current?.keepOpen ?? false;
     // From `data`, not modalRef: a provider that answers before the first
     // commit leaves the ref unset, and the predicate only needs what is being
