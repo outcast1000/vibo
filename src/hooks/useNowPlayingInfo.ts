@@ -31,6 +31,43 @@ export const NOW_PLAYING_LYRICS_PLAIN_ID = "builtin:lyrics-plain";
 // resolve pipeline below.
 const LYRICS_IDS = new Set<string>([NOW_PLAYING_LYRICS_SYNCED_ID, NOW_PLAYING_LYRICS_PLAIN_ID]);
 
+// Items read straight off the track — no lookup. They resolve during render,
+// so they change in the same frame as the title. Resolving them inside the
+// async batch made them wait for its slowest member (the quality probe, a
+// plugin item, up to the 5s budget) while the previous track's artist/album
+// stayed on screen under the new title.
+const SYNC_IDS = new Set<string>([
+  NOW_PLAYING_ARTIST_ALBUM_ID,
+  "builtin:artist",
+  "builtin:album",
+  "builtin:source",
+  "builtin:duration",
+]);
+
+function resolveSyncItem(id: string, track: QueueTrack, artistRank: number | null): NowPlayingInfoResolved | null {
+  if (id === NOW_PLAYING_ARTIST_ALBUM_ID) {
+    const segments: NowPlayingInfoSegment[] = [
+      artistSegment(track, artistRank != null && artistRank <= 100 ? artistRank : null),
+    ];
+    const album = albumSegment(track);
+    if (album) segments.push(album);
+    return { id, segments };
+  }
+  if (id === "builtin:artist") return { id, segments: [artistSegment(track)] };
+  if (id === "builtin:album") {
+    const album = albumSegment(track);
+    return album ? { id, segments: [album] } : null;
+  }
+  if (id === "builtin:source") {
+    const text = formatSource(track.path);
+    return text ? { id, segments: [{ text }] } : null;
+  }
+  if (id === "builtin:duration") {
+    return track.duration_secs ? { id, segments: [{ text: formatDuration(track.duration_secs) }] } : null;
+  }
+  return null;
+}
+
 /** A piece of the rendered info line. `nav` makes the segment a clickable link
  *  (artist/album navigation); `badge` renders a trailing rank chip (e.g. #12). */
 export interface NowPlayingInfoSegment {
@@ -540,8 +577,10 @@ export function useNowPlayingInfo({
     [pluginItems, order],
   );
 
-  // Async items (everything except lyrics) — resolved once per track/selection.
-  const [asyncResolved, setAsyncResolved] = useState<NowPlayingInfoResolved[]>([]);
+  // Async items (everything that needs a lookup) — resolved once per
+  // track/selection, stamped with the track they describe so a previous
+  // track's plays / quality / plugin text never shows under the next title.
+  const [asyncResolved, setAsyncResolved] = useState<{ sig: string; items: NowPlayingInfoResolved[] }>({ sig: "", items: [] });
   const genRef = useRef(0);
 
   // Lyrics items resolve synchronously from cached lyrics data, so the synced
@@ -596,7 +635,7 @@ export function useNowPlayingInfo({
   // are excluded — they're resolved synchronously above, not in this effect.
   const selectionSig = availableItems
     .filter((d) => isNowPlayingItemSelected(d.id, selection, availableItems))
-    .filter((d) => !LYRICS_IDS.has(d.id))
+    .filter((d) => !LYRICS_IDS.has(d.id) && !SYNC_IDS.has(d.id))
     .map((d) => d.id)
     .join("|");
   const trackSig = currentTrack
@@ -606,13 +645,14 @@ export function useNowPlayingInfo({
   useEffect(() => {
     const gen = ++genRef.current;
     const track = currentTrack;
+    const sig = trackSig;
     if (!track) {
-      setAsyncResolved([]);
+      setAsyncResolved({ sig, items: [] });
       return;
     }
     const enabled = availableItems
       .filter((d) => isNowPlayingItemSelected(d.id, selection, availableItems))
-      .filter((d) => !LYRICS_IDS.has(d.id));
+      .filter((d) => !LYRICS_IDS.has(d.id) && !SYNC_IDS.has(d.id));
 
     const pluginTrack: PluginTrack = {
       path: track.path,
@@ -623,21 +663,6 @@ export function useNowPlayingInfo({
     };
 
     const resolveOne = async (id: string): Promise<NowPlayingInfoResolved | null> => {
-      if (id === NOW_PLAYING_ARTIST_ALBUM_ID) {
-        const segments: NowPlayingInfoSegment[] = [
-          artistSegment(track, artistRank != null && artistRank <= 100 ? artistRank : null),
-        ];
-        const album = albumSegment(track);
-        if (album) segments.push(album);
-        return { id, segments };
-      }
-      if (id === "builtin:artist") {
-        return { id, segments: [artistSegment(track)] };
-      }
-      if (id === "builtin:album") {
-        const album = albumSegment(track);
-        return album ? { id, segments: [album] } : null;
-      }
       if (id === "builtin:plays-rank") {
         try {
           const stats = await withTimeout(
@@ -656,13 +681,6 @@ export function useNowPlayingInfo({
           console.error("Failed to resolve plays/rank for now-playing info:", e);
           return null;
         }
-      }
-      if (id === "builtin:source") {
-        const text = formatSource(track.path);
-        return text ? { id, segments: [{ text }] } : null;
-      }
-      if (id === "builtin:duration") {
-        return track.duration_secs ? { id, segments: [{ text: formatDuration(track.duration_secs) }] } : null;
       }
       if (id === "builtin:quality") {
         const text = await resolveTrackQuality(track, { playing: true });
@@ -718,17 +736,26 @@ export function useNowPlayingInfo({
     Promise.all(enabled.map((d) => resolveOne(d.id)))
       .then((results) => {
         if (gen !== genRef.current) return; // stale — a newer resolve started
-        setAsyncResolved(results.filter((r): r is NowPlayingInfoResolved => r !== null));
+        setAsyncResolved({ sig, items: results.filter((r): r is NowPlayingInfoResolved => r !== null) });
       })
       .catch((e) => console.error("Failed to resolve now-playing info:", e));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trackSig, selectionSig, trackRank, artistRank, availableItems, invokeNowPlayingInfo]);
+  }, [trackSig, selectionSig, trackRank, availableItems, invokeNowPlayingInfo]);
+
+  const syncResolved = useMemo<NowPlayingInfoResolved[]>(() => {
+    if (!currentTrack) return [];
+    return availableItems
+      .filter((d) => SYNC_IDS.has(d.id) && isNowPlayingItemSelected(d.id, selection, availableItems))
+      .map((d) => resolveSyncItem(d.id, currentTrack, artistRank))
+      .filter((r): r is NowPlayingInfoResolved => r !== null);
+  }, [currentTrack, artistRank, availableItems, selection]);
 
   // Merge async + lyrics items back into one list, ordered by availableItems and
   // gated by the current selection.
   const resolvedItems = useMemo<NowPlayingInfoResolved[]>(() => {
     const byId = new Map<string, NowPlayingInfoResolved>();
-    for (const r of asyncResolved) byId.set(r.id, r);
+    for (const r of syncResolved) byId.set(r.id, r);
+    if (asyncResolved.sig === trackSig) for (const r of asyncResolved.items) byId.set(r.id, r);
     for (const r of lyricsResolved) byId.set(r.id, r);
     return availableItems
       .filter((d) => isNowPlayingItemSelected(d.id, selection, availableItems))
@@ -737,7 +764,7 @@ export function useNowPlayingInfo({
         return r ? { ...r, top: nowPlayingItemTop(d.id, persistence), style: nowPlayingItemStyle(d.id) } : undefined;
       })
       .filter((r): r is NowPlayingInfoResolved => r !== undefined);
-  }, [asyncResolved, lyricsResolved, availableItems, selection, persistence]);
+  }, [syncResolved, asyncResolved, trackSig, lyricsResolved, availableItems, selection, persistence]);
 
   return { availableItems, resolvedItems };
 }
