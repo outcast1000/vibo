@@ -489,8 +489,26 @@ export function useLibrary(restoredRef: React.RefObject<boolean>, onBeforeNaviga
     }
   }
 
+  /** Where `handleLocateTrack` would land for this song, without going there —
+   *  the queue menu names its item after it (Go to Album / Go to Artist). */
+  function locateTrackTarget(artistName: string | null, albumTitle: string | null): "album" | "artist" | null {
+    const { album, artist } = findLocateTarget(artistName, albumTitle);
+    return album ? "album" : artist ? "artist" : null;
+  }
+
   function handleLocateTrack(title: string, artistName: string | null, albumTitle: string | null, searchAllFallback?: () => void) {
     pendingLocateRef.current = { title, artistName };
+    const { album, artist } = findLocateTarget(artistName, albumTitle);
+    if (album) {
+      handleAlbumClick(album.id, album.artist_id);
+    } else if (artist) {
+      handleArtistClick(artist.id);
+    } else if (searchAllFallback) {
+      searchAllFallback();
+    }
+  }
+
+  function findLocateTarget(artistName: string | null, albumTitle: string | null) {
     // Diacritic-insensitive (normalizeForMatch), matching the backend's
     // lookups — "Björk" from a plugin surface must locate the library's
     // "Bjork" row exactly like find_track_by_metadata would.
@@ -507,13 +525,7 @@ export function useLibrary(restoredRef: React.RefObject<boolean>, onBeforeNaviga
     const matchedAlbum =
       titleMatches.find(a => a.artist_id === matchedArtist?.id) ??
       (titleMatches.length === 1 ? titleMatches[0] : null);
-    if (matchedAlbum && matchedArtist) {
-      handleAlbumClick(matchedAlbum.id, matchedAlbum.artist_id);
-    } else if (matchedArtist) {
-      handleArtistClick(matchedArtist.id);
-    } else if (searchAllFallback) {
-      searchAllFallback();
-    }
+    return { album: matchedArtist ? matchedAlbum : null, artist: matchedArtist ?? null };
   }
 
   return {
@@ -535,7 +547,7 @@ export function useLibrary(restoredRef: React.RefObject<boolean>, onBeforeNaviga
     sortedTracks,
     handleSort, sortIndicator,
     trackColumns, setTrackColumns,
-    handleTrackClick, handleArtistClick, handleAlbumClick, handleTagClick, handleLocateTrack,
+    handleTrackClick, handleArtistClick, handleAlbumClick, handleTagClick, handleLocateTrack, locateTrackTarget,
     fallbackArtistName, setFallbackArtistName,
     fallbackAlbumName, setFallbackAlbumName,
     fallbackTrackName, setFallbackTrackName,

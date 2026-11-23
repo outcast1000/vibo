@@ -21,7 +21,9 @@
 //
 // A menu that has its own entry for a shared action (the library radio, the
 // library album) joins the plugins' items to it with `mergeHostAction`, which
-// keeps the row where the host entry always was.
+// keeps the row where the host entry always was. The track menus put the
+// remaining shared-action rows (`splitSharedActions`) in that same section,
+// beside the host's own actions, never in the plugin section below them.
 import type { MenuItemSpec } from "../nativeMenu";
 import type { PluginMenuItem, PluginContextMenuTarget, SharedMenuAction } from "../types/plugin";
 import { SHARED_MENU_ACTIONS, isSharedMenuAction } from "../types/plugin";
@@ -153,6 +155,20 @@ const nodeToSpec = (target: PluginContextMenuTarget, dispatch: Dispatch) => {
       : { kind: "submenu", text: node.text, items: node.children.map(toSpec) };
   return toSpec;
 };
+
+/**
+ * Split plugin items into the shared-action ones (Start radio, Play the Full
+ * Album, Download, Find downloads) and the rest. A track menu lays the shared
+ * rows out beside its own actions — they are things to do with the track, like
+ * the library's own radio — and only the plain items in the plugin section at
+ * the bottom.
+ */
+export function splitSharedActions(items: PluginMenuItem[]): { shared: PluginMenuItem[]; plain: PluginMenuItem[] } {
+  return {
+    shared: items.filter((it) => sharedActionOf(it)),
+    plain: items.filter((it) => !sharedActionOf(it)),
+  };
+}
 
 /** Native context-menu specs for the plugin items matching one target. */
 export function buildPluginMenuSpecs(

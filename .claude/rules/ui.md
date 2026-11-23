@@ -526,9 +526,9 @@ See "Entity System > Context Menu Consistency" for how context menus work across
 | **tag** | Play All, Enqueue All, Get image ▸ |
 | **multi-track** | Play, Enqueue, Delete, Bulk Edit |
 | **playlist** | Play All, Enqueue All, Delete |
-| **queue items** | Remove, Keep Only, Move to Top/Bottom; single item also: Details, Edit info…, Start radio, Get lyrics ▸ |
+| **queue items** | Remove, Keep Only, Move to Top/Bottom, Add to Playlist; single item also: Track Details (the track's page; id-less page off the library), Go to Album / Go to Artist / Find in Library (named by where `useLibrary.locateTrackTarget` lands), Start radio, Play Full Album, Get lyrics ▸. **Edit Properties…** for library entries (several: "Edit Properties (N tracks)…"), **Edit info…** for a single entry outside the library — never both. The row's ⓘ button is Track Details too |
 
-**Get lyrics ▸ / Get image ▸** list the switched-on providers ("All sources" first) and open the Retrieve modal in its `get` mode: the new value beside the current one, Add or Replace / Keep current, nothing applied on its own (conventions.md "Get lyrics / Get image"). Plugin items that declare a shared action (Start radio, Play the Full Album, Download, Find downloads) are grouped under the action's name; where the host has its own entry (the library radio and album) it joins as "Library" (plugins.md "Shared actions").
+**Get lyrics ▸ / Get image ▸** list the switched-on providers ("All sources" first) and open the Retrieve modal in its `get` mode: the new value beside the current one, Add or Replace / Keep current, nothing applied on its own (conventions.md "Get lyrics / Get image"). Plugin items that declare a shared action (Start radio, Play the Full Album, Download, Find downloads) are grouped under the action's name; where the host has its own entry (the library radio and album) it joins as "Library" (plugins.md "Shared actions"). In the track menus all of these rows sit in the host's section, beside Start radio and Get lyrics; the plugin section below the separator holds only the plain plugin items.
 | **video** | Dock position (top/bottom/left/right) |
 
 Plugin-registered actions appear on all applicable targets automatically, minus any the user turned off per-item in Extensions → Contributions. Search providers are user-configurable (built-in and custom).

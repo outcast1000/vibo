@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { subscribe } from "../utils/tauriEvents";
 import { save, open } from "@tauri-apps/plugin-dialog";
 import type { Track, QueueTrack, PlaylistLoadResult, PlaylistEntry, QueueMode } from "../types";
-import { trackToQueueEntry, queueEntryToQueueTrack, nextQueueKey, toQueueTracks } from "../queueEntry";
+import { trackToQueueEntry, queueEntryToQueueTrack, nextQueueKey, toQueueTracks, queueWithLibraryNames } from "../queueEntry";
 import { diffThumbs, flushMainPlaylist, type ThumbInfo } from "../mainPlaylist";
 import { stripImageVersion } from "../utils/resolveImageUrl";
 import { track as trackTelemetry } from "../telemetry";
@@ -636,6 +636,16 @@ export function useQueue(
     setQueue(prev => prev.map((t, i) => i === index ? { ...t, ...fields } : t));
   }
 
+  // Library rows were rewritten (Edit Properties, or a plugin / control API
+  // file write): every queue copy of them takes the row's new names, so the
+  // queue doesn't keep showing the old title until the track is queued again.
+  // Keeps the previous array when nothing moved. Persistence rides the
+  // debounced main_playlist write.
+  function refreshFromLibrary(rows: ReadonlyArray<Track>) {
+    if (rows.length === 0) return;
+    setQueue(prev => queueWithLibraryNames(prev, rows));
+  }
+
   // A resolve revealed the entry's real container — e.g. a plugin-scheme URI
   // with no extension (qbt://<hash>/<n>) that landed on a video file. Without
   // this the enrichment stops at currentTrack, so the queue row's video-vs-audio
@@ -1022,7 +1032,7 @@ export function useQueue(
     loadingPlay, playbackWaiting, loadFailure,
     beginLoadingPlay, isLoadingPlayLive, endLoadingPlay, cancelLoadingPlay, waitForLoadingPlay,
     playNext, playPrevious,
-    removeFromQueue, removeMultiple, removeAndAdvance, updateTrackMetadata, patchTrackFormat, rewritePathPrefix, replaceTrackPath, moveInQueue, moveMultiple, moveToTop, moveToBottom, clearQueue,
+    removeFromQueue, removeMultiple, removeAndAdvance, updateTrackMetadata, refreshFromLibrary, patchTrackFormat, rewritePathPrefix, replaceTrackPath, moveInQueue, moveMultiple, moveToTop, moveToBottom, clearQueue,
     toggleQueueMode, randomizeQueue, playNextInQueue, addToQueue, addToQueueAndPlay, insertNextAndPlay,
     peekNext, advanceIndex, reconcileLibraryIds,
     playlistContext, setPlaylistContext, savePlaylist, loadPlaylist,

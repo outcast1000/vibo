@@ -149,7 +149,8 @@ describe("writeFileMetadata", () => {
       fields: { artist_name: "X", tag_names: ["Jazz"], tag_mode: "add" },
     });
     expect(emitTrackPatch.mock.calls).toEqual([[1, { artist_name: "X" }], [2, { artist_name: "X" }]]);
-    expect(d.filesWritten).toHaveBeenCalledTimes(1);
+    // The written ids ride along, so their queue copies can follow.
+    expect(d.filesWritten).toHaveBeenCalledWith([1, 2]);
   });
 
   it("a partial failure still refreshes but sends no live patch", async () => {
@@ -162,8 +163,20 @@ describe("writeFileMetadata", () => {
 
   it("a tags-only write sends no patch (tags aren't Track fields)", async () => {
     invokeMock.mockResolvedValue([]);
-    await writeFileMetadata(deps(), [1], { tagNames: ["Jazz"] });
+    const d = deps();
+    await writeFileMetadata(d, [1], { tagNames: ["Jazz"] });
     expect(emitTrackPatch).not.toHaveBeenCalled();
+    // No name was written, so no ids: the queue copies keep their own names.
+    expect(d.filesWritten).toHaveBeenCalledWith(undefined);
+  });
+
+  it("names only the renamed rows — a year-only write passes no ids", async () => {
+    invokeMock.mockResolvedValue([]);
+    const d = deps();
+    await writeFileMetadata(d, [1], { year: 1999 });
+    expect(d.filesWritten).toHaveBeenCalledWith(undefined);
+    await writeFileMetadata(d, [1], { title: "New" });
+    expect(d.filesWritten).toHaveBeenLastCalledWith([1]);
   });
 
   it("a validation failure touches nothing", async () => {

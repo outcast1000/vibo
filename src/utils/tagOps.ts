@@ -36,8 +36,11 @@ import type { Track } from "../types";
 export interface TagOpsDeps {
   /** DB-only tag rows changed. Debounced by the caller. */
   tagsChanged: () => void;
-  /** Audio files and their library rows were rewritten. */
-  filesWritten: () => void;
+  /** Audio files and their library rows were rewritten. `renamedTrackIds`
+   *  names the rows whose title / artist / album / album artist the write set,
+   *  so their queue copies can follow; absent when no name was written (a
+   *  tag-only write must not overwrite a queue entry's own names). */
+  filesWritten: (renamedTrackIds?: number[]) => void;
 }
 
 /** Deps for a caller with nothing to refresh (a test, a host without a UI). */
@@ -214,6 +217,7 @@ export async function writeFileMetadata(
     if ("track_number" in fields) patch.track_number = fields.track_number as number | null;
     if (Object.keys(patch).length > 0) for (const id of trackIds) emitTrackPatch(id, patch);
   }
-  deps.filesWritten();
+  const renamed = ["title", "artist_name", "album_title", "album_artist_name"].some((k) => k in fields);
+  deps.filesWritten(renamed ? trackIds : undefined);
   return errors;
 }

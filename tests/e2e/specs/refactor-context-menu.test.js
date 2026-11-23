@@ -35,6 +35,7 @@ async function buildSpecTexts(page, target, dataOverrides = {}) {
         tracks: dataOverrides.tracks ?? [],
         tags: dataOverrides.tags ?? [],
         handleLocateTrack: noop, handleTrackClick: noop, setView: noop,
+        locateTrackTarget: () => null, navigateToTrackByName: () => Promise.resolve(),
         setSelectedArtist: noop, setSelectedAlbum: noop, setSelectedTag: noop,
       },
       plugins: { menuItems: dataOverrides.menuItems ?? [], dispatchContextMenuAction: noop },
@@ -54,6 +55,7 @@ async function buildSpecTexts(page, target, dataOverrides = {}) {
       handleExportAsMixtapeRef: { current: null },
       openPublishMusicSourceRef: { current: null },
       openEditTrackInfoRef: { current: null },
+      onPlayAlbumByName: noop,
     };
     const specs = mod.buildContextMenuSpecs(target, deps);
     if (!specs) return null;
@@ -90,7 +92,7 @@ test('local track target has Play / Open Folder / Move to Trash', async ({ page 
   expect(texts).toContain('Enqueue');
   expect(texts).toContain('Open Containing Folder');
   expect(texts).toContain('Move to Trash');
-  expect(texts).toContain('View Details');
+  expect(texts).toContain('Track Details');
 });
 
 test('local track target without a library id offers no Move to Trash', async ({ page }) => {
@@ -206,12 +208,13 @@ test('multi-track target without carried paths falls back to library.tracks', as
 
 test('track with no id omits Play/Enqueue/Trash but keeps metadata-only actions', async ({ page }) => {
   const texts = await buildSpecTexts(page, { kind: 'track', title: 'X', artistName: null });
-  // No trackId -> no Play/Enqueue/View Details; no isLocal -> no folder/trash.
+  // No trackId -> no Play/Enqueue; no isLocal -> no folder/trash. Track
+  // Details stays: it opens the track page by name.
   expect(texts).not.toContain('Play');
   expect(texts).not.toContain('Enqueue');
   expect(texts).not.toContain('Open Containing Folder');
   expect(texts).not.toContain('Move to Trash');
-  expect(texts).not.toContain('View Details');
+  expect(texts).toContain('Track Details');
   // "Start radio from this track" only needs a title -> still present.
   expect(texts).toContain('Start radio from this track');
 });

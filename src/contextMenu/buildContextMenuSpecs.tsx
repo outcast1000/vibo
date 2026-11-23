@@ -6,11 +6,11 @@ import type { MenuItemSpec } from "../nativeMenu";
 import type { ContextMenuTarget } from "../types/contextMenu";
 import type { PluginMenuItem } from "../types/plugin";
 import { toPluginTarget } from "../types/contextMenu";
-import { buildPluginMenuSpecs, mergeHostAction } from "./pluginMenuGroups";
+import { buildPluginMenuSpecs, mergeHostAction, splitSharedActions } from "./pluginMenuGroups";
 import { buildGetFromProvidersSpec, type ProviderChoice } from "./providerMenus";
 import { buildAddToPlaylistSubmenu } from "./addToPlaylistMenu";
 import type { UserPlaylist } from "../hooks/useUserPlaylists";
-import { isLocalTrack, librarySelection } from "../queueEntry";
+import { isLocalTrack, librarySelection, queueTrackSelection } from "../queueEntry";
 import type { useContextMenuActions } from "../hooks/useContextMenuActions";
 import type { useLibrary } from "../hooks/useLibrary";
 import type { usePlugins } from "../hooks/usePlugins";
@@ -33,6 +33,53 @@ export interface GetMenus {
   images: Record<"artist" | "album" | "tag", ProviderChoice[]>;
   openLyrics: (track: GetLyricsTrack, providerKey: string | null) => void;
   openImage: (kind: "artist" | "album" | "tag", name: string, artistName: string | null, providerKey: string | null) => void;
+}
+
+/** A track's album as Play Full Album needs it: its name and who it's by. */
+export interface AlbumOfTrack {
+  albumTitle: string;
+  /** The album artist when known, else the track artist — albums are keyed by
+   *  album artist, and `find_album_by_name` accepts either. */
+  artistName: string | null;
+}
+
+function albumOf(albumTitle: string | null | undefined, artistName: string | null | undefined): AlbumOfTrack | null {
+  return albumTitle ? { albumTitle, artistName: artistName ?? null } : null;
+}
+
+/**
+ * The track menu's Play Full Album row: the library album, joined with any
+ * plugin's "Play the Full Album" under one submenu (Library / Last.fm), the
+ * same merge the now-playing bar's menu does. With no album named, no row and
+ * the plugin items are returned untouched.
+ */
+function playFullAlbumSpec(
+  d: ContextMenuDeps,
+  album: AlbumOfTrack | null,
+  pluginItems: PluginMenuItem[],
+  pluginTarget: ReturnType<typeof toPluginTarget>,
+): { spec: MenuItemSpec | null; rest: PluginMenuItem[] } {
+  if (!album) return { spec: null, rest: pluginItems };
+  return mergeHostAction(
+    { action: "play-full-album", text: "Play Full Album", run: () => d.onPlayAlbumByName(album) },
+    pluginItems, pluginTarget, d.plugins.dispatchContextMenuAction,
+  );
+}
+
+/**
+ * Push the plugins' shared-action rows that no host entry took (Download, Find
+ * downloads, a plugin-only radio or full album) beside the host's own actions,
+ * and return the plain items left for the plugin section at the bottom.
+ */
+function pushSharedActions(
+  specs: MenuItemSpec[],
+  pluginItems: PluginMenuItem[],
+  pluginTarget: ReturnType<typeof toPluginTarget>,
+  d: ContextMenuDeps,
+): PluginMenuItem[] {
+  const { shared, plain } = splitSharedActions(pluginItems);
+  specs.push(...buildPluginMenuSpecs(shared, pluginTarget, d.plugins.dispatchContextMenuAction));
+  return plain;
 }
 
 /** The track menu's Get lyrics row. */
@@ -66,6 +113,8 @@ export interface ContextMenuDeps {
   handleExportAsMixtapeRef: React.MutableRefObject<((trackIds: number[], defaultTitle?: string) => void) | null>;
   openPublishMusicSourceRef: React.MutableRefObject<((trackIds: number[]) => void) | null>;
   openEditTrackInfoRef: React.MutableRefObject<((queueIndex: number) => void) | null>;
+  /** Play a track's album from the library, found by name (warns when absent). */
+  onPlayAlbumByName: (album: AlbumOfTrack) => void;
 }
 
 // There are deliberately NO host download entries in any context menu: the
@@ -111,16 +160,19 @@ export function buildContextMenuSpecs(target: ContextMenuTarget, d: ContextMenuD
           pluginTarget, d.plugins.dispatchContextMenuAction,
         );
         specs.push(radio.spec);
+        const album = playFullAlbumSpec(d, albumOf(t.albumTitle, t.artistName), radio.rest, pluginTarget);
+        if (album.spec) specs.push(album.spec);
         specs.push(getLyricsSpec(d.getMenus, { title: t.title, artistName: t.artistName, albumTitle: t.albumTitle, path: t.path }));
+        const plain = pushSharedActions(specs, album.rest, pluginTarget, d);
         const libId = t.libraryId;
         if (libId != null) {
-          specs.push({ kind: "item", text: "View Details", action: () => d.library.handleTrackClick(librarySelection(libId)) });
+          specs.push({ kind: "item", text: "Track Details", action: () => d.library.handleTrackClick(librarySelection(libId)) });
         }
         if (t.isLocal && d.contextMenuActions.handleDeleteRequest) {
           specs.push({ kind: "separator" });
           specs.push({ kind: "item", text: `Move to ${d.trashLabel}`, action: d.contextMenuActions.handleDeleteRequest });
         }
-        const pluginSpecs = buildPluginMenuSpecs(radio.rest, pluginTarget, d.plugins.dispatchContextMenuAction);
+        const pluginSpecs = buildPluginMenuSpecs(plain, pluginTarget, d.plugins.dispatchContextMenuAction);
         if (pluginSpecs.length > 0) {
           specs.push({ kind: "separator" });
           specs.push(...pluginSpecs);
@@ -157,58 +209,65 @@ export function buildContextMenuSpecs(target: ContextMenuTarget, d: ContextMenuD
         onBrowse: () => d.onBrowsePlaylists(target),
       }));
 
+      // `trackIds` are the selected entries that are library tracks (their
+      // cached row, or found by path when the menu opened), so a single entry
+      // is a library track exactly when it has one.
+      const libraryId = count === 1 ? target.trackIds[0] ?? null : null;
+
       // Single-track actions
-      if (count === 1) {
+      const queued = count === 1 ? d.queueHook.queue[target.indices[0]] : undefined;
+      if (queued) {
+        // Track Details — the track's own page; an entry outside the library
+        // gets the id-less page (queueTrackSelection), like the queue row's ⓘ.
+        specs.push({ kind: "item", text: "Track Details", action: () => {
+          d.library.handleTrackClick(libraryId != null ? librarySelection(libraryId) : queueTrackSelection(queued));
+        } });
+        // Go to Album / Artist — the library page the song belongs to; a song
+        // the library has neither for is searched for instead.
+        const locate = d.library.locateTrackTarget(queued.artist_name, queued.album_title ?? null);
+        specs.push({ kind: "item", text: locate === "album" ? "Go to Album" : locate === "artist" ? "Go to Artist" : "Find in Library", action: () => {
+          d.library.handleLocateTrack(queued.title, queued.artist_name, queued.album_title ?? null, () => {
+            d.setSearchInitialQuery(queued.title);
+            d.setSearchQueryKey(k => k + 1);
+            d.library.setView("search");
+            d.library.setSelectedArtist(null);
+            d.library.setSelectedAlbum(null);
+            d.library.setSelectedTag(null);
+          });
+        } });
+      }
+
+      // Edit Properties writes the library track's file tags; an entry outside
+      // the library has no file to write, so it gets Edit info instead — a fix
+      // to this queue entry's names only (e.g. a yt-dlp title), which never
+      // touches library rows or files. The two are never offered together.
+      if (target.trackIds.length > 0 && d.contextMenuActions.handleBulkEdit) {
+        specs.push({ kind: "item", text: count > 1 ? `Edit Properties (${target.trackIds.length} tracks)…` : "Edit Properties…", action: d.contextMenuActions.handleBulkEdit });
+      } else if (queued && d.openEditTrackInfoRef.current) {
+        specs.push({ kind: "item", text: "Edit info…", action: () => d.openEditTrackInfoRef.current?.(target.indices[0]) });
+      }
+
+      if (queued) {
         if (target.firstTrack.isLocal) {
-          specs.push({ kind: "separator" });
           specs.push({ kind: "item", text: "Open Containing Folder", action: d.contextMenuActions.handleShowInFolder });
         }
-        const locateTrack = () => {
-          const track = d.queueHook.queue[target.indices[0]];
-          if (track) {
-            d.library.handleLocateTrack(track.title, track.artist_name, track.album_title, () => {
-              d.setSearchInitialQuery(track.title);
-              d.setSearchQueryKey(k => k + 1);
-              d.library.setView("search");
-              d.library.setSelectedArtist(null);
-              d.library.setSelectedAlbum(null);
-              d.library.setSelectedTag(null);
-            });
-          }
-        };
-        specs.push({ kind: "item", text: "Details", action: locateTrack });
-
-        // Edit info — fix messy metadata (e.g. yt-dlp titles) on this entry so it
-        // reads well and metadata-keyed lookups (lyrics, similar) resolve. Queue
-        // entry only; never rewrites library rows or file tags.
-        if (d.openEditTrackInfoRef.current) {
-          specs.push({ kind: "item", text: "Edit info…", action: () => d.openEditTrackInfoRef.current?.(target.indices[0]) });
-        }
-
         // Start radio from this track (single track only), joined by any
         // plugin radio.
         const radio = mergeHostAction({ action: "radio", text: "Start radio from this track", run: () => {
-          const track = d.queueHook.queue[target.indices[0]];
-          if (track) {
-            d.contextMenuActions.startRadio({
-              title: track.title,
-              artistName: track.artist_name,
-              coverPath: track.image_url ?? null,
-            });
-          }
+          d.contextMenuActions.startRadio({
+            title: queued.title,
+            artistName: queued.artist_name,
+            coverPath: queued.image_url ?? null,
+          });
         }}, pluginItems, pluginTarget, d.plugins.dispatchContextMenuAction);
         specs.push(radio.spec);
         pluginItems = radio.rest;
-        const queued = d.queueHook.queue[target.indices[0]];
-        if (queued) {
-          specs.push(getLyricsSpec(d.getMenus, { title: queued.title, artistName: queued.artist_name, albumTitle: queued.album_title, path: queued.path }));
-        }
-
-        // View Details — needs d.library ID
-        if (target.trackIds[0] != null) {
-          specs.push({ kind: "item", text: "View Details", action: () => d.library.handleTrackClick(librarySelection(target.trackIds[0])) });
-        }
+        const album = playFullAlbumSpec(d, albumOf(queued.album_title, queued.album_artist_name ?? queued.artist_name), pluginItems, pluginTarget);
+        if (album.spec) specs.push(album.spec);
+        pluginItems = album.rest;
+        specs.push(getLyricsSpec(d.getMenus, { title: queued.title, artistName: queued.artist_name, albumTitle: queued.album_title, path: queued.path }));
       }
+      pluginItems = pushSharedActions(specs, pluginItems, pluginTarget, d);
 
       // Move to Trash — local tracks only
       if (d.contextMenuActions.handleDeleteRequest) {
@@ -282,8 +341,20 @@ export function buildContextMenuSpecs(target: ContextMenuTarget, d: ContextMenuD
           specs.push(buildGetFromProvidersSpec("Get image", d.getMenus.images[kind], (key) => d.getMenus.openImage(kind, name, artistName, key)));
         }
       }
+      if (target.kind === "track" && target.title) {
+        // Track Details — the library row's page, or, for a row with no id (a
+        // "Not in library" row, a plugin's result), the page found by name.
+        // Captured, not read off `target` inside the closure: the guard's
+        // narrowing doesn't survive into a deferred callback.
+        const { trackId, title, artistName, albumTitle } = target;
+        specs.push({ kind: "item", text: "Track Details", action: () => {
+          if (trackId) d.library.handleTrackClick(librarySelection(trackId));
+          else d.library.navigateToTrackByName(title, artistName ?? undefined, albumTitle ?? undefined)
+            .catch((e) => console.error("Failed to open track details:", e));
+        } });
+      }
       if (d.contextMenuActions.handleBulkEdit && (isMulti || (target.kind === "track" && target.trackId))) {
-        specs.push({ kind: "item", text: "Edit Properties", action: d.contextMenuActions.handleBulkEdit });
+        specs.push({ kind: "item", text: "Edit Properties…", action: d.contextMenuActions.handleBulkEdit });
       }
       if (target.kind === "track" && target.isLocal) {
         specs.push({ kind: "item", text: "Open Containing Folder", action: d.contextMenuActions.handleShowInFolder });
@@ -299,15 +370,12 @@ export function buildContextMenuSpecs(target: ContextMenuTarget, d: ContextMenuD
         }}, pluginItems, pluginTarget, d.plugins.dispatchContextMenuAction);
         specs.push(radio.spec);
         pluginItems = radio.rest;
+        const album = playFullAlbumSpec(d, albumOf(target.albumTitle, target.artistName), pluginItems, pluginTarget);
+        if (album.spec) specs.push(album.spec);
+        pluginItems = album.rest;
         specs.push(getLyricsSpec(d.getMenus, { title: target.title, artistName: target.artistName, albumTitle: target.albumTitle }));
       }
-      if (target.kind === "track" && target.trackId) {
-        // Captured, not read off `target` inside the closure: the guard's
-        // narrowing doesn't survive into a deferred callback. (The old template
-        // literal hid this — it would happily interpolate `undefined`.)
-        const trackId = target.trackId;
-        specs.push({ kind: "item", text: "View Details", action: () => d.library.handleTrackClick(librarySelection(trackId)) });
-      }
+      pluginItems = pushSharedActions(specs, pluginItems, pluginTarget, d);
       // A `track` target carries no path, so it can only be deleted by id —
       // without one the item would do nothing (id-less queue entries are
       // deleted from the queue's own menu, which trashes them by path).

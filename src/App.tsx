@@ -22,7 +22,7 @@ import { saveSongLyrics } from "./utils/localLyrics";
 import type { InfoEntity } from "./types/informationTypes";
 
 import { store } from "./store";
-import { parseUrlScheme, localTrackSource, trackToQueueTrack, nextQueueKey, isLocalTrack, effectiveLocalPath, pluginTrackToQueueTrack, trackRowToQueueTrack, trackSelection, queueTrackSelection, isPlayingSelection, isPlayingLibraryRow } from "./queueEntry";
+import { parseUrlScheme, localTrackSource, trackToQueueTrack, nextQueueKey, isLocalTrack, effectiveLocalPath, pluginTrackToQueueTrack, trackRowToQueueTrack, trackSelection, queueTrackSelection, isPlayingSelection, isPlayingLibraryRow, withLibraryNames, indicesOfKeys } from "./queueEntry";
 import { partitionTrackIds, buildDeleteConfirmPayload } from "./utils/deleteTracks";
 import { resolveLibraryIds } from "./utils/resolveLibraryIds";
 import { subscribeTrackEvents } from "./trackEvents";
@@ -169,9 +169,9 @@ import { VideoSubtitles } from "./components/VideoSubtitles";
 import { AddServerModal } from "./components/AddServerModal";
 import { showNativeMenu, type MenuItemSpec } from "./nativeMenu";
 import { buildPluginNavMenuSpecs } from "./contextMenu/buildPluginNavMenuSpecs";
-import { buildPluginMenuSpecs, mergeHostAction } from "./contextMenu/pluginMenuGroups";
+import { buildPluginMenuSpecs, mergeHostAction, splitSharedActions } from "./contextMenu/pluginMenuGroups";
 import { buildGetFromProvidersSpec, imageProviderChoices, infoProviderChoices } from "./contextMenu/providerMenus";
-import type { GetLyricsTrack, GetMenus } from "./contextMenu/buildContextMenuSpecs";
+import type { AlbumOfTrack, GetLyricsTrack, GetMenus } from "./contextMenu/buildContextMenuSpecs";
 import { useGetMenuProviders } from "./hooks/useGetMenuProviders";
 import { toPluginTarget } from "./types/contextMenu";
 import { buildRatingMenuSpecs } from "./contextMenu/ratingMenu";
@@ -1874,10 +1874,42 @@ function App() {
     }
   }, { delayMs: 750, maxWaitMs: 5000 }));
   useEffect(() => () => libraryRefresh.cancel(), [libraryRefresh]);
+  // After a file-metadata write renamed tracks (Edit Properties, a plugin's or
+  // the control API's bulk update), the queue copies of those rows and the
+  // playing track take the rows' new names — the queue holds its own copy of
+  // each track's names, which the library reload never touches. Only renames
+  // reach here (`filesWritten`'s ids), so a tag-only write can't overwrite an
+  // entry's Edit info names. Ids are gathered and read once per burst, on a
+  // much shorter wait than the library reload, since this is what the user
+  // is looking at right after Save.
+  const renamedTrackIdsRef = useRef(new Set<number>());
+  const refreshQueueFromLibraryRef = useLatestRef(async () => {
+    const ids = [...renamedTrackIdsRef.current];
+    renamedTrackIdsRef.current.clear();
+    if (ids.length === 0) return;
+    try {
+      const rows = await invoke<Track[]>("get_tracks_by_ids", { ids });
+      queueHook.refreshFromLibrary(rows);
+      playback.setCurrentTrack(prev => (prev ? withLibraryNames(prev, rows) : prev));
+    } catch (e) {
+      console.error("Failed to refresh queue entries after a file write:", e);
+    }
+  });
+  const [queueRenameRefresh] = useState(() => createCoalescedRefresh(
+    () => { void refreshQueueFromLibraryRef.current(); },
+    { delayMs: 100, maxWaitMs: 1000 },
+  ));
+  useEffect(() => () => queueRenameRefresh.cancel(), [queueRenameRefresh]);
   const tagOpsDeps = useMemo<TagOpsDeps>(() => ({
     tagsChanged: () => libraryRefresh.request("tags"),
-    filesWritten: () => libraryRefresh.request("files"),
-  }), [libraryRefresh]);
+    filesWritten: (renamedTrackIds) => {
+      libraryRefresh.request("files");
+      if (renamedTrackIds && renamedTrackIds.length > 0) {
+        for (const id of renamedTrackIds) renamedTrackIdsRef.current.add(id);
+        queueRenameRefresh.request("files");
+      }
+    },
+  }), [libraryRefresh, queueRenameRefresh]);
 
   // Updater
   const updater = useAppUpdater(betaUpdates ? "beta" : "stable", playback.handleStop, notify);
@@ -2623,6 +2655,21 @@ function App() {
     }
   }, [fetchTargetTracks, openPlaylistPicker, notify]);
 
+  // Play Full Album → Library, for every track menu (queue, library, playing
+  // video, the now-playing bar). A queue entry carries no album_id, so the
+  // album is resolved by name — album artist first, matching how albums are
+  // keyed (find_album_by_name also accepts the track artist).
+  const playAlbumByName = useCallback(async ({ albumTitle, artistName }: AlbumOfTrack) => {
+    try {
+      const a = await invoke<Album | null>("find_album_by_name", { title: albumTitle, artistName });
+      if (a) await playActions.playAlbum(a.id);
+      else notify(`"${albumTitle}" isn't in your library`, { kind: "warning" });
+    } catch (e) {
+      console.error("Failed to play full album:", e);
+      notify("Couldn't play the album", { kind: "error" });
+    }
+  }, [playActions, notify]);
+
   const buildAndShowNativeMenu = useCallback((cm: { x: number; y: number; target: import("./types/contextMenu").ContextMenuTarget }) => {
     contextMenuActions.setContextMenu(cm);
     const specs = buildContextMenuSpecs(cm.target, {
@@ -2632,7 +2679,7 @@ function App() {
       setSearchInitialQuery, setSearchQueryKey,
       setDeleteTagConfirm, trashLabel, handleExportAsMixtapeRef, openPublishMusicSourceRef, openEditTrackInfoRef,
       userPlaylists, onAddToPlaylist: handleAddToPlaylist, onAddToNewPlaylist: handleAddToNewPlaylist,
-      onBrowsePlaylists: handleBrowsePlaylists,
+      onBrowsePlaylists: handleBrowsePlaylists, onPlayAlbumByName: playAlbumByName,
     });
     // The provider lists are a snapshot; re-read them for the next menu.
     refreshGetMenuProviders();
@@ -2643,7 +2690,7 @@ function App() {
     // Returned (errors already logged, so the promise never rejects) so a caller
     // can hold UI open for the menu's lifetime — popup resolves on dismissal.
     return showNativeMenu(cm.x, cm.y, specs).catch((e) => console.error("Failed to show native menu:", e));
-  }, [contextMenuActions, videoLayout, queueHook, library, plugins, artistImageCache, albumImageCache, tagImageCache, getMenus, refreshGetMenuProviders, setSearchInitialQuery, setSearchQueryKey, setDeleteTagConfirm, trashLabel, handleExportAsMixtapeRef, openPublishMusicSourceRef, openEditTrackInfoRef, userPlaylists, handleAddToPlaylist, handleAddToNewPlaylist, handleBrowsePlaylists]);
+  }, [contextMenuActions, videoLayout, queueHook, library, plugins, artistImageCache, albumImageCache, tagImageCache, getMenus, refreshGetMenuProviders, setSearchInitialQuery, setSearchQueryKey, setDeleteTagConfirm, trashLabel, handleExportAsMixtapeRef, openPublishMusicSourceRef, openEditTrackInfoRef, userPlaylists, handleAddToPlaylist, handleAddToNewPlaylist, handleBrowsePlaylists, playAlbumByName]);
   useAssignRef(showNativeMenuRef, buildAndShowNativeMenu);
 
   // api.library.replaceTrackFile: a plugin offers a better copy of a local
@@ -5490,26 +5537,21 @@ function App() {
         } }, pluginItems, pluginTarget, plugins.dispatchContextMenuAction);
         specs.push(radio.spec);
         pluginItems = radio.rest;
-        specs.push(buildGetFromProvidersSpec("Get lyrics", getMenus.lyrics, (key) => getMenus.openLyrics({ title: t.title, artistName: t.artist_name, albumTitle: t.album_title, path: t.path }, key)));
-        refreshGetMenuProviders();
-        // The playing entry is a QueueTrack (no album_id), so the library
-        // album is resolved by name — album artist first, matching how albums
-        // are keyed (find_album_by_name also accepts the track artist).
         const albumTitle = t.album_title;
         if (albumTitle) {
-          const album = mergeHostAction({ action: "play-full-album", text: "Play Full Album", run: async () => {
-            try {
-              const a = await invoke<Album | null>("find_album_by_name", { title: albumTitle, artistName: t.album_artist_name ?? t.artist_name ?? null });
-              if (a) await playActions.playAlbum(a.id);
-              else notify(`"${albumTitle}" isn't in your library`, { kind: "warning" });
-            } catch (e) {
-              console.error("Failed to play full album:", e);
-              notify("Couldn't play the album", { kind: "error" });
-            }
+          const album = mergeHostAction({ action: "play-full-album", text: "Play Full Album", run: () => {
+            playAlbumByName({ albumTitle, artistName: t.album_artist_name ?? t.artist_name ?? null });
           } }, pluginItems, pluginTarget, plugins.dispatchContextMenuAction);
           specs.push(album.spec);
           pluginItems = album.rest;
         }
+        specs.push(buildGetFromProvidersSpec("Get lyrics", getMenus.lyrics, (key) => getMenus.openLyrics({ title: t.title, artistName: t.artist_name, albumTitle: t.album_title, path: t.path }, key)));
+        refreshGetMenuProviders();
+        // The other shared-action rows (Download, Find downloads) sit here with
+        // the host's own actions, not in the plugin section below.
+        const { shared, plain } = splitSharedActions(pluginItems);
+        specs.push(...buildPluginMenuSpecs(shared, pluginTarget, plugins.dispatchContextMenuAction));
+        pluginItems = plain;
         const pluginSpecs = buildPluginMenuSpecs(pluginItems, pluginTarget, plugins.dispatchContextMenuAction);
         if (pluginSpecs.length > 0) specs.push({ kind: "separator" }, ...pluginSpecs);
         specs.push({ kind: "separator" });
@@ -6498,15 +6540,22 @@ function App() {
           ref={videoContainerRef}
           className={`video-container${videoLayout.isCollapsed && !videoInQueue ? " collapsed" : ""}${videoTheater ? " video-container--theater" : ""}${playback.nativeFullscreen ? " video-container--native-fs" : ""}${videoInQueue ? " video-container--in-queue" : ""}`}
           data-fit={videoLayout.fitMode}
-          onContextMenu={(e) => {
+          onContextMenu={async (e) => {
             e.preventDefault();
+            const { clientX: x, clientY: y } = e;
             const ct = playback.currentTrack;
-            buildAndShowNativeMenu({ x: e.clientX, y: e.clientY, target: {
+            // Library id as the queue menu finds it — the cache, else by path —
+            // so the same video gets the same Track Details in both menus.
+            const [libraryId] = ct ? await resolveLibraryIds([ct]) : [null];
+            // A different track by the time the lookup answered: its menu
+            // would describe the wrong video.
+            if (ct && currentTrackRef.current?.key !== ct.key) return;
+            showNativeMenuRef.current?.({ x, y, target: {
               kind: "video",
               dockSide: videoLayout.dockSide,
               fitMode: videoLayout.fitMode,
               track: ct ? {
-                libraryId: ct.libraryId ?? null,
+                libraryId: libraryId ?? null,
                 path: ct.path,
                 title: ct.title,
                 artistName: ct.artist_name,
@@ -6678,13 +6727,29 @@ function App() {
           autoContinueEnabled={autoContinue.enabled}
           onToggleAutoContinue={() => autoContinue.setEnabled(!autoContinue.enabled)}
           onOpenAutoContinueSettings={openAutoContinueSettings}
-          onContextMenu={(e, indices) => {
-            const tracks = indices.map(i => queueHook.queue[i]).filter(Boolean);
-            const first = tracks[0];
-            buildAndShowNativeMenu({ x: e.clientX, y: e.clientY, target: {
+          onContextMenu={async (e, clickedIndices) => {
+            const { clientX: x, clientY: y } = e;
+            const tracks = clickedIndices.map(i => queueHook.queue[i]).filter(Boolean);
+            const keys = tracks.map(t => t.key);
+            // The menu offers Edit Properties for library tracks and Edit info
+            // for the rest, so it must know which entries are library tracks:
+            // the cached libraryId, else one bulk lookup by path (no IPC when
+            // every entry already carries its id). Restored and m3u-loaded
+            // entries often lack the cache.
+            const ids = await resolveLibraryIds(tracks);
+            // The queue may have changed during the lookup (a switch landing,
+            // a control-API edit): act on the entries that were clicked, by
+            // key, wherever they are now — never on whatever moved into their
+            // positions. Gone → no menu. The live menu builder too, not the one
+            // this render captured (it reads the queue it was built with).
+            const indices = indicesOfKeys(queueRef.current, keys);
+            if (!indices) return;
+            const first = queueRef.current[indices[0]];
+            showNativeMenuRef.current?.({ x, y, target: {
               kind: "queue-multi", indices,
-              trackIds: tracks.map(t => t.libraryId ?? null).filter((id): id is number => id != null),
-              firstTrack: first ? { title: first.title, artistName: first.artist_name, albumTitle: first.album_title ?? null, isLocal: isLocalTrack(first) } : { title: "", artistName: null, albumTitle: null, isLocal: false },
+              // One library row queued twice is one track to edit.
+              trackIds: [...new Set(ids.filter((id): id is number => id != null))],
+              firstTrack: { title: first.title, artistName: first.artist_name, albumTitle: first.album_title ?? null, isLocal: isLocalTrack(first) },
             } });
           }}
           onToggleLike={likeActions.handleToggleLike}

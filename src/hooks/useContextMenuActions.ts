@@ -297,7 +297,9 @@ export function useContextMenuActions(deps: UseContextMenuActionsDeps) {
   async function handleBulkEdit() {
     const cm = contextMenuRef.current;
     if (!cm) return;
-    const trackIds = cm.target.kind === "multi-track"
+    // A queue selection carries the library ids of the entries that are
+    // library tracks; the rest have no file of their own to edit.
+    const trackIds = cm.target.kind === "multi-track" || cm.target.kind === "queue-multi"
       ? cm.target.trackIds
       : cm.target.kind === "track" && cm.target.trackId
       ? [cm.target.trackId]

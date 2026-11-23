@@ -9,6 +9,9 @@ import {
   localTrackSource,
   effectiveLocalPath,
   isNetworkSharePath,
+  withLibraryNames,
+  queueWithLibraryNames,
+  indicesOfKeys,
 } from "../queueEntry";
 import type { Track } from "../types";
 
@@ -394,5 +397,64 @@ describe("pluginTrackToQueueTrack", () => {
   it("declares nothing when the plugin declared nothing — the resolve decides", () => {
     expect(pluginTrackToQueueTrack({ path: "qbt://aaa/3", title: "Song" }).format).toBeNull();
     expect(pluginTrackToQueueTrack({ path: "qbt://aaa/3", title: "Song", kind: "audio" }).format).toBeNull();
+  });
+});
+
+describe("withLibraryNames / queueWithLibraryNames", () => {
+  // After an Edit Properties save the queue's copies take the rows' new names.
+  const row = (over: Record<string, unknown> = {}) => ({
+    id: 5, path: "file:///a.flac", title: "Going Under", artist_name: "Evanescence",
+    album_title: "Fallen", album_artist_name: null, ...over,
+  }) as unknown as import("../types").Track;
+  const entry = (over: Record<string, unknown> = {}) => ({
+    key: "q:1", libraryId: 5, path: "file:///a.flac", title: "going under (remaster)",
+    artist_name: "evanescence", album_title: null, album_artist_name: null,
+    duration_secs: 200, format: "flac", ...over,
+  }) as import("../types").QueueTrack;
+
+  it("copies the row's names onto its entry, keeping the entry's own fields", () => {
+    const u = withLibraryNames(entry(), [row()]);
+    expect(u).toMatchObject({ key: "q:1", title: "Going Under", artist_name: "Evanescence", album_title: "Fallen", duration_secs: 200 });
+  });
+
+  it("matches an entry with no cached id by its file", () => {
+    expect(withLibraryNames(entry({ libraryId: null }), [row()]).title).toBe("Going Under");
+  });
+
+  it("never matches by file when the cached id names another row", () => {
+    const e = entry({ libraryId: 9 });
+    expect(withLibraryNames(e, [row()])).toBe(e);
+  });
+
+  it("returns the same objects when nothing changed", () => {
+    const e = entry({ title: "Going Under", artist_name: "Evanescence", album_title: "Fallen" });
+    expect(withLibraryNames(e, [row()])).toBe(e);
+    const q = [e, entry({ key: "q:2", libraryId: 7, path: "file:///b.flac" })];
+    expect(queueWithLibraryNames(q, [row()])).toBe(q);
+  });
+
+  it("updates every copy of the row in a queue", () => {
+    const q = [entry(), entry({ key: "q:2" }), entry({ key: "q:3", libraryId: 7, path: "file:///b.flac" })];
+    const next = queueWithLibraryNames(q, [row()]);
+    expect(next.map((t) => t.title)).toEqual(["Going Under", "Going Under", "going under (remaster)"]);
+    expect(next[2]).toBe(q[2]);
+  });
+});
+
+describe("indicesOfKeys", () => {
+  // The queue menu captures its selection, waits on a lookup, then must act on
+  // the same entries — not on whatever moved into their positions.
+  const q = (...keys: string[]) => keys.map((key) => ({ key }));
+
+  it("finds the entries where they are now, in the order given", () => {
+    expect(indicesOfKeys(q("q:9", "q:2", "q:5"), ["q:5", "q:2"])).toEqual([2, 1]);
+  });
+
+  it("is null when any entry has left the queue", () => {
+    expect(indicesOfKeys(q("q:1", "q:2"), ["q:2", "q:3"])).toBeNull();
+  });
+
+  it("is null for an empty selection", () => {
+    expect(indicesOfKeys(q("q:1"), [])).toBeNull();
   });
 });

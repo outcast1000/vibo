@@ -256,6 +256,57 @@ export function trackToQueueEntry(track: Track | QueueTrack): QueueEntry {
  * key format (see `isPlayingLibraryRow`) and what made the id look like part of
  * a queue entry's identity. Provenance rides in `libraryId` instead.
  */
+/**
+ * Where the entries with these keys sit in `queue` now, in the order given —
+ * or null when any of them has left it (or there are none). For an action
+ * that captured a selection, then waited: positions go stale, keys don't.
+ */
+export function indicesOfKeys(queue: ReadonlyArray<{ key: string }>, keys: ReadonlyArray<string>): number[] | null {
+  if (keys.length === 0) return null;
+  const at = new Map(queue.map((t, i) => [t.key, i]));
+  const out: number[] = [];
+  for (const k of keys) {
+    const i = at.get(k);
+    if (i === undefined) return null;
+    out.push(i);
+  }
+  return out;
+}
+
+/** The names a queue entry copies from its library row — what an Edit
+ *  Properties (or any file-metadata write) can change under it. */
+type LibraryNames = Pick<QueueTrack, "title" | "artist_name" | "album_title" | "album_artist_name">;
+
+/**
+ * The library rows' current names for `entry`, or `entry` itself (same object)
+ * when no row is its own or nothing differs. An entry is a row's copy by its
+ * cached `libraryId`, else by its file URI — `libraryId` is a cache and may be
+ * missing on an entry that is a library track (queue.md "`key` vs `libraryId`").
+ */
+export function withLibraryNames<T extends QueueTrack>(entry: T, rows: ReadonlyArray<Track>): T {
+  const row = rows.find((r) => (entry.libraryId != null ? r.id === entry.libraryId : !!entry.path && r.path === entry.path));
+  if (!row) return entry;
+  const names: LibraryNames = {
+    title: row.title,
+    artist_name: row.artist_name ?? null,
+    album_title: row.album_title ?? null,
+    album_artist_name: row.album_artist_name ?? null,
+  };
+  const same = (Object.keys(names) as (keyof LibraryNames)[]).every((k) => (entry[k] ?? null) === names[k]);
+  return same ? entry : { ...entry, ...names };
+}
+
+/** `withLibraryNames` over a whole queue; the same array when nothing moved. */
+export function queueWithLibraryNames(queue: QueueTrack[], rows: ReadonlyArray<Track>): QueueTrack[] {
+  let changed = false;
+  const next = queue.map((t) => {
+    const u = withLibraryNames(t, rows);
+    if (u !== t) changed = true;
+    return u;
+  });
+  return changed ? next : queue;
+}
+
 export function trackToQueueTrack(track: Track): QueueTrack {
   // The `?? null` defaults are load-bearing: some callers hand in a sparse
   // `Track` (`open_mixtape_for_play` sends only title/artists/album/duration/
