@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatDuration, isVideoTrack, getInitials, collectionKindLabel, parseSubsonicUrl, shouldScrobble } from "../utils";
+import { formatDuration, formatMinSec, isVideoTrack, collectionKindLabel, parseSubsonicUrl, shouldScrobble } from "../utils";
 import type { Track } from "../types";
 
 function makeTrack(overrides: Partial<Track> = {}): Track {
@@ -25,6 +25,20 @@ describe("formatDuration", () => {
   it("returns --:-- for null/undefined", () => {
     expect(formatDuration(null)).toBe("--:--");
     expect(formatDuration(undefined)).toBe("--:--");
+  });
+});
+
+describe("formatMinSec", () => {
+  it("shows zero as a real value and rounds down", () => {
+    expect(formatMinSec(0)).toBe("0:00");
+    expect(formatMinSec(59.9)).toBe("0:59");
+    expect(formatMinSec(65)).toBe("1:05");
+    expect(formatMinSec(3600)).toBe("60:00");
+  });
+
+  it("never goes below 0:00", () => {
+    expect(formatMinSec(-3)).toBe("0:00");
+    expect(formatMinSec(Number.NaN)).toBe("0:00");
   });
 });
 
@@ -65,18 +79,6 @@ describe("isVideoTrack", () => {
   it("lets a known format win over the path extension", () => {
     // Real audio file with a misleading name shouldn't be treated as video.
     expect(isVideoTrack(makeTrack({ format: "mp3", path: "file:///weird.mp4" }))).toBe(false);
-  });
-});
-
-describe("getInitials", () => {
-  it("returns first letters of words", () => {
-    expect(getInitials("Pink Floyd")).toBe("PF");
-    expect(getInitials("Radiohead")).toBe("R");
-    expect(getInitials("The Rolling Stones")).toBe("TR");
-  });
-
-  it("handles empty string", () => {
-    expect(getInitials("")).toBe("");
   });
 });
 

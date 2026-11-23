@@ -1026,9 +1026,7 @@ export function usePlugins(
           // by default and truncated per launch, so without it a plugin's own
           // error report was unreadable after the fact.
           recordPluginLog(level, message, section ?? pluginId);
-          // Fire-and-forget: this IS the logger (a plugin's api.log). Reporting its
-          // own failure would recurse, and a lost plugin log line has no user impact.
-          invoke("write_frontend_log", { level, message, section: section ?? pluginId }).catch(() => {}); // eslint-disable-line no-restricted-syntax
+          invoke("write_frontend_log", { level, message, section: section ?? pluginId }).catch(() => {}); // eslint-disable-line no-restricted-syntax -- Fire-and-forget: this IS the logger (a plugin's api.log); reporting its own failure would recurse, and a lost log line has no user impact
         },
         library: {
           async getTrackCount() {

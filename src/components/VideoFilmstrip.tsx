@@ -1,6 +1,7 @@
 import type { PartialStoryboard, StoryboardState } from "../hooks/useStoryboard";
 import { spreadIndices, spreadTileIndices, tileStartSecs } from "../utils/storyboard";
 import { StoryboardTile } from "./StoryboardTile";
+import { formatMinSec } from "../utils";
 import "./VideoFilmstrip.css";
 
 /**
@@ -10,12 +11,6 @@ import "./VideoFilmstrip.css";
  * the tile resolution.
  */
 const STRIP_TILES = 8;
-
-function formatTimestamp(secs: number): string {
-  const m = Math.floor(secs / 60);
-  const s = Math.floor(secs % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
 
 interface VideoFilmstripProps {
   storyboard: StoryboardState;
@@ -63,7 +58,7 @@ function LoadingStrip({
                 <path d="M8 6.82v10.36c0 .79.87 1.27 1.54.84l8.14-5.18a1 1 0 0 0 0-1.69L9.54 5.98A.998.998 0 0 0 8 6.82z"/>
               </svg>
             )}
-            <span className="video-filmstrip-ts">{formatTimestamp(secs)}</span>
+            <span className="video-filmstrip-ts">{formatMinSec(secs)}</span>
           </div>
         );
       })}
@@ -113,7 +108,7 @@ export function VideoFilmstrip({ storyboard, onFrameClick }: VideoFilmstripProps
                 <path d="M8 6.82v10.36c0 .79.87 1.27 1.54.84l8.14-5.18a1 1 0 0 0 0-1.69L9.54 5.98A.998.998 0 0 0 8 6.82z"/>
               </svg>
             )}
-            <span className="video-filmstrip-ts">{formatTimestamp(secs)}</span>
+            <span className="video-filmstrip-ts">{formatMinSec(secs)}</span>
           </div>
         );
       })}

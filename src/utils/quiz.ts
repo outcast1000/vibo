@@ -1,5 +1,6 @@
 import type { Track } from "../types";
 import { isLocalTrack } from "../queueEntry";
+import { formatMinSec } from "../utils";
 
 // Pure logic for the Song Quiz game — an arcade beat-the-clock round:
 // name as many snippets as you can before the clock hits zero. Correct
@@ -33,8 +34,7 @@ export const QUIZ_MODES: QuizMode[] = [
 
 /** Formats remaining seconds as m:ss, never below 0:00. */
 export function formatClock(secs: number): string {
-  const s = Math.max(0, Math.ceil(secs));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  return formatMinSec(Math.ceil(secs));
 }
 
 /** Best score per mode, persisted in the app store as `quizBestScores`. */

@@ -45,33 +45,12 @@ export async function fetchLikeStates(
 
 /** Patch one entry from a fetched map, preserving object identity when
  *  nothing changes (safe inside functional setState — an unchanged map pass
- *  causes no re-render). `onlyNonZero` applies likes/dislikes but never
- *  clears — the mid-session add reconcile uses it so a durable 0 can't
- *  race-revert an optimistic like on a pre-existing same-song copy. */
+ *  causes no re-render). */
 export function applyLikeState<T extends LikeIdentified>(
   t: T,
   byId: Map<string, number>,
-  opts?: { onlyNonZero?: boolean },
 ): T {
   const v = byId.get(trackLikeId(t.title, t.artist_name ?? null));
   if (v == null) return t;
-  if (opts?.onlyNonZero && v === 0) return t;
   return v !== t.liked ? { ...t, liked: v } : t;
-}
-
-/** applyLikeState over a list, preserving ARRAY identity when nothing
- *  changed — hand functional setState `prev => applyLikeStates(prev, byId)`
- *  and an all-no-op reconcile bails without a render. */
-export function applyLikeStates<T extends LikeIdentified>(
-  list: T[],
-  byId: Map<string, number>,
-  opts?: { onlyNonZero?: boolean },
-): T[] {
-  let changed = false;
-  const next = list.map(t => {
-    const n = applyLikeState(t, byId, opts);
-    if (n !== t) changed = true;
-    return n;
-  });
-  return changed ? next : list;
 }

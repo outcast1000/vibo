@@ -1,14 +1,11 @@
 import { useEffect, useState } from "react";
 import type { DownloadResolveProgress } from "../../types/plugin";
+import { formatMinSec } from "../../utils";
 
-/** mm:ss for a live counter. Unlike `formatDuration`, zero is a real value here
+/** m:ss for a live counter. Unlike `formatDuration`, zero is a real value here
  *  (a resolve that just started, an ETA of "any moment") rather than missing
  *  data, so it must not render as "--:--". */
-function formatElapsed(secs: number): string {
-  const m = Math.floor(secs / 60);
-  const s = Math.floor(secs % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
+const formatElapsed = formatMinSec;
 
 /**
  * What the provider says it is doing while it resolves. A provider that mints a

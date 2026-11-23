@@ -43,15 +43,20 @@ export function videoContainerFromPath(path: string | null | undefined): string 
   return VIDEO_FORMATS.includes(ext) ? ext : null;
 }
 
-export function getInitials(name: string): string {
-  return name.split(/\s+/).map(w => w[0]).join("").toUpperCase().slice(0, 2);
+/** A track length: m:ss, or "--:--" when unknown (0 counts as unknown). */
+export function formatDuration(secs: number | null | undefined): string {
+  if (!secs || !Number.isFinite(secs) || secs < 0) return "--:--";
+  return formatMinSec(secs);
 }
 
-export function formatDuration(secs: number | null | undefined): string {
-  if (!secs) return "--:--";
-  const m = Math.floor(secs / 60);
-  const s = Math.floor(secs % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
+/** m:ss for any number of seconds, where 0 is a real value ("0:00") — a
+ *  counter, a position, a length already known. Rounds down and never goes
+ *  below 0:00; a caller that wants another rounding rounds first
+ *  (`formatMinSec(Math.round(x))`). The one m:ss formatter — use it rather than
+ *  another `Math.floor(s / 60)` copy. */
+export function formatMinSec(secs: number): string {
+  const s = Math.max(0, Math.floor(Number.isFinite(secs) ? secs : 0));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
 /** "just now" / "5m ago" / "3h ago" / "12d ago", falling back to the locale

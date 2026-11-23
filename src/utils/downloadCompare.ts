@@ -1,3 +1,5 @@
+import { formatMinSec } from "../utils";
+
 /** What the upgrade compare knows about one file (`get_audio_properties_by_path`). */
 export interface FileAudioFacts {
   sample_rate: number | null;
@@ -30,8 +32,7 @@ export function describeFileQuality(format: string | null | undefined, facts: Fi
 /** Length as m:ss, or null. */
 export function formatLength(secs: number | null | undefined): string | null {
   if (secs == null || !isFinite(secs) || secs <= 0) return null;
-  const s = Math.round(secs);
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  return formatMinSec(Math.round(secs));
 }
 
 /** Lengths further apart than this are probably different recordings or edits. */

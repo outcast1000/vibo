@@ -3,8 +3,9 @@
 // Playing art by `components/CueOverlay.tsx`. The Rust side
 // (`src-tauri/src/cue_sheets.rs`) validates and normalizes every sheet
 // before storing it, so what arrives here is already sorted and well-formed;
-import { normalizeForMatch } from "./normalize";
 // this module only decides what is on screen at a given second.
+import { normalizeForMatch } from "./normalize";
+import { formatMinSec } from "../utils";
 
 export type CueKind = "text" | "quote" | "image" | "shape";
 
@@ -224,13 +225,11 @@ export function cueTimingNote(timedSecs: number | null | undefined, playingSecs:
   if (!timedSecs || !playingSecs || !Number.isFinite(timedSecs) || !Number.isFinite(playingSecs)) return null;
   const slack = Math.max(SAME_CUT_SLACK_SECS, playingSecs * SAME_CUT_SLACK_RATIO);
   if (Math.abs(timedSecs - playingSecs) <= slack) return null;
-  const s = Math.round(timedSecs);
-  return `timed to a ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")} version`;
+  return `timed to a ${formatSecs(timedSecs)} version`;
 }
 
 function formatSecs(secs: number): string {
-  const s = Math.round(secs);
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  return formatMinSec(Math.round(secs));
 }
 
 export interface CueSheetDetail {

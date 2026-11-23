@@ -73,9 +73,7 @@ const NATIVE_RETRY_ATTEMPTS = 3;
 const CLIP_KEY_PREFIX = "clip:";
 
 function logPlayback(message: string) {
-  // Fire-and-forget: this IS the logger. Reporting its own failure through
-  // console.error would recurse into the error log for no user-visible gain.
-  invoke("write_frontend_log", { level: "info", message, section: "playback" }).catch(() => {}); // eslint-disable-line no-restricted-syntax
+  invoke("write_frontend_log", { level: "info", message, section: "playback" }).catch(() => {}); // eslint-disable-line no-restricted-syntax -- Fire-and-forget: this IS the logger; reporting its own failure would recurse into the error log
 }
 
 // A play request is "current" only while no later request has started. Used to

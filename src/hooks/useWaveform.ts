@@ -228,9 +228,7 @@ export function useWaveform(
     // `afterTrack`: saved after the effect moved on (a capture's last look).
     function keep(providerId: string, rms: number[], peaks: number[], afterTrack: boolean) {
       const waveform: WaveformCache = { name: title, duration: durationSecs || peaks.length, peaks };
-      // Fire-and-forget: the waveform is already rendered from memory; a failed
-      // cache write only costs a recompute next time this track plays.
-      invoke("cache_waveform", { key: cacheKey, waveform }).catch(() => {}); // eslint-disable-line no-restricted-syntax
+      invoke("cache_waveform", { key: cacheKey, waveform }).catch(() => {}); // eslint-disable-line no-restricted-syntax -- Fire-and-forget: the waveform is already drawn from memory; a failed cache write only costs a recompute next play
       const bridge = plugins.current;
       if (bridge && bridge.hasShareHandlers() && !isPluginWaveformProvider(providerId)) {
         void facts(rms.length).then((f) => {

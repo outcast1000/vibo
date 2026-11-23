@@ -107,7 +107,7 @@ struct Active {
 struct Registry {
     active: Vec<Active>,
     /// Plugin id → every tool its `binaryDependencies` names, defined or only
-    /// referenced: what `programs.start({ dependency })` checks (`declares`).
+    /// referenced: what `programs.start({ dependency })` checks (`check_declares`).
     uses: HashMap<String, Vec<String>>,
     /// Plugin id → why the registry took nothing from it at all (its signature
     /// doesn't match its files), so a refusal can name that instead of
@@ -145,15 +145,8 @@ pub fn declared_by(name: &str) -> Vec<String> {
 }
 
 /// Does `plugin_id`'s manifest list `name` in `binaryDependencies` (with or
-/// without a definition). Unlike `declared_by`, this counts references too.
-pub fn declares(plugin_id: &str, name: &str) -> bool {
-    let Ok(reg) = REGISTRY.read() else { return false };
-    reg.as_ref()
-        .and_then(|r| r.uses.get(plugin_id))
-        .is_some_and(|names| names.iter().any(|n| n == name))
-}
-
-/// `declares`, plus why not when the registry dropped the plugin's whole
+/// without a definition — unlike `declared_by`, this counts references too).
+/// `Err` carries why not when the registry dropped the plugin's whole
 /// `binaryDependencies` list (its signature doesn't match its files). One
 /// read, so a rebuild can't land between the answer and its reason.
 pub fn check_declares(plugin_id: &str, name: &str) -> Result<(), Option<String>> {
@@ -1206,10 +1199,10 @@ mod tests {
         write_plugin(bundled.path(), "lastfm", json!([demo]));
         write_plugin(bundled.path(), "lyrics", json!([{ "name": "demo-ref", "required": false, "reason": "x" }]));
         rebuild(profile.path(), vec![PluginRoot { dir: bundled.path().to_path_buf(), builtin: true, single: false }]);
-        assert!(declares("lastfm", "demo-ref"));
-        assert!(declares("lyrics", "demo-ref"), "a reference without a definition still declares");
-        assert!(!declares("lyrics", "yt-dlp"));
-        assert!(!declares("nobody", "demo-ref"));
+        assert!(check_declares("lastfm", "demo-ref").is_ok());
+        assert!(check_declares("lyrics", "demo-ref").is_ok(), "a reference without a definition still declares");
+        assert!(check_declares("lyrics", "yt-dlp").is_err());
+        assert!(check_declares("nobody", "demo-ref").is_err());
         assert_eq!(declared_by("demo-ref"), vec!["lastfm".to_string()], "Provided by stays the definers");
         reset_for_tests();
     }
@@ -1306,7 +1299,7 @@ mod tests {
                 PluginRoot { dir: user.path().to_path_buf(), builtin: false, single: false },
             ],
         );
-        assert!(declares("torrents", "demo-dev-tool"), "the dev copy's list is the one that counts");
+        assert!(check_declares("torrents", "demo-dev-tool").is_ok(), "the dev copy's list is the one that counts");
         assert!(
             matches!(definition_state("torrents", "demo-dev-tool"), DefinitionState::PendingConsent { .. }),
             "unsigned, so it still waits for the user"

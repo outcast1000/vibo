@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { LoadingPlay } from "../hooks/useQueue";
 import { resolveImageUrl } from "../utils/resolveImageUrl";
+import { formatMinSec } from "../utils";
 
 // What the queue panel and the bars show while a play is still being built
 // (useQueue → LoadingPlay; conventions.md "Play With Backfill").
@@ -12,7 +13,7 @@ export const LOADING_PLACEHOLDER_ROWS = 10;
 export function formatElapsed(ms: number): string {
   const secs = Math.max(0, Math.floor(ms / 1000));
   if (secs < 60) return `${secs}s`;
-  return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+  return formatMinSec(secs);
 }
 
 /** Seconds since `since`, ticking once a second while it is mounted — a source
