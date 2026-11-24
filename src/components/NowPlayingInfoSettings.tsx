@@ -84,7 +84,7 @@ export function NowPlayingInfoSettings({
       <div className="provider-vlist" data-vlist>
         {items.map((d, i) => {
           const enabled = isNowPlayingItemSelected(d.id, selection, items);
-          const top = nowPlayingItemTop(d.id, persistence);
+          const top = nowPlayingItemTop(d, persistence);
           return (
             <div
               key={d.id}

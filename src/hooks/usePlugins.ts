@@ -196,6 +196,7 @@ import { handlerKey, matchesProviderRef, parseProviderKey, providerKey, provider
 import { MERGED_PLUGINS_DONE_KEY, migrateMergedPlugins, providerRowsFor } from "../utils/mergedPlugins";
 import { withoutRetiredContributions, withoutRetiredIds, withoutRetiredKeys } from "../utils/retiredPlugins";
 import { watchPlaybackLevel } from "../playback/levelStore";
+import { parseNowPlayingKind, type NowPlayingInfoKind } from "./useNowPlayingInfo";
 // Hardcoded defaults for information type tab order and provider priority.
 // Plugins cannot override these — users customize via Settings > Providers.
 export const DEFAULT_INFO_TYPE_ORDER: Record<string, number> = {
@@ -694,6 +695,7 @@ export function usePlugins(
     label: string;
     priority: number;
     defaultEnabled: boolean;
+    kind?: NowPlayingInfoKind;
   }>());
   const nowPlayingInfoHandlersRef = useRef(new Map<string, (track: PluginTrack) => Promise<NowPlayingInfoResult>>());
   const [nowPlayingInfoVersion, setNowPlayingInfoVersion] = useState(0);
@@ -2230,7 +2232,7 @@ export function usePlugins(
         },
 
         nowPlayingInfo: {
-          registerItem(descriptor: { id: string; label: string; priority?: number; defaultEnabled?: boolean }): () => void {
+          registerItem(descriptor: { id: string; label: string; priority?: number; defaultEnabled?: boolean; kind?: string }): () => void {
             const key = `${pluginId}:${descriptor.id}`;
             const entry = {
               pluginId,
@@ -2238,6 +2240,7 @@ export function usePlugins(
               label: descriptor.label,
               priority: descriptor.priority ?? 100,
               defaultEnabled: descriptor.defaultEnabled ?? false,
+              kind: parseNowPlayingKind(descriptor.kind),
             };
             return trackUnsubscribe(registerKeyed(nowPlayingInfoItemsRef.current, key, entry, () => setNowPlayingInfoVersion((v) => v + 1)));
           },

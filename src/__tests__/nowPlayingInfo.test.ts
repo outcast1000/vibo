@@ -18,6 +18,9 @@ import {
   NOW_PLAYING_TOP_PRESETS,
   NOW_PLAYING_TOP_REQUEST,
   NOW_PLAYING_SCROBBLES_ID,
+  BUILTIN_DESCRIPTORS,
+  parseNowPlayingKind,
+  type NowPlayingInfoKind,
   type NowPlayingInfoDescriptor,
   type NowPlayingInfoResolved,
 } from "../hooks/useNowPlayingInfo";
@@ -217,37 +220,60 @@ describe("nextCycleIndex", () => {
   });
 });
 
+/** A built-in descriptor by id, as the hook registers it. */
+function builtin(id: string): NowPlayingInfoDescriptor {
+  const d = BUILTIN_DESCRIPTORS.find((b) => b.id === id);
+  if (!d) throw new Error(`no built-in ${id}`);
+  return d;
+}
+
+/** A plugin item as usePlugins hands it over (no kind unless declared). */
+function pluginItem(id: string, kind?: NowPlayingInfoKind): NowPlayingInfoDescriptor {
+  return { id, label: id, defaultEnabled: false, kind };
+}
+
 describe("nowPlayingItemTop", () => {
-  it("defaults to 1 for an item with no built-in default and no stored value", () => {
-    expect(nowPlayingItemTop("builtin:artist-album", {})).toBe(1);
+  it("defaults to 1 for an item with no kind and no stored value", () => {
+    expect(nowPlayingItemTop(builtin("builtin:artist-album"), {})).toBe(1);
+    expect(nowPlayingItemTop(pluginItem("x:y"), {})).toBe(1);
   });
 
-  it("uses each item's built-in default when there's no stored value", () => {
-    expect(nowPlayingItemTop("builtin:lyrics-synced", {})).toBe(NOW_PLAYING_TOP_REQUEST);
-    expect(nowPlayingItemTop(NOW_PLAYING_SCROBBLES_ID, {})).toBe(0);
+  it("uses a built-in's own default over its kind's", () => {
+    expect(nowPlayingItemTop(builtin("builtin:lyrics-synced"), {})).toBe(NOW_PLAYING_TOP_REQUEST);
+    // A stat that stays in the rotation, unlike the stat kind's preview-only default.
+    expect(nowPlayingItemTop(builtin("builtin:plays-rank"), {})).toBe(1);
   });
 
-  it("lets a valid stored override beat the built-in default", () => {
-    expect(nowPlayingItemTop("builtin:lyrics-synced", { "builtin:lyrics-synced": 2 })).toBe(2);
-    expect(nowPlayingItemTop(NOW_PLAYING_SCROBBLES_ID, { [NOW_PLAYING_SCROBBLES_ID]: 10 })).toBe(10);
+  it("gives a plugin stat the stat kind's preview-only default", () => {
+    expect(nowPlayingItemTop(pluginItem("spotify-browse:spotify-plays", "stat"), {})).toBe(0);
+    expect(nowPlayingItemTop(pluginItem("x:detail", "detail"), {})).toBe(1);
+  });
+
+  it("keeps the Last.fm item's default for a copy that declares no kind", () => {
+    expect(nowPlayingItemTop(pluginItem(NOW_PLAYING_SCROBBLES_ID), {})).toBe(0);
+  });
+
+  it("lets a valid stored override beat the default", () => {
+    expect(nowPlayingItemTop(builtin("builtin:lyrics-synced"), { "builtin:lyrics-synced": 2 })).toBe(2);
+    expect(nowPlayingItemTop(pluginItem(NOW_PLAYING_SCROBBLES_ID), { [NOW_PLAYING_SCROBBLES_ID]: 10 })).toBe(10);
   });
 
   it("returns any of the allowed presets verbatim (including 0 = preview only)", () => {
     for (const p of NOW_PLAYING_TOP_PRESETS) {
-      expect(nowPlayingItemTop("x", { x: p })).toBe(p);
+      expect(nowPlayingItemTop(pluginItem("x"), { x: p })).toBe(p);
     }
   });
 
   it("accepts the on-request sentinel as a stored override", () => {
-    expect(nowPlayingItemTop("x", { x: NOW_PLAYING_TOP_REQUEST })).toBe(NOW_PLAYING_TOP_REQUEST);
+    expect(nowPlayingItemTop(pluginItem("x"), { x: NOW_PLAYING_TOP_REQUEST })).toBe(NOW_PLAYING_TOP_REQUEST);
     expect(isValidNowPlayingTop(NOW_PLAYING_TOP_REQUEST)).toBe(true);
   });
 
-  it("falls back to the built-in default (or 1) for values that aren't allowed presets", () => {
-    expect(nowPlayingItemTop("x", { x: 3 })).toBe(1);
-    expect(nowPlayingItemTop("x", { x: 7 })).toBe(1);
-    expect(nowPlayingItemTop("x", { x: -2 })).toBe(1);
-    expect(nowPlayingItemTop("builtin:lyrics-synced", { "builtin:lyrics-synced": 3 })).toBe(NOW_PLAYING_TOP_REQUEST);
+  it("falls back to the default (or 1) for values that aren't allowed presets", () => {
+    expect(nowPlayingItemTop(pluginItem("x"), { x: 3 })).toBe(1);
+    expect(nowPlayingItemTop(pluginItem("x"), { x: 7 })).toBe(1);
+    expect(nowPlayingItemTop(pluginItem("x"), { x: -2 })).toBe(1);
+    expect(nowPlayingItemTop(builtin("builtin:lyrics-synced"), { "builtin:lyrics-synced": 3 })).toBe(NOW_PLAYING_TOP_REQUEST);
   });
 
   it("includes 0 as a valid preset (preview-only)", () => {
@@ -257,24 +283,37 @@ describe("nowPlayingItemTop", () => {
 
 describe("nowPlayingItemStyle", () => {
   it("italicizes the lyrics items", () => {
-    expect(nowPlayingItemStyle("builtin:lyrics-synced")).toEqual({ italic: true });
-    expect(nowPlayingItemStyle("builtin:lyrics-plain")).toEqual({ italic: true });
+    expect(nowPlayingItemStyle(builtin("builtin:lyrics-synced"))).toEqual({ italic: true });
+    expect(nowPlayingItemStyle(builtin("builtin:lyrics-plain"))).toEqual({ italic: true });
   });
 
-  it("accents the play-stat items", () => {
-    expect(nowPlayingItemStyle("builtin:plays-rank")).toEqual({ role: "accent" });
-    expect(nowPlayingItemStyle(NOW_PLAYING_SCROBBLES_ID)).toEqual({ role: "accent" });
+  it("accents every play stat, built-in or plugin", () => {
+    expect(nowPlayingItemStyle(builtin("builtin:plays-rank"))).toEqual({ role: "accent" });
+    expect(nowPlayingItemStyle(pluginItem("spotify-browse:spotify-plays", "stat"))).toEqual({ role: "accent" });
+    // Last.fm releases from before `kind` still get it.
+    expect(nowPlayingItemStyle(pluginItem(NOW_PLAYING_SCROBBLES_ID))).toEqual({ role: "accent" });
   });
 
   it("mutes secondary metadata items", () => {
-    expect(nowPlayingItemStyle("builtin:source")).toEqual({ role: "muted" });
-    expect(nowPlayingItemStyle("builtin:tags")).toEqual({ role: "muted" });
+    expect(nowPlayingItemStyle(builtin("builtin:source"))).toEqual({ role: "muted" });
+    expect(nowPlayingItemStyle(builtin("builtin:tags"))).toEqual({ role: "muted" });
   });
 
-  it("returns undefined (default style) for the primary identity items and unknowns", () => {
-    expect(nowPlayingItemStyle("builtin:artist-album")).toBeUndefined();
-    expect(nowPlayingItemStyle("builtin:artist")).toBeUndefined();
-    expect(nowPlayingItemStyle("mystery:thing")).toBeUndefined();
+  it("returns undefined (default style) for the identity items and items with no kind", () => {
+    expect(nowPlayingItemStyle(builtin("builtin:artist-album"))).toBeUndefined();
+    expect(nowPlayingItemStyle(builtin("builtin:artist"))).toBeUndefined();
+    expect(nowPlayingItemStyle(pluginItem("mystery:thing"))).toBeUndefined();
+  });
+});
+
+describe("parseNowPlayingKind", () => {
+  it("accepts the known kinds and nothing else", () => {
+    expect(parseNowPlayingKind("stat")).toBe("stat");
+    expect(parseNowPlayingKind("detail")).toBe("detail");
+    expect(parseNowPlayingKind("quote")).toBe("quote");
+    expect(parseNowPlayingKind("accent")).toBeUndefined();
+    expect(parseNowPlayingKind(undefined)).toBeUndefined();
+    expect(parseNowPlayingKind(1)).toBeUndefined();
   });
 });
 
