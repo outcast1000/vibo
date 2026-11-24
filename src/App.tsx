@@ -5427,6 +5427,16 @@ function App() {
   const videoStill = videoPlaying && !videoStarting ? nowPlayingArtSrc : null;
   const videoInQueue = videoPlaying && videoLayout.dockSide === "queue" && !videoTheater && !playback.nativeFullscreen && !queueCollapsed;
 
+  // Disliking the playing song from the player bar (normal or mini — heart or
+  // Rating menu) also moves on to the next one. Only once the dislike is saved,
+  // only when it landed on "disliked" (a second dislike clears the rating), and
+  // only if that song is still the one playing.
+  const skipIfDisliked = (track: QueueTrack, state: number | null) => {
+    if (state !== -1) return;
+    if (currentTrackRef.current?.key !== track.key) return;
+    void handleNext();
+  };
+
   // Every NowPlayingBar callback goes through useStableCallbacks so the memo'd
   // bar (see NowPlayingBar.tsx) isn't re-rendered just because App's frequent
   // renders gave inline closures new identities. The bodies are re-captured
@@ -5500,7 +5510,9 @@ function App() {
       const t = playback.currentTrack;
       if (!t) return;
       setLikeBusy(true);
-      likeActions.handleToggleDislike(t).finally(() => setLikeBusy(false));
+      likeActions.handleToggleDislike(t)
+        .then((state) => skipIfDisliked(t, state))
+        .finally(() => setLikeBusy(false));
     },
     onTrackClick: (track) => { library.handleTrackClick(queueTrackSelection(track)); },
     // The mini player's info line links here too; a detail page only exists in
@@ -5534,7 +5546,7 @@ function App() {
         const rating = trackLikeStore.lookup(t.title, t.artist_name);
         specs.push({ kind: "submenu", text: "Rating", items: buildRatingMenuSpecs(rating, {
           like: () => { likeActions.handleToggleLike(t); },
-          dislike: () => { likeActions.handleToggleDislike(t); },
+          dislike: () => { void likeActions.handleToggleDislike(t).then((state) => skipIfDisliked(t, state)); },
         }) });
         // Plugin-registered track actions (Universal Track Actions). A plugin
         // radio or full album joins the library one under a single row

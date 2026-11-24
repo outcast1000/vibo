@@ -155,7 +155,7 @@ describe("like actions read and write the store", () => {
     let fail!: (e: Error) => void;
     invoke.mockImplementation(() => new Promise((_, reject) => { fail = reject; }));
     const { result } = setup(store);
-    let pending!: Promise<void>;
+    let pending!: Promise<number | null>;
     act(() => { pending = result.current.handleToggleLike(TRACK); });
     expect(store.lookupKey(JOGA_KEY)).toBe(1);
     vi.spyOn(console, "error").mockImplementation(() => {});

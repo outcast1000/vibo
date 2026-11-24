@@ -102,16 +102,19 @@ export function useLikeActions(deps: UseLikeActionsDeps) {
     }
   }
 
-  async function applyTrackRating(track: Track | QueueTrack, action: "like" | "dislike") {
-    await setTrackRating(track, nextTriState(currentLike(track), action));
+  /** Resolves with the state that was saved, or `null` when nothing was
+   *  (a write already in flight for the song, or a failed one). */
+  async function applyTrackRating(track: Track | QueueTrack, action: "like" | "dislike"): Promise<number | null> {
+    const next = nextTriState(currentLike(track), action);
+    return (await setTrackRating(track, next)) ? next : null;
   }
 
-  async function handleToggleLike(track: Track | QueueTrack) {
-    await applyTrackRating(track, "like");
+  async function handleToggleLike(track: Track | QueueTrack): Promise<number | null> {
+    return applyTrackRating(track, "like");
   }
 
-  async function handleToggleDislike(track: Track | QueueTrack) {
-    await applyTrackRating(track, "dislike");
+  async function handleToggleDislike(track: Track | QueueTrack): Promise<number | null> {
+    return applyTrackRating(track, "dislike");
   }
 
   /** One optimistic write for artist/album/tag likes: mirror, persist, revert
