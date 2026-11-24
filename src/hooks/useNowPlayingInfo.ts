@@ -4,9 +4,10 @@ import type { QueueTrack } from "../types";
 import type { NowPlayingInfoResult, PluginTrack } from "../types/plugin";
 import type { InfoEntity, InfoFetchResult } from "../types/informationTypes";
 import { isLocalTrack, parseUrlScheme } from "../queueEntry";
-import { formatDuration, isVideoTrack } from "../utils";
+import { isVideoTrack } from "../utils";
+import { resolveTrackYear } from "../utils/contextImages";
 import { useLyrics } from "./useLyrics";
-import { parseLrc, activeSyncedLine, plainLines, pickLineByRatio, hashStringToRatio, lyricPosition } from "../utils/lyrics";
+import { parseLrc, activeSyncedLine, lyricPosition } from "../utils/lyrics";
 import { nativeEngine, type EngineMediaInfo } from "../playback/nativeEngine";
 import { useLatestRef } from "./useLatestRef";
 import { subscribeVisiblePlaybackPosition, getPlaybackPosition } from "../playback/positionStore";
@@ -25,51 +26,126 @@ const TIMEOUT_MS = 5_000;
 
 export const NOW_PLAYING_ARTIST_ALBUM_ID = "builtin:artist-album";
 export const NOW_PLAYING_LYRICS_SYNCED_ID = "builtin:lyrics-synced";
-export const NOW_PLAYING_LYRICS_PLAIN_ID = "builtin:lyrics-plain";
+export const NOW_PLAYING_UP_NEXT_ID = "builtin:up-next";
+export const NOW_PLAYING_PLAYING_FROM_ID = "builtin:playing-from";
+export const NOW_PLAYING_HISTORY_ID = "builtin:history";
 
-// Lyrics items are resolved synchronously from cached lyrics data (so the synced
-// "current line" can update with playback position) — they bypass the async
-// resolve pipeline below.
-const LYRICS_IDS = new Set<string>([NOW_PLAYING_LYRICS_SYNCED_ID, NOW_PLAYING_LYRICS_PLAIN_ID]);
+// Synced lyrics resolve synchronously from cached lyrics data (so the current
+// line can follow playback) — they bypass the async resolve pipeline below.
+const LYRICS_IDS = new Set<string>([NOW_PLAYING_LYRICS_SYNCED_ID]);
 
-// Items read straight off the track — no lookup. They resolve during render,
-// so they change in the same frame as the title. Resolving them inside the
-// async batch made them wait for its slowest member (the quality probe, a
-// plugin item, up to the 5s budget) while the previous track's artist/album
-// stayed on screen under the new title.
-// Quality resolves on its own, outside the async batch: it waits for the
-// engine to decode the track (a stream's facts exist only then), and holding
-// the batch for that would hold every other item back with it.
+// Quality and History resolve on their own, outside the async batch. Quality
+// waits for the engine to decode the track (a stream's facts exist only then),
+// and holding the batch for that would hold every other item back with it.
+// History is read once per track: the batch re-runs when this play is
+// scrobbled (the rank moves), and a re-read then would count this very play.
 const QUALITY_ID = "builtin:quality";
+const OWN_EFFECT_IDS = new Set<string>([QUALITY_ID, NOW_PLAYING_HISTORY_ID]);
+// What the history read races against: a slow read must not look like "no
+// plays" (null is the backend's real "never played").
+const HISTORY_TIMED_OUT = Symbol("history-timed-out");
 
+// Items read straight off the track or the queue — no lookup. They resolve
+// during render, so they change in the same frame as the title (or the queue).
+// Resolving them inside the async batch made them wait for its slowest member
+// (the quality probe, a plugin item, up to the 5s budget) while the previous
+// track's artist/album stayed on screen under the new title.
 const SYNC_IDS = new Set<string>([
   NOW_PLAYING_ARTIST_ALBUM_ID,
-  "builtin:artist",
-  "builtin:album",
-  "builtin:source",
-  "builtin:duration",
+  NOW_PLAYING_UP_NEXT_ID,
+  NOW_PLAYING_PLAYING_FROM_ID,
 ]);
 
-function resolveSyncItem(id: string, track: QueueTrack, artistRank: number | null): NowPlayingInfoResolved | null {
+/** Items that were removed (2026-11-24): Artist and Album alone (Artist ·
+ *  Album covers both), Duration (the seek bar shows it), Plain Lyrics (a
+ *  random line out of context) and Source (folded into Quality). Their stored
+ *  selection / dwell entries are dropped on restore. */
+const RETIRED_ITEM_IDS = ["builtin:artist", "builtin:album", "builtin:duration", "builtin:lyrics-plain", "builtin:source"];
+
+/** The stored item selection with retired items dropped. Someone who had
+ *  Source on gets Quality, which now names the source — unless they chose
+ *  for Quality themselves. Returns the same object when nothing changes.
+ *  Pure + exported for tests. */
+export function migrateNowPlayingSelection(sel: Record<string, boolean>): Record<string, boolean> {
+  if (!RETIRED_ITEM_IDS.some((id) => id in sel)) return sel;
+  const out: Record<string, boolean> = { ...sel };
+  if (out["builtin:source"] === true && out[QUALITY_ID] === undefined) out[QUALITY_ID] = true;
+  for (const id of RETIRED_ITEM_IDS) delete out[id];
+  return out;
+}
+
+/** The stored dwell map with retired items dropped; Source's dwell goes to
+ *  Quality unless Quality has its own. Pure + exported for tests. */
+export function migrateNowPlayingPersistence(p: Record<string, number>): Record<string, number> {
+  if (!RETIRED_ITEM_IDS.some((id) => id in p)) return p;
+  const out: Record<string, number> = { ...p };
+  if (out["builtin:source"] !== undefined && out[QUALITY_ID] === undefined) out[QUALITY_ID] = out["builtin:source"];
+  for (const id of RETIRED_ITEM_IDS) delete out[id];
+  return out;
+}
+
+/** The stored item order with retired items dropped; Quality takes Source's
+ *  place unless it was already ahead of it. Returns the same array when
+ *  nothing changes. Pure + exported for tests. */
+export function migrateNowPlayingOrder(order: string[]): string[] {
+  if (!order.some((id) => RETIRED_ITEM_IDS.includes(id))) return order;
+  const sourceAt = order.indexOf("builtin:source");
+  const qualityAt = order.indexOf(QUALITY_ID);
+  const out = sourceAt >= 0 && (qualityAt < 0 || qualityAt > sourceAt)
+    ? order.map((id, i) => (i === sourceAt ? QUALITY_ID : id)).filter((id, i) => !(id === QUALITY_ID && i === qualityAt))
+    : order;
+  return out.filter((id) => !RETIRED_ITEM_IDS.includes(id));
+}
+
+/** What the queue says about the playing track, for the Up next and Playing
+ *  from items. App builds it from the queue state. */
+export interface NowPlayingQueueInfo {
+  /** The entry that plays after this one in the current mode, or null. */
+  upNext: QueueTrack | null;
+  /** 0-based position of the playing entry; -1 when nothing is playing. */
+  index: number;
+  length: number;
+  /** The queue banner's name (album, playlist, "Radio: X"), or null. */
+  contextName: string | null;
+}
+
+/** "Next: Endorphins — August Burns Red", or null. Pure + exported for tests. */
+export function formatUpNext(next: QueueTrack | null, currentKey: string | null): string | null {
+  if (!next || !next.title || next.key === currentKey) return null;
+  return next.artist_name ? `Next: ${next.title} — ${next.artist_name}` : `Next: ${next.title}`;
+}
+
+/** "From: Rescue & Restore · 4 of 11", "4 of 11 in queue", or null for a lone
+ *  track with no source. Pure + exported for tests. */
+export function formatPlayingFrom(info: Pick<NowPlayingQueueInfo, "index" | "length" | "contextName">): string | null {
+  const name = info.contextName?.trim() || null;
+  const position = info.index >= 0 && info.length > 1 ? `${info.index + 1} of ${info.length}` : null;
+  if (name) return position ? `From: ${name} · ${position}` : `From: ${name}`;
+  return position ? `${position} in queue` : null;
+}
+
+function resolveSyncItem(
+  id: string,
+  track: QueueTrack,
+  artistRank: number | null,
+  queue: NowPlayingQueueInfo,
+  year: number | null,
+): NowPlayingInfoResolved | null {
   if (id === NOW_PLAYING_ARTIST_ALBUM_ID) {
     const segments: NowPlayingInfoSegment[] = [
       artistSegment(track, artistRank != null && artistRank <= 100 ? artistRank : null),
     ];
     const album = albumSegment(track);
-    if (album) segments.push(album);
+    if (album) segments.push(year ? { ...album, text: `${album.text} (${year})` } : album);
     return { id, segments };
   }
-  if (id === "builtin:artist") return { id, segments: [artistSegment(track)] };
-  if (id === "builtin:album") {
-    const album = albumSegment(track);
-    return album ? { id, segments: [album] } : null;
-  }
-  if (id === "builtin:source") {
-    const text = formatSource(track.path);
+  if (id === NOW_PLAYING_UP_NEXT_ID) {
+    const text = formatUpNext(queue.upNext, track.key);
     return text ? { id, segments: [{ text }] } : null;
   }
-  if (id === "builtin:duration") {
-    return track.duration_secs ? { id, segments: [{ text: formatDuration(track.duration_secs) }] } : null;
+  if (id === NOW_PLAYING_PLAYING_FROM_ID) {
+    const text = formatPlayingFrom(queue);
+    return text ? { id, segments: [{ text }] } : null;
   }
   return null;
 }
@@ -233,22 +309,22 @@ export interface NowPlayingInfoDescriptor {
 // default (plus the Last.fm plugin's Scrobbles). Plays and rank share one item
 // (rank is derived from the play count) — it shows e.g. "142 plays · #12".
 export const BUILTIN_DESCRIPTORS: NowPlayingInfoDescriptor[] = [
+  // Artist · Album (Year) — the year once the library knows it.
   { id: NOW_PLAYING_ARTIST_ALBUM_ID, label: "Artist · Album", defaultEnabled: true },
-  { id: "builtin:artist", label: "Artist", defaultEnabled: false },
-  { id: "builtin:album", label: "Album", defaultEnabled: false },
   // A stat, but it stays in the rotation: it predates the stat kind's
   // preview-only default, and users who switched it on expect it to stay.
   { id: "builtin:plays-rank", label: "Plays · Rank", defaultEnabled: false, kind: "stat", defaultTop: 1 },
-  { id: "builtin:source", label: "Source", defaultEnabled: false, kind: "detail" },
-  { id: "builtin:quality", label: "Quality", defaultEnabled: false, kind: "detail" },
-  { id: "builtin:duration", label: "Duration", defaultEnabled: false, kind: "detail" },
+  { id: NOW_PLAYING_HISTORY_ID, label: "Listening history", defaultEnabled: false, kind: "stat" },
+  { id: NOW_PLAYING_UP_NEXT_ID, label: "Up next", defaultEnabled: false },
+  { id: NOW_PLAYING_PLAYING_FROM_ID, label: "Playing from", defaultEnabled: false, kind: "detail" },
+  // Names the source too for anything that isn't a local file.
+  { id: QUALITY_ID, label: "Quality", defaultEnabled: false, kind: "detail" },
   { id: "builtin:tags", label: "Tags", defaultEnabled: false, kind: "detail" },
   // Synced Lyrics is on by default, On request: each sung line preempts the
   // rotation as it happens (karaoke), and the rotation plays through intros
-  // and instrumental gaps. Lyrics only fetch when a lyrics item is enabled, so
+  // and instrumental gaps. Lyrics only fetch when this item is enabled, so
   // this makes the default experience fetch lyrics for each track.
   { id: NOW_PLAYING_LYRICS_SYNCED_ID, label: "Synced Lyrics", defaultEnabled: true, kind: "quote", defaultTop: NOW_PLAYING_TOP_REQUEST },
-  { id: NOW_PLAYING_LYRICS_PLAIN_ID, label: "Plain Lyrics", defaultEnabled: false, kind: "quote" },
 ];
 
 /** Whether an item is enabled: the user's explicit choice if any, else the
@@ -268,6 +344,61 @@ export function formatPlays(count: number | null | undefined): string | null {
   return count === 1 ? "1 play" : `${count.toLocaleString()} plays`;
 }
 
+/** "3 weeks ago" for an age in seconds ("earlier today", "yesterday", days,
+ *  weeks, months, years). Pure + exported for tests. */
+export function formatAgo(secs: number): string {
+  const day = 86_400;
+  const days = Math.floor(Math.max(0, secs) / day);
+  const unit = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"} ago`;
+  if (days < 1) return "earlier today";
+  if (days < 2) return "yesterday";
+  if (days < 14) return unit(days, "day");
+  if (days < 60) return unit(Math.floor(days / 7), "week");
+  if (days < 365) return unit(Math.floor(days / 30), "month");
+  return unit(Math.floor(days / 365), "year");
+}
+
+export interface TrackPlayStats {
+  play_count: number;
+  first_played_at: number | null;
+  last_played_at: number | null;
+}
+
+/** The Listening history line, measured against when THIS play started
+ *  (`startedAt`, unix seconds) so the play in progress — recorded at the
+ *  scrobble threshold, mid-song — never counts as a previous one:
+ *  "First time you've heard this", "Last played 3 weeks ago", or — when the
+ *  newest play recorded is this one — "First heard 2 years ago".
+ *  Pure + exported for tests. */
+export function formatListeningHistory(
+  stats: TrackPlayStats | null,
+  startedAt: number,
+  now: number,
+): string | null {
+  const count = stats?.play_count ?? 0;
+  const last = stats?.last_played_at ?? null;
+  const thisPlayCounted = last != null && last >= startedAt;
+  const previous = thisPlayCounted ? count - 1 : count;
+  if (previous <= 0) return "First time you've heard this";
+  if (!thisPlayCounted && last != null) return `Last played ${formatAgo(now - last)}`;
+  const first = stats?.first_played_at ?? null;
+  return first != null && first < startedAt ? `First heard ${formatAgo(now - first)}` : null;
+}
+
+/** What the Listening history item shows for a history read. A read that
+ *  timed out says nothing — it must never become "First time you've heard
+ *  this" (null is the backend's real "never played"). `playStartedAt` 0 means
+ *  no play has started yet (a track restored at launch): nothing recorded so
+ *  far can be this play. Pure + exported for tests. */
+export function listeningHistoryLine(
+  answer: TrackPlayStats | null | "timed-out",
+  playStartedAt: number,
+  now: number,
+): string | null {
+  if (answer === "timed-out") return null;
+  return formatListeningHistory(answer, playStartedAt > 0 ? playStartedAt : now, now);
+}
+
 /** Advance a cycle index, wrapping at `len`. Pure + exported for tests. */
 export function nextCycleIndex(i: number, len: number): number {
   return len <= 0 ? 0 : (i + 1) % len;
@@ -285,6 +416,15 @@ export function formatSource(path: string | null | undefined): string | null {
   const proto = parsed.protocol;
   if (proto === "http" || proto === "https") return "Web";
   return proto ? proto.charAt(0).toUpperCase() + proto.slice(1) : null;
+}
+
+/** The Quality line with where it plays from in front ("Subsonic · MP3 ·
+ *  320 kbps"), for anything that isn't a local file — the old Source item,
+ *  folded in. A local file needs no label. Pure + exported for tests. */
+export function withQualitySource(path: string | null | undefined, text: string | null): string | null {
+  const source = formatSource(path);
+  if (!source || source === "Local") return text;
+  return text ? `${source} · ${text}` : source;
 }
 
 /** Compact audio-quality string (e.g. "FLAC · 44.1 kHz · 16-bit", "MP3 · 320 kbps"),
@@ -608,6 +748,11 @@ interface UseNowPlayingInfoArgs {
   // Whether the engine is decoding this track key (usePlayback): the Quality
   // item reads the engine's facts only once they describe the playing track.
   isEngineDecoding: (trackKey: string) => boolean;
+  // The queue around the playing track, for Up next and Playing from.
+  queue: NowPlayingQueueInfo;
+  // When the current play started (usePlayback; unix seconds, 0 before any
+  // play): what Listening history measures "before" against.
+  playStartedAt: number;
   invokeNowPlayingInfo: (pluginId: string, itemId: string, track: PluginTrack) => Promise<NowPlayingInfoResult>;
   selection: Record<string, boolean>;
   // Per-item time-of-persistence multipliers (id → 1/2/5/10). Missing = 1.
@@ -648,6 +793,8 @@ export function useNowPlayingInfo({
   artistRank,
   pluginItems,
   isEngineDecoding,
+  queue,
+  playStartedAt,
   invokeNowPlayingInfo,
   selection,
   persistence,
@@ -678,16 +825,15 @@ export function useNowPlayingInfo({
   const [asyncResolved, setAsyncResolved] = useState<{ sig: string; items: NowPlayingInfoResolved[] }>({ sig: "", items: [] });
   const genRef = useRef(0);
 
-  // Lyrics items resolve synchronously from cached lyrics data, so the synced
-  // "current line" can track playback position without re-running the async
-  // resolvers each tick. Only fetch when a lyrics item is actually enabled.
+  // Synced lyrics resolve synchronously from cached lyrics data, so the
+  // current line can track playback position without re-running the async
+  // resolvers each tick. Only fetch when the item is actually enabled.
   const syncedEnabled = isNowPlayingItemSelected(NOW_PLAYING_LYRICS_SYNCED_ID, selection, availableItems);
-  const plainEnabled = isNowPlayingItemSelected(NOW_PLAYING_LYRICS_PLAIN_ID, selection, availableItems);
   const { data: lyricsData } = useLyrics({
     track: currentTrack,
     // Wait for plugins so the first fetch reaches the (now-loaded) lyrics
     // provider instead of caching a spurious "plugin not loaded" error.
-    enabled: pluginsLoaded && (syncedEnabled || plainEnabled),
+    enabled: pluginsLoaded && syncedEnabled,
     invokeInfoFetch,
     pluginNames,
   });
@@ -710,27 +856,17 @@ export function useNowPlayingInfo({
       ? activeSyncedLine(syncedLines, lyricPosition(getPlaybackPosition(), lyricsOffsetSecs))
       : null),
   );
-  // One line per track, stable across re-renders/cycles: pick by a hash of the
-  // track + lyrics so it doesn't flicker, while still varying between songs.
-  const plainText = useMemo(() => {
-    if (!lyricsData?.text || lyricsData.kind !== "plain") return null;
-    const lines = plainLines(lyricsData.text);
-    return pickLineByRatio(lines, hashStringToRatio(`${currentTrack?.key ?? ""}:${lyricsData.text.length}`));
-  }, [lyricsData, currentTrack?.key]);
-
-  const lyricsResolved = useMemo<NowPlayingInfoResolved[]>(() => {
-    const out: NowPlayingInfoResolved[] = [];
-    if (syncedEnabled && syncedText) out.push({ id: NOW_PLAYING_LYRICS_SYNCED_ID, segments: [{ text: `“${syncedText}”` }] });
-    if (plainEnabled && plainText) out.push({ id: NOW_PLAYING_LYRICS_PLAIN_ID, segments: [{ text: `“${plainText}”` }] });
-    return out;
-  }, [syncedEnabled, plainEnabled, syncedText, plainText]);
+  const lyricsResolved = useMemo<NowPlayingInfoResolved[]>(
+    () => (syncedEnabled && syncedText ? [{ id: NOW_PLAYING_LYRICS_SYNCED_ID, segments: [{ text: `“${syncedText}”` }] }] : []),
+    [syncedEnabled, syncedText],
+  );
 
   // A stable signature so the resolve effect only re-runs when something it
   // actually reads changes (track identity, ranks, the enabled set). Lyrics ids
   // are excluded — they're resolved synchronously above, not in this effect.
   const selectionSig = availableItems
     .filter((d) => isNowPlayingItemSelected(d.id, selection, availableItems))
-    .filter((d) => !LYRICS_IDS.has(d.id) && !SYNC_IDS.has(d.id) && d.id !== QUALITY_ID)
+    .filter((d) => !LYRICS_IDS.has(d.id) && !SYNC_IDS.has(d.id) && !OWN_EFFECT_IDS.has(d.id))
     .map((d) => d.id)
     .join("|");
   const trackSig = currentTrack
@@ -747,7 +883,7 @@ export function useNowPlayingInfo({
     }
     const enabled = availableItems
       .filter((d) => isNowPlayingItemSelected(d.id, selection, availableItems))
-      .filter((d) => !LYRICS_IDS.has(d.id) && !SYNC_IDS.has(d.id) && d.id !== QUALITY_ID);
+      .filter((d) => !LYRICS_IDS.has(d.id) && !SYNC_IDS.has(d.id) && !OWN_EFFECT_IDS.has(d.id));
 
     const pluginTrack: PluginTrack = {
       path: track.path,
@@ -833,36 +969,82 @@ export function useNowPlayingInfo({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trackSig, selectionSig, trackRank, availableItems, invokeNowPlayingInfo]);
 
-  // Quality, resolved apart from the batch (see QUALITY_ID). Stamped with the
-  // track it describes, like the batch, so a previous track's line never shows
-  // under the next title.
+  // Per-track facts resolved apart from the batch (Quality, History — see
+  // OWN_EFFECT_IDS — and the album year Artist · Album shows). Stamped with
+  // the track they describe, like the batch, so a previous track's line never
+  // shows under the next title. Nothing ever needs clearing: the merge ignores
+  // facts stamped for another track and drops items that are switched off.
+  const [ownFacts, setOwnFacts] = useState<{ sig: string; quality: string | null; history: string | null; year: number | null }>(
+    { sig: "", quality: null, history: null, year: null },
+  );
+  const setOwnFact = (sig: string, patch: Partial<{ quality: string | null; history: string | null; year: number | null }>) =>
+    setOwnFacts((prev) => {
+      const base = prev.sig === sig ? prev : { sig, quality: null, history: null, year: null };
+      const next = { ...base, ...patch };
+      return next.quality === prev.quality && next.history === prev.history && next.year === prev.year && next.sig === prev.sig ? prev : next;
+    });
+
   const qualityEnabled = isNowPlayingItemSelected(QUALITY_ID, selection, availableItems);
   const engineDecodingRef = useLatestRef(isEngineDecoding);
-  const [qualityResolved, setQualityResolved] = useState<{ sig: string; text: string | null }>({ sig: "", text: null });
   useEffect(() => {
     const track = currentTrack;
     const sig = trackSig;
-    // Nothing to clear: the merge below ignores a line stamped for another
-    // track, and drops the item when it is switched off.
     if (!track || !qualityEnabled) return;
     const controller = new AbortController();
     resolvePlayingTrackQuality(
       track,
       () => engineDecodingRef.current(track.key),
-      (text) => setQualityResolved((prev) => (prev.sig === sig && prev.text === text ? prev : { sig, text })),
+      (text) => setOwnFact(sig, { quality: withQualitySource(track.path, text) }),
       controller.signal,
     ).catch((e) => console.error("Failed to resolve now-playing quality:", e));
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trackSig, qualityEnabled]);
 
+  const historyEnabled = isNowPlayingItemSelected(NOW_PLAYING_HISTORY_ID, selection, availableItems);
+  useEffect(() => {
+    const track = currentTrack;
+    const sig = trackSig;
+    if (!track || !historyEnabled) return;
+    let live = true;
+    const now = Math.floor(Date.now() / 1000);
+    withTimeout<TrackPlayStats | null | typeof HISTORY_TIMED_OUT>(
+      invoke<TrackPlayStats | null>("get_track_play_stats", { title: track.title, artistName: track.artist_name }),
+      HISTORY_TIMED_OUT,
+    )
+      .then((stats) => {
+        if (live) setOwnFact(sig, { history: listeningHistoryLine(stats === HISTORY_TIMED_OUT ? "timed-out" : stats, playStartedAt, now) });
+      })
+      .catch((e) => console.error("Failed to resolve listening history:", e));
+    return () => { live = false; };
+    // Re-read per play (playStartedAt moves on a replay of the same entry),
+    // and per track (an Edit info rename keeps the play's start).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trackSig, historyEnabled, playStartedAt]);
+
+  const artistAlbumEnabled = isNowPlayingItemSelected(NOW_PLAYING_ARTIST_ALBUM_ID, selection, availableItems);
+  useEffect(() => {
+    const track = currentTrack;
+    const sig = trackSig;
+    if (!track || !artistAlbumEnabled || !track.album_title) return;
+    let live = true;
+    resolveTrackYear(track)
+      .then((year) => {
+        if (live) setOwnFact(sig, { year });
+      })
+      .catch((e) => console.error("Failed to resolve the album year:", e));
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trackSig, artistAlbumEnabled]);
+
+  const year = ownFacts.sig === trackSig ? ownFacts.year : null;
   const syncResolved = useMemo<NowPlayingInfoResolved[]>(() => {
     if (!currentTrack) return [];
     return availableItems
       .filter((d) => SYNC_IDS.has(d.id) && isNowPlayingItemSelected(d.id, selection, availableItems))
-      .map((d) => resolveSyncItem(d.id, currentTrack, artistRank))
+      .map((d) => resolveSyncItem(d.id, currentTrack, artistRank, queue, year))
       .filter((r): r is NowPlayingInfoResolved => r !== null);
-  }, [currentTrack, artistRank, availableItems, selection]);
+  }, [currentTrack, artistRank, availableItems, selection, queue, year]);
 
   // Merge async + lyrics items back into one list, ordered by availableItems and
   // gated by the current selection.
@@ -871,8 +1053,9 @@ export function useNowPlayingInfo({
     for (const r of syncResolved) byId.set(r.id, r);
     if (asyncResolved.sig === trackSig) for (const r of asyncResolved.items) byId.set(r.id, r);
     for (const r of lyricsResolved) byId.set(r.id, r);
-    if (qualityResolved.sig === trackSig && qualityResolved.text) {
-      byId.set(QUALITY_ID, { id: QUALITY_ID, segments: [{ text: qualityResolved.text }] });
+    if (ownFacts.sig === trackSig) {
+      if (ownFacts.quality) byId.set(QUALITY_ID, { id: QUALITY_ID, segments: [{ text: ownFacts.quality }] });
+      if (ownFacts.history) byId.set(NOW_PLAYING_HISTORY_ID, { id: NOW_PLAYING_HISTORY_ID, segments: [{ text: ownFacts.history }] });
     }
     return availableItems
       .filter((d) => isNowPlayingItemSelected(d.id, selection, availableItems))
@@ -881,7 +1064,7 @@ export function useNowPlayingInfo({
         return r ? { ...r, top: nowPlayingItemTop(d, persistence), style: nowPlayingItemStyle(d) } : undefined;
       })
       .filter((r): r is NowPlayingInfoResolved => r !== undefined);
-  }, [syncResolved, asyncResolved, qualityResolved, trackSig, lyricsResolved, availableItems, selection, persistence]);
+  }, [syncResolved, asyncResolved, ownFacts, trackSig, lyricsResolved, availableItems, selection, persistence]);
 
   return { availableItems, resolvedItems };
 }

@@ -4,6 +4,15 @@ import type { EngineMediaInfo } from "../playback/nativeEngine";
 import {
   isNowPlayingItemSelected,
   resolvePlayingTrackQuality,
+  migrateNowPlayingSelection,
+  migrateNowPlayingPersistence,
+  migrateNowPlayingOrder,
+  listeningHistoryLine,
+  withQualitySource,
+  formatUpNext,
+  formatPlayingFrom,
+  formatListeningHistory,
+  formatAgo,
   formatPlays,
   formatSource,
   formatQuality,
@@ -285,26 +294,180 @@ describe("nowPlayingItemTop", () => {
 });
 
 describe("nowPlayingItemStyle", () => {
-  it("italicizes the lyrics items", () => {
+  it("italicizes the lyrics", () => {
     expect(nowPlayingItemStyle(builtin("builtin:lyrics-synced"))).toEqual({ italic: true });
-    expect(nowPlayingItemStyle(builtin("builtin:lyrics-plain"))).toEqual({ italic: true });
   });
 
   it("accents every play stat, built-in or plugin", () => {
     expect(nowPlayingItemStyle(builtin("builtin:plays-rank"))).toEqual({ role: "accent" });
+    expect(nowPlayingItemStyle(builtin("builtin:history"))).toEqual({ role: "accent" });
     expect(nowPlayingItemStyle(pluginItem("spotify-browse:spotify-plays", "stat"))).toEqual({ role: "accent" });
     expect(nowPlayingItemStyle(pluginItem("lastfm:scrobbles", "stat"))).toEqual({ role: "accent" });
   });
 
   it("mutes secondary metadata items", () => {
-    expect(nowPlayingItemStyle(builtin("builtin:source"))).toEqual({ role: "muted" });
+    expect(nowPlayingItemStyle(builtin("builtin:quality"))).toEqual({ role: "muted" });
     expect(nowPlayingItemStyle(builtin("builtin:tags"))).toEqual({ role: "muted" });
+    expect(nowPlayingItemStyle(builtin("builtin:playing-from"))).toEqual({ role: "muted" });
   });
 
   it("returns undefined (default style) for the identity items and items with no kind", () => {
     expect(nowPlayingItemStyle(builtin("builtin:artist-album"))).toBeUndefined();
-    expect(nowPlayingItemStyle(builtin("builtin:artist"))).toBeUndefined();
+    expect(nowPlayingItemStyle(builtin("builtin:up-next"))).toBeUndefined();
     expect(nowPlayingItemStyle(pluginItem("mystery:thing"))).toBeUndefined();
+  });
+});
+
+describe("the item set", () => {
+  it("has no removed items", () => {
+    const ids = BUILTIN_DESCRIPTORS.map((d) => d.id);
+    for (const gone of ["builtin:artist", "builtin:album", "builtin:duration", "builtin:lyrics-plain", "builtin:source"]) {
+      expect(ids).not.toContain(gone);
+    }
+  });
+
+  it("shows Plays (Last.fm) once per song by default", () => {
+    // On by default (its own registration) and preview only (the stat kind).
+    expect(nowPlayingItemTop(pluginItem("lastfm:scrobbles", "stat"), {})).toBe(0);
+  });
+});
+
+describe("migrateNowPlayingSelection", () => {
+  it("drops removed items and keeps the rest", () => {
+    expect(migrateNowPlayingSelection({ "builtin:duration": true, "builtin:lyrics-plain": false, "builtin:tags": true }))
+      .toEqual({ "builtin:tags": true });
+  });
+
+  it("carries Source over to Quality, unless Quality was chosen", () => {
+    expect(migrateNowPlayingSelection({ "builtin:source": true })).toEqual({ "builtin:quality": true });
+    expect(migrateNowPlayingSelection({ "builtin:source": true, "builtin:quality": false })).toEqual({ "builtin:quality": false });
+    expect(migrateNowPlayingSelection({ "builtin:source": false })).toEqual({});
+  });
+
+  it("returns the same object when there is nothing to drop", () => {
+    const sel = { "builtin:quality": true };
+    expect(migrateNowPlayingSelection(sel)).toBe(sel);
+  });
+
+  it("drops removed items' dwell too", () => {
+    expect(migrateNowPlayingPersistence({ "builtin:lyrics-plain": 5, "builtin:quality": 0 })).toEqual({ "builtin:quality": 0 });
+  });
+
+  it("gives Quality Source's dwell, unless Quality has its own", () => {
+    expect(migrateNowPlayingPersistence({ "builtin:source": 5 })).toEqual({ "builtin:quality": 5 });
+    expect(migrateNowPlayingPersistence({ "builtin:source": 5, "builtin:quality": 2 })).toEqual({ "builtin:quality": 2 });
+  });
+});
+
+describe("migrateNowPlayingOrder", () => {
+  it("puts Quality where Source was and drops the removed items", () => {
+    expect(migrateNowPlayingOrder(["builtin:source", "builtin:artist-album", "builtin:duration", "builtin:quality"]))
+      .toEqual(["builtin:quality", "builtin:artist-album"]);
+  });
+
+  it("keeps Quality where it is when it was already ahead of Source", () => {
+    expect(migrateNowPlayingOrder(["builtin:quality", "builtin:artist", "builtin:source"])).toEqual(["builtin:quality"]);
+  });
+
+  it("adds Quality in Source's place when the order never had it", () => {
+    expect(migrateNowPlayingOrder(["builtin:artist-album", "builtin:source"])).toEqual(["builtin:artist-album", "builtin:quality"]);
+  });
+
+  it("returns the same array when there is nothing to change", () => {
+    const order = ["builtin:quality", "lastfm:scrobbles"];
+    expect(migrateNowPlayingOrder(order)).toBe(order);
+  });
+});
+
+describe("listeningHistoryLine", () => {
+  const now = 1_000 * 86_400;
+  it("shows nothing for a read that timed out — never a first listen", () => {
+    expect(listeningHistoryLine("timed-out", now - 60, now)).toBeNull();
+  });
+
+  it("calls a song with no history a first listen", () => {
+    expect(listeningHistoryLine(null, now - 60, now)).toBe("First time you've heard this");
+  });
+
+  it("measures a replay of the same entry from its own start", () => {
+    // Played once, ending ten minutes ago; now replayed (Repeat One).
+    const stats = { play_count: 1, first_played_at: now - 600, last_played_at: now - 600 };
+    expect(listeningHistoryLine(stats, now - 60, now)).toBe("Last played earlier today");
+  });
+
+  it("counts nothing as this play before any play has started", () => {
+    const stats = { play_count: 3, first_played_at: now - 900, last_played_at: now - 300 };
+    expect(listeningHistoryLine(stats, 0, now)).toBe("Last played earlier today");
+  });
+});
+
+describe("withQualitySource", () => {
+  it("names a non-local source in front of the quality", () => {
+    expect(withQualitySource("subsonic://s/1", "MP3 · 320 kbps")).toBe("Subsonic · MP3 · 320 kbps");
+    expect(withQualitySource("subsonic://s/1", null)).toBe("Subsonic");
+  });
+
+  it("leaves a local file's line alone", () => {
+    expect(withQualitySource("file:///m/a.flac", "FLAC · 96.0 kHz · 24-bit")).toBe("FLAC · 96.0 kHz · 24-bit");
+    expect(withQualitySource(null, "MP3")).toBe("MP3");
+  });
+});
+
+describe("formatUpNext", () => {
+  const next = { key: "q:2", path: null, title: "Endorphins", artist_name: "August Burns Red", album_title: null, duration_secs: null, format: null };
+  it("names the next title and artist", () => {
+    expect(formatUpNext(next, "q:1")).toBe("Next: Endorphins — August Burns Red");
+    expect(formatUpNext({ ...next, artist_name: null }, "q:1")).toBe("Next: Endorphins");
+  });
+  it("says nothing at the end of the queue or when the same entry repeats", () => {
+    expect(formatUpNext(null, "q:1")).toBeNull();
+    expect(formatUpNext(next, "q:2")).toBeNull();
+  });
+});
+
+describe("formatPlayingFrom", () => {
+  it("names the source and the position", () => {
+    expect(formatPlayingFrom({ contextName: "Rescue & Restore", index: 3, length: 11 })).toBe("From: Rescue & Restore · 4 of 11");
+    expect(formatPlayingFrom({ contextName: "Radio: Teardrop", index: 0, length: 1 })).toBe("From: Radio: Teardrop");
+  });
+  it("gives the position alone when nothing named the queue", () => {
+    expect(formatPlayingFrom({ contextName: null, index: 3, length: 11 })).toBe("4 of 11 in queue");
+    expect(formatPlayingFrom({ contextName: "  ", index: 0, length: 1 })).toBeNull();
+  });
+});
+
+describe("formatListeningHistory", () => {
+  const day = 86_400;
+  const now = 1_000 * day;
+  const startedAt = now - 120; // this play began two minutes ago
+
+  it("calls out a first listen", () => {
+    expect(formatListeningHistory(null, startedAt, now)).toBe("First time you've heard this");
+    // The play in progress was already recorded at the scrobble threshold.
+    expect(formatListeningHistory({ play_count: 1, first_played_at: now - 30, last_played_at: now - 30 }, startedAt, now))
+      .toBe("First time you've heard this");
+  });
+
+  it("says when it was last played, before this play", () => {
+    expect(formatListeningHistory({ play_count: 4, first_played_at: now - 400 * day, last_played_at: now - 21 * day }, startedAt, now))
+      .toBe("Last played 3 weeks ago");
+  });
+
+  it("falls back to the first listen once this play is the newest recorded", () => {
+    expect(formatListeningHistory({ play_count: 4, first_played_at: now - 800 * day, last_played_at: now - 30 }, startedAt, now))
+      .toBe("First heard 2 years ago");
+  });
+});
+
+describe("formatAgo", () => {
+  const day = 86_400;
+  it("reads like a person would say it", () => {
+    expect(formatAgo(3600)).toBe("earlier today");
+    expect(formatAgo(day + 5)).toBe("yesterday");
+    expect(formatAgo(5 * day)).toBe("5 days ago");
+    expect(formatAgo(21 * day)).toBe("3 weeks ago");
+    expect(formatAgo(90 * day)).toBe("3 months ago");
+    expect(formatAgo(365 * day)).toBe("1 year ago");
   });
 });
 

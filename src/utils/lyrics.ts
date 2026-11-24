@@ -190,19 +190,6 @@ export function syncedLyricsFitMedia(
   return lastTime >= mediaDurationSecs * minCoverage;
 }
 
-/** Non-empty, trimmed lines of plain (unsynced) lyrics text. */
-export function plainLines(text: string): string[] {
-  return text.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
-}
-
-/** Pick a line by a [0,1) ratio. Deterministic given the ratio, so callers can
- *  feed a stable seed and keep the pick steady across re-renders. null if empty. */
-export function pickLineByRatio(lines: string[], ratio: number): string | null {
-  if (lines.length === 0) return null;
-  const clamped = ratio < 0 ? 0 : ratio >= 1 ? 1 - Number.EPSILON : ratio;
-  return lines[Math.floor(clamped * lines.length)];
-}
-
 /**
  * scrollTop that vertically centers a line inside its own scroll container.
  *
@@ -262,13 +249,3 @@ export function scrollIntoNearestScroller(el: HTMLElement): void {
   }
 }
 
-/** Deterministic [0,1) ratio from a string (FNV-1a). Lets a "random" line pick
- *  stay stable for a given track instead of flickering on every render/cycle. */
-export function hashStringToRatio(s: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return ((h >>> 0) % 100000) / 100000;
-}

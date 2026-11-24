@@ -112,7 +112,7 @@ import {
   MINI_RESTING_SIZES, MINI_RESTING_SIZE_LABELS, MINI_WIDTH_SIZES, MINI_WIDTH_SIZE_LABELS,
 } from "./hooks/useMiniMode";
 import { useStableCallbacks } from "./hooks/useStableCallbacks";
-import { usePersistedSetting, usePersistMirror } from "./hooks/usePersistedSetting";
+import { usePersistedSetting, usePersistMirror, sameShape } from "./hooks/usePersistedSetting";
 import { buildScrobblerList, coerceScrobbleSettings, coerceScrobblerStatuses, DEFAULT_SCROBBLE_SETTINGS, LOCAL_HISTORY_SCROBBLER, scrobbleDefaultsFromPlugins, scrobblerAccepts, settleScrobbleResult, videoOnForAll, withScrobblerStatus, withVideoForAll, type ScrobbleReport, type ScrobblerStatuses, type ScrobbleSettings } from "./utils/scrobblers";
 import { coerceRadioOptions, DEFAULT_RADIO_OPTIONS, type RadioOptions } from "./utils/radioOptions";
 import { DEFAULT_PLAYER_BAR_PINS, normalizePlayerBarPins, type PlayerBarPins } from "./utils/playerBarPins";
@@ -128,7 +128,8 @@ import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { useInAppKeyboardShortcuts } from "./hooks/useInAppKeyboardShortcuts";
 import { useSkins } from "./hooks/useSkins";
 import { usePlugins, type PluginHostCallbacks } from "./hooks/usePlugins";
-import { useNowPlayingInfo } from "./hooks/useNowPlayingInfo";
+import { useNowPlayingInfo, migrateNowPlayingSelection, migrateNowPlayingPersistence, migrateNowPlayingOrder, type NowPlayingQueueInfo } from "./hooks/useNowPlayingInfo";
+import { nextIndex } from "./queueNav";
 import { useImageResolver } from "./hooks/useImageResolver";
 import { useRetrieveModal, retrieveWantsSuggestions, type OpenInfoArgs, type RetrieveModalData } from "./hooks/useRetrieveModal";
 import { RetrieveModal } from "./components/RetrieveModal";
@@ -574,13 +575,29 @@ function App() {
   // Which Now Playing info items the user has enabled in the cycling section
   // (mini player + main bar). Empty default → only the combined "Artist · Album"
   // item shows, so the line looks exactly like before until customized.
-  const [nowPlayingInfoSelection, setNowPlayingInfoSelection] = usePersistedSetting<Record<string, boolean>>("nowPlayingInfoSelection", {}, restoredRef);
+  // Restore drops removed items (and carries Source over to Quality).
+  const [nowPlayingInfoSelection, setNowPlayingInfoSelection] = usePersistedSetting<Record<string, boolean>>("nowPlayingInfoSelection", {}, restoredRef, {
+    restore: (raw) => {
+      const sel = sameShape<Record<string, boolean>>(raw, {});
+      return sel && migrateNowPlayingSelection(sel);
+    },
+  });
   // Per-item time-of-persistence multipliers (id → 0/1/2/5/10). Missing = 1, so
   // an un-customized item dwells for the base interval, exactly as before.
-  const [nowPlayingInfoPersistence, setNowPlayingInfoPersistence] = usePersistedSetting<Record<string, number>>("nowPlayingInfoPersistence", {}, restoredRef);
+  const [nowPlayingInfoPersistence, setNowPlayingInfoPersistence] = usePersistedSetting<Record<string, number>>("nowPlayingInfoPersistence", {}, restoredRef, {
+    restore: (raw) => {
+      const p = sameShape<Record<string, number>>(raw, {});
+      return p && migrateNowPlayingPersistence(p);
+    },
+  });
   // User priority order (ordered item ids) for the same section. Empty default →
   // registration order (built-ins as declared, then plugin items).
-  const [nowPlayingInfoOrder, setNowPlayingInfoOrder] = usePersistedSetting<string[]>("nowPlayingInfoOrder", [], restoredRef, { restore: restoreStringList });
+  const [nowPlayingInfoOrder, setNowPlayingInfoOrder] = usePersistedSetting<string[]>("nowPlayingInfoOrder", [], restoredRef, {
+    restore: (raw) => {
+      const order = restoreStringList(raw);
+      return order && migrateNowPlayingOrder(order);
+    },
+  });
   // Whether the full player bar shows the same cycling line under the title
   // (replacing its static Artist · Album line). The mini player always does.
   const [nowPlayingInfoInBar, setNowPlayingInfoInBar] = usePersistedSetting<boolean>("nowPlayingInfoInBar", true, restoredRef);
@@ -1171,11 +1188,27 @@ function App() {
   );
   useAssignRef(pluginNamesRef, pluginNames);
 
+  // The queue around the playing entry, for the Up next / Playing from items.
+  // Up next follows the mode the way playback does (queueNav.nextIndex).
+  const nowPlayingQueueInfo = useMemo<NowPlayingQueueInfo>(() => {
+    const { queue, queueIndex, queueMode, playlistContext } = queueHook;
+    const next = queueIndex >= 0 ? nextIndex(queueMode, queueIndex, queue.length) : null;
+    return {
+      upNext: next != null ? queue[next] ?? null : null,
+      index: queueIndex,
+      length: queue.length,
+      contextName: playlistContext?.name ?? null,
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queueHook.queue, queueHook.queueIndex, queueHook.queueMode, queueHook.playlistContext]);
+
   // Dynamic, cycling Now Playing info section (mini player + main bar).
   const { availableItems: nowPlayingInfoAvailable, resolvedItems: nowPlayingInfoResolved } = useNowPlayingInfo({
     currentTrack: playback.currentTrack,
     trackRank,
     artistRank,
+    queue: nowPlayingQueueInfo,
+    playStartedAt: playback.playStartedAt,
     pluginItems: plugins.nowPlayingInfoItems,
     isEngineDecoding: playback.isEngineDecoding,
     invokeNowPlayingInfo: plugins.invokeNowPlayingInfo,

@@ -380,6 +380,15 @@ export function usePlayback(
   // that play instead of acting on a session it hasn't opened yet.
   const pendingPlayRef = useRef<{ generation: number; track: QueueTrack } | null>(null);
   const playStartedAtRef = useRef(0);
+  // The same start time as state, for consumers that re-read per play (the
+  // Now Playing Listening history item): it moves on every play — a replay of
+  // the same entry and a gapless promotion included — and not on a metadata
+  // edit or a file swap, exactly like the scrobble state. Unix seconds.
+  const [playStartedAt, setPlayStartedAt] = useState(0);
+  const markPlayStarted = (at: number) => {
+    playStartedAtRef.current = at;
+    setPlayStartedAt(at);
+  };
   // Set by swapCurrentFile: the scrobble state of a session that is resuming
   // on a replaced file, restored by playWithSrc for that key instead of reset.
   const resumeScrobbleRef = useRef<{ key: string; scrobbled: boolean; startedAt: number } | null>(null);
@@ -689,7 +698,7 @@ export function usePlayback(
         setPlaybackPosition(0);
         setDurationSecs(promoted.track.duration_secs ?? 0);
         resetScrobble();
-        playStartedAtRef.current = Math.floor(Date.now() / 1000);
+        markPlayStarted(Math.floor(Date.now() / 1000));
         advanceIndexRef.current();
       }),
       subscribe<EngineEndedEvent>("engine-ended", ({ payload }) => {
@@ -1041,7 +1050,7 @@ export function usePlayback(
     const resumed = resumeScrobbleRef.current?.key === track.key ? resumeScrobbleRef.current : null;
     resumeScrobbleRef.current = null;
     resetScrobble(resumed?.scrobbled);
-    playStartedAtRef.current = resumed?.startedAt ?? Math.floor(Date.now() / 1000);
+    markPlayStarted(resumed?.startedAt ?? Math.floor(Date.now() / 1000));
     pendingSeekRef.current = 0;
 
     const isVideo = isVideoTrack(track);
@@ -1432,7 +1441,7 @@ export function usePlayback(
     isEngineDecoding,
     trackChangeSourceRef,
     currentAssetUrl,
-    playing, setPlaying, stopped, scrobbled,
+    playing, setPlaying, stopped, scrobbled, playStartedAt,
     durationSecs, setDurationSecs,
     volume, setVolume,
     muted, setMuted, toggleMute,

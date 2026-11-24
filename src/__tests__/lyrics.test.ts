@@ -6,9 +6,6 @@ import {
   currentSyncedLineIndex,
   activeSyncedLine,
   syncedLyricsFitMedia,
-  plainLines,
-  pickLineByRatio,
-  hashStringToRatio,
   lyricPosition,
   clampLyricOffset,
   coerceLyricOffsets,
@@ -73,28 +70,6 @@ describe("activeSyncedLine", () => {
   });
 });
 
-describe("plainLines", () => {
-  it("trims and drops blank lines", () => {
-    expect(plainLines("  a \n\n  b\n   \nc")).toEqual(["a", "b", "c"]);
-  });
-});
-
-describe("pickLineByRatio", () => {
-  const lines = ["a", "b", "c", "d"];
-  it("maps ratio to an index", () => {
-    expect(pickLineByRatio(lines, 0)).toBe("a");
-    expect(pickLineByRatio(lines, 0.5)).toBe("c");
-    expect(pickLineByRatio(lines, 0.99)).toBe("d");
-  });
-  it("clamps out-of-range ratios into bounds", () => {
-    expect(pickLineByRatio(lines, 1)).toBe("d");
-    expect(pickLineByRatio(lines, -1)).toBe("a");
-  });
-  it("returns null for an empty list", () => {
-    expect(pickLineByRatio([], 0.5)).toBeNull();
-  });
-});
-
 describe("centeredScrollTop", () => {
   // A 400px-tall lyrics box at viewport y=100, holding 2000px of lines,
   // currently scrolled 300px in.
@@ -124,18 +99,6 @@ describe("centeredScrollTop", () => {
     // scrollIntoView, the leftover centering distance was taken from the
     // Now Playing view's own overflow:hidden box instead.
     expect(centeredScrollTop({ ...box, scrollTop: 1600 }, { top: 470, height: 20 })).toBe(1600);
-  });
-});
-
-describe("hashStringToRatio", () => {
-  it("is deterministic and in [0,1)", () => {
-    const r = hashStringToRatio("track:42");
-    expect(r).toBe(hashStringToRatio("track:42"));
-    expect(r).toBeGreaterThanOrEqual(0);
-    expect(r).toBeLessThan(1);
-  });
-  it("varies between different inputs", () => {
-    expect(hashStringToRatio("song-a:100")).not.toBe(hashStringToRatio("song-b:250"));
   });
 });
 
