@@ -34,13 +34,16 @@ export const NOW_PLAYING_HISTORY_ID = "builtin:history";
 // line can follow playback) — they bypass the async resolve pipeline below.
 const LYRICS_IDS = new Set<string>([NOW_PLAYING_LYRICS_SYNCED_ID]);
 
-// Quality and History resolve on their own, outside the async batch. Quality
-// waits for the engine to decode the track (a stream's facts exist only then),
-// and holding the batch for that would hold every other item back with it.
-// History is read once per track: the batch re-runs when this play is
-// scrobbled (the rank moves), and a re-read then would count this very play.
+// Quality, Plays · Rank and History resolve on their own, outside the async
+// batch, so neither waits on an unrelated slow item (a plugin can take 5s).
+// Quality waits for the engine to decode the track (a stream's facts exist
+// only then). Plays · Rank and History share one history read per play, and
+// per rank change — the rank moves once this play is recorded, which is when
+// the count should include it; History measures against the play's start, so
+// that re-read never counts this play as a previous one.
 const QUALITY_ID = "builtin:quality";
-const OWN_EFFECT_IDS = new Set<string>([QUALITY_ID, NOW_PLAYING_HISTORY_ID]);
+const PLAYS_RANK_ID = "builtin:plays-rank";
+const OWN_EFFECT_IDS = new Set<string>([QUALITY_ID, PLAYS_RANK_ID, NOW_PLAYING_HISTORY_ID]);
 // What the history read races against: a slow read must not look like "no
 // plays" (null is the backend's real "never played").
 const HISTORY_TIMED_OUT = Symbol("history-timed-out");
@@ -313,7 +316,7 @@ export const BUILTIN_DESCRIPTORS: NowPlayingInfoDescriptor[] = [
   { id: NOW_PLAYING_ARTIST_ALBUM_ID, label: "Artist · Album", defaultEnabled: true },
   // A stat, but it stays in the rotation: it predates the stat kind's
   // preview-only default, and users who switched it on expect it to stay.
-  { id: "builtin:plays-rank", label: "Plays · Rank", defaultEnabled: false, kind: "stat", defaultTop: 1 },
+  { id: PLAYS_RANK_ID, label: "Plays · Rank", defaultEnabled: false, kind: "stat", defaultTop: 1 },
   { id: NOW_PLAYING_HISTORY_ID, label: "Listening history", defaultEnabled: false, kind: "stat" },
   { id: NOW_PLAYING_UP_NEXT_ID, label: "Up next", defaultEnabled: false },
   { id: NOW_PLAYING_PLAYING_FROM_ID, label: "Playing from", defaultEnabled: false, kind: "detail" },
@@ -342,6 +345,17 @@ export function isNowPlayingItemSelected(
 export function formatPlays(count: number | null | undefined): string | null {
   if (count == null || count <= 0) return null;
   return count === 1 ? "1 play" : `${count.toLocaleString()} plays`;
+}
+
+/** The Plays · Rank line ("142 plays · #12"), or null. The count includes the
+ *  play in progress once it is recorded; the rank shows only in the top 100.
+ *  Pure + exported for tests. */
+export function formatPlaysRank(count: number | null | undefined, rank: number | null): string | null {
+  const parts: string[] = [];
+  const plays = formatPlays(count);
+  if (plays) parts.push(plays);
+  if (rank != null && rank <= 100) parts.push(`#${rank}`);
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 /** "3 weeks ago" for an age in seconds ("earlier today", "yesterday", days,
@@ -894,25 +908,6 @@ export function useNowPlayingInfo({
     };
 
     const resolveOne = async (id: string): Promise<NowPlayingInfoResolved | null> => {
-      if (id === "builtin:plays-rank") {
-        try {
-          const stats = await withTimeout(
-            invoke<{ play_count: number } | null>("get_track_play_stats", {
-              title: track.title,
-              artistName: track.artist_name,
-            }),
-            null,
-          );
-          const parts: string[] = [];
-          const plays = formatPlays(stats?.play_count);
-          if (plays) parts.push(plays);
-          if (trackRank != null && trackRank <= 100) parts.push(`#${trackRank}`);
-          return parts.length > 0 ? { id, segments: [{ text: parts.join(" · ") }] } : null;
-        } catch (e) {
-          console.error("Failed to resolve plays/rank for now-playing info:", e);
-          return null;
-        }
-      }
       if (id === "builtin:tags") {
         // Tags only exist for library tracks; resolve the row by metadata, then
         // read its tags (same path the Now Playing bar's tag chips use).
@@ -967,21 +962,24 @@ export function useNowPlayingInfo({
       })
       .catch((e) => console.error("Failed to resolve now-playing info:", e));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trackSig, selectionSig, trackRank, availableItems, invokeNowPlayingInfo]);
+  }, [trackSig, selectionSig, availableItems, invokeNowPlayingInfo]);
 
-  // Per-track facts resolved apart from the batch (Quality, History — see
-  // OWN_EFFECT_IDS — and the album year Artist · Album shows). Stamped with
-  // the track they describe, like the batch, so a previous track's line never
-  // shows under the next title. Nothing ever needs clearing: the merge ignores
-  // facts stamped for another track and drops items that are switched off.
-  const [ownFacts, setOwnFacts] = useState<{ sig: string; quality: string | null; history: string | null; year: number | null }>(
-    { sig: "", quality: null, history: null, year: null },
-  );
-  const setOwnFact = (sig: string, patch: Partial<{ quality: string | null; history: string | null; year: number | null }>) =>
+  // Per-track facts resolved apart from the batch (Quality, Plays · Rank,
+  // History — see OWN_EFFECT_IDS — and the album year Artist · Album shows).
+  // Stamped with the track they describe, like the batch, so a previous
+  // track's line never shows under the next title. Nothing ever needs
+  // clearing: the merge ignores facts stamped for another track and drops
+  // items that are switched off.
+  type OwnFacts = { quality: string | null; plays: string | null; history: string | null; year: number | null };
+  const NO_FACTS: OwnFacts = { quality: null, plays: null, history: null, year: null };
+  const [ownFacts, setOwnFacts] = useState<OwnFacts & { sig: string }>({ sig: "", ...NO_FACTS });
+  const setOwnFact = (sig: string, patch: Partial<OwnFacts>) =>
     setOwnFacts((prev) => {
-      const base = prev.sig === sig ? prev : { sig, quality: null, history: null, year: null };
+      const base = prev.sig === sig ? prev : { sig, ...NO_FACTS };
       const next = { ...base, ...patch };
-      return next.quality === prev.quality && next.history === prev.history && next.year === prev.year && next.sig === prev.sig ? prev : next;
+      const same = next.sig === prev.sig && next.quality === prev.quality && next.plays === prev.plays
+        && next.history === prev.history && next.year === prev.year;
+      return same ? prev : next;
     });
 
   const qualityEnabled = isNowPlayingItemSelected(QUALITY_ID, selection, availableItems);
@@ -1001,11 +999,13 @@ export function useNowPlayingInfo({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trackSig, qualityEnabled]);
 
+  // One history read for Plays · Rank and Listening history.
+  const playsEnabled = isNowPlayingItemSelected(PLAYS_RANK_ID, selection, availableItems);
   const historyEnabled = isNowPlayingItemSelected(NOW_PLAYING_HISTORY_ID, selection, availableItems);
   useEffect(() => {
     const track = currentTrack;
     const sig = trackSig;
-    if (!track || !historyEnabled) return;
+    if (!track || (!playsEnabled && !historyEnabled)) return;
     let live = true;
     const now = Math.floor(Date.now() / 1000);
     withTimeout<TrackPlayStats | null | typeof HISTORY_TIMED_OUT>(
@@ -1013,14 +1013,22 @@ export function useNowPlayingInfo({
       HISTORY_TIMED_OUT,
     )
       .then((stats) => {
-        if (live) setOwnFact(sig, { history: listeningHistoryLine(stats === HISTORY_TIMED_OUT ? "timed-out" : stats, playStartedAt, now) });
+        if (!live) return;
+        const answer = stats === HISTORY_TIMED_OUT ? "timed-out" : stats;
+        setOwnFact(sig, {
+          // A read that timed out shows neither line (it knows nothing).
+          plays: answer === "timed-out" ? null : formatPlaysRank(answer?.play_count, trackRank),
+          history: listeningHistoryLine(answer, playStartedAt, now),
+        });
       })
-      .catch((e) => console.error("Failed to resolve listening history:", e));
+      .catch((e) => console.error("Failed to read the play history for now-playing info:", e));
     return () => { live = false; };
     // Re-read per play (playStartedAt moves on a replay of the same entry),
-    // and per track (an Edit info rename keeps the play's start).
+    // per track (an Edit info rename keeps the play's start), and when the
+    // rank moves — which happens once this play is recorded, so the count
+    // takes it in.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trackSig, historyEnabled, playStartedAt]);
+  }, [trackSig, playsEnabled, historyEnabled, playStartedAt, trackRank]);
 
   const artistAlbumEnabled = isNowPlayingItemSelected(NOW_PLAYING_ARTIST_ALBUM_ID, selection, availableItems);
   useEffect(() => {
@@ -1055,6 +1063,7 @@ export function useNowPlayingInfo({
     for (const r of lyricsResolved) byId.set(r.id, r);
     if (ownFacts.sig === trackSig) {
       if (ownFacts.quality) byId.set(QUALITY_ID, { id: QUALITY_ID, segments: [{ text: ownFacts.quality }] });
+      if (ownFacts.plays) byId.set(PLAYS_RANK_ID, { id: PLAYS_RANK_ID, segments: [{ text: ownFacts.plays }] });
       if (ownFacts.history) byId.set(NOW_PLAYING_HISTORY_ID, { id: NOW_PLAYING_HISTORY_ID, segments: [{ text: ownFacts.history }] });
     }
     return availableItems

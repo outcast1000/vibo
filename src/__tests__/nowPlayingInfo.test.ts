@@ -8,6 +8,7 @@ import {
   migrateNowPlayingPersistence,
   migrateNowPlayingOrder,
   listeningHistoryLine,
+  formatPlaysRank,
   withQualitySource,
   formatUpNext,
   formatPlayingFrom,
@@ -376,6 +377,18 @@ describe("migrateNowPlayingOrder", () => {
   it("returns the same array when there is nothing to change", () => {
     const order = ["builtin:quality", "lastfm:scrobbles"];
     expect(migrateNowPlayingOrder(order)).toBe(order);
+  });
+});
+
+describe("formatPlaysRank", () => {
+  it("joins the count and a top-100 rank", () => {
+    expect(formatPlaysRank(142, 12)).toBe("142 plays · #12");
+    expect(formatPlaysRank(142, 250)).toBe("142 plays");
+    expect(formatPlaysRank(1, null)).toBe("1 play");
+  });
+  it("says nothing for a song never played and unranked", () => {
+    expect(formatPlaysRank(0, null)).toBeNull();
+    expect(formatPlaysRank(undefined, null)).toBeNull();
   });
 });
 
