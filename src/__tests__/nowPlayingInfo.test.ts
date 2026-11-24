@@ -17,7 +17,6 @@ import {
   isValidNowPlayingTop,
   NOW_PLAYING_TOP_PRESETS,
   NOW_PLAYING_TOP_REQUEST,
-  NOW_PLAYING_SCROBBLES_ID,
   BUILTIN_DESCRIPTORS,
   parseNowPlayingKind,
   type NowPlayingInfoKind,
@@ -249,13 +248,14 @@ describe("nowPlayingItemTop", () => {
     expect(nowPlayingItemTop(pluginItem("x:detail", "detail"), {})).toBe(1);
   });
 
-  it("keeps the Last.fm item's default for a copy that declares no kind", () => {
-    expect(nowPlayingItemTop(pluginItem(NOW_PLAYING_SCROBBLES_ID), {})).toBe(0);
+  it("treats a plugin item by its kind, never by its id", () => {
+    expect(nowPlayingItemTop(pluginItem("lastfm:scrobbles"), {})).toBe(1);
+    expect(nowPlayingItemTop(pluginItem("lastfm:scrobbles", "stat"), {})).toBe(0);
   });
 
   it("lets a valid stored override beat the default", () => {
     expect(nowPlayingItemTop(builtin("builtin:lyrics-synced"), { "builtin:lyrics-synced": 2 })).toBe(2);
-    expect(nowPlayingItemTop(pluginItem(NOW_PLAYING_SCROBBLES_ID), { [NOW_PLAYING_SCROBBLES_ID]: 10 })).toBe(10);
+    expect(nowPlayingItemTop(pluginItem("lastfm:scrobbles", "stat"), { "lastfm:scrobbles": 10 })).toBe(10);
   });
 
   it("returns any of the allowed presets verbatim (including 0 = preview only)", () => {
@@ -290,8 +290,7 @@ describe("nowPlayingItemStyle", () => {
   it("accents every play stat, built-in or plugin", () => {
     expect(nowPlayingItemStyle(builtin("builtin:plays-rank"))).toEqual({ role: "accent" });
     expect(nowPlayingItemStyle(pluginItem("spotify-browse:spotify-plays", "stat"))).toEqual({ role: "accent" });
-    // Last.fm releases from before `kind` still get it.
-    expect(nowPlayingItemStyle(pluginItem(NOW_PLAYING_SCROBBLES_ID))).toEqual({ role: "accent" });
+    expect(nowPlayingItemStyle(pluginItem("lastfm:scrobbles", "stat"))).toEqual({ role: "accent" });
   });
 
   it("mutes secondary metadata items", () => {

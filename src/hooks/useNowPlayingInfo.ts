@@ -155,42 +155,23 @@ const NOW_PLAYING_KIND_DEFAULT_TOP: Partial<Record<NowPlayingInfoKind, number>> 
   stat: 0, // preview-only: a quick stat at each track change
 };
 
-/** The Last.fm plugin's Now Playing info item, keyed `${pluginId}:${itemId}`. */
-export const NOW_PLAYING_SCROBBLES_ID = "lastfm:scrobbles";
-
-/** Kinds for plugin items released before `kind` existed. Remove an entry
- *  once the bundled copy of that plugin declares its own kind. */
-const LEGACY_PLUGIN_KINDS: Record<string, NowPlayingInfoKind> = {
-  [NOW_PLAYING_SCROBBLES_ID]: "stat",
-};
-
-type KindedItem = Pick<NowPlayingInfoDescriptor, "id" | "kind">;
-
-/** The kind an item renders with: its declared kind, else the legacy table.
- *  Pure + exported for tests. */
-export function nowPlayingItemKind(d: KindedItem): NowPlayingInfoKind | undefined {
-  return d.kind ?? LEGACY_PLUGIN_KINDS[d.id];
-}
-
 /** Time-of-persistence multiplier for an item — the user's override if it's a
  *  valid preset (or the on-request sentinel), else the item's own default
  *  (built-ins only), else its kind's default, else 1. Pure + for tests. */
 export function nowPlayingItemTop(
-  d: KindedItem & Pick<NowPlayingInfoDescriptor, "defaultTop">,
+  d: Pick<NowPlayingInfoDescriptor, "id" | "kind" | "defaultTop">,
   persistence: Record<string, number>,
 ): number {
   const v = persistence[d.id];
   if (v != null && isValidNowPlayingTop(v)) return v;
   if (d.defaultTop != null) return d.defaultTop;
-  const kind = nowPlayingItemKind(d);
-  return (kind && NOW_PLAYING_KIND_DEFAULT_TOP[kind]) ?? 1;
+  return (d.kind && NOW_PLAYING_KIND_DEFAULT_TOP[d.kind]) ?? 1;
 }
 
 /** Style for an item, from its kind; undefined renders with the inherited
  *  default. Pure + exported for tests. */
-export function nowPlayingItemStyle(d: KindedItem): NowPlayingInfoStyle | undefined {
-  const kind = nowPlayingItemKind(d);
-  return kind ? NOW_PLAYING_KIND_STYLES[kind] : undefined;
+export function nowPlayingItemStyle(d: Pick<NowPlayingInfoDescriptor, "kind">): NowPlayingInfoStyle | undefined {
+  return d.kind ? NOW_PLAYING_KIND_STYLES[d.kind] : undefined;
 }
 
 /** Space-joined CSS class list for an item style, using the skin-token-backed
