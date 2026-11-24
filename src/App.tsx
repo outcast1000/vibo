@@ -1177,6 +1177,7 @@ function App() {
     trackRank,
     artistRank,
     pluginItems: plugins.nowPlayingInfoItems,
+    isEngineDecoding: playback.isEngineDecoding,
     invokeNowPlayingInfo: plugins.invokeNowPlayingInfo,
     selection: nowPlayingInfoSelection,
     persistence: nowPlayingInfoPersistence,

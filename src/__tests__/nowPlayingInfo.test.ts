@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
+import type { QueueTrack } from "../types";
+import type { EngineMediaInfo } from "../playback/nativeEngine";
 import {
   isNowPlayingItemSelected,
+  resolvePlayingTrackQuality,
   formatPlays,
   formatSource,
   formatQuality,
@@ -483,5 +486,85 @@ describe("trackOnRequestItems", () => {
 
   it("joins multi-segment content into one signature", () => {
     expect(nowPlayingRequestSig({ id: "x", segments: [{ text: "a" }, { text: "b" }] })).toBe("a|b");
+  });
+});
+
+describe("resolvePlayingTrackQuality", () => {
+  const stream: QueueTrack = {
+    key: "q:1", path: "subsonic://server/abc", title: "Song", artist_name: "Band",
+    album_title: "Album", duration_secs: 249, format: "mp3",
+  };
+  const local: QueueTrack = { ...stream, path: "file:///music/song.flac", format: "flac" };
+  const engine = (over: Partial<EngineMediaInfo> = {}): EngineMediaInfo => ({
+    codec: "mp3", sampleRate: 44100, format: "floatp", bitrate: null,
+    videoCodec: null, width: null, height: null, videoBitrate: null, fps: null, ...over,
+  });
+
+  /** Runs the resolver with fake readers; `sleep` advances a fake clock so the
+   *  waits finish at once. Returns every text it reported, in order. */
+  async function run(
+    track: QueueTrack,
+    opts: { props?: unknown; decodingAfterMs?: number; engineAt?: (ms: number) => EngineMediaInfo | null },
+  ): Promise<(string | null)[]> {
+    let now = 0;
+    const texts: (string | null)[] = [];
+    await resolvePlayingTrackQuality(
+      track,
+      () => opts.decodingAfterMs != null && now >= opts.decodingAfterMs,
+      (t) => texts.push(t),
+      new AbortController().signal,
+      {
+        readFileProps: async () => (opts.props ?? null) as never,
+        readEngineInfo: async () => opts.engineAt?.(now) ?? null,
+        sleep: async (ms) => { now += ms; },
+      },
+    );
+    return texts;
+  }
+
+  it("answers a local audio file from its own properties, without the engine", async () => {
+    const texts = await run(local, {
+      props: { sample_rate: 96000, bit_depth: 24 },
+      engineAt: () => { throw new Error("asked the engine"); },
+    });
+    expect(texts).toEqual(["FLAC · 96.0 kHz · 24-bit"]);
+  });
+
+  it("waits for the engine to decode a stream, then adds the bitrate when it arrives", async () => {
+    const texts = await run(stream, {
+      decodingAfterMs: 1000,
+      engineAt: (ms) => engine({ bitrate: ms >= 2000 ? 320_000 : null }),
+    });
+    expect(texts[0]).toBe("MP3 · 44.1 kHz");
+    expect(texts.at(-1)).toBe("MP3 · 44.1 kHz · 320 kbps");
+  });
+
+  it("never reads the engine before it is decoding this track", async () => {
+    const read: number[] = [];
+    await run(stream, {
+      decodingAfterMs: 500,
+      engineAt: (ms) => { read.push(ms); return engine({ bitrate: 128_000 }); },
+    });
+    expect(read.length).toBeGreaterThan(0);
+    expect(read.every((ms) => ms >= 500)).toBe(true);
+  });
+
+  it("falls back to the format when the engine never starts", async () => {
+    expect(await run(stream, { engineAt: () => engine() })).toEqual(["MP3"]);
+  });
+
+  it("stops waiting for a bitrate that never comes, keeping what it has", async () => {
+    const texts = await run(stream, { decodingAfterMs: 0, engineAt: () => engine() });
+    expect(texts.at(-1)).toBe("MP3 · 44.1 kHz");
+  });
+
+  it("describes video by the engine's resolution", async () => {
+    const video: QueueTrack = { ...stream, format: "mp4", path: "file:///v/clip.mp4" };
+    const texts = await run(video, {
+      props: { sample_rate: 48000, bitrate: 128 },
+      decodingAfterMs: 0,
+      engineAt: () => engine({ videoCodec: "h264", width: 1920, height: 1080, fps: 30 }),
+    });
+    expect(texts).toEqual(["H264 · 1080p · 30fps"]);
   });
 });

@@ -4,10 +4,11 @@ import type { QueueTrack } from "../types";
 import type { NowPlayingInfoResult, PluginTrack } from "../types/plugin";
 import type { InfoEntity, InfoFetchResult } from "../types/informationTypes";
 import { isLocalTrack, parseUrlScheme } from "../queueEntry";
-import { formatDuration } from "../utils";
+import { formatDuration, isVideoTrack } from "../utils";
 import { useLyrics } from "./useLyrics";
 import { parseLrc, activeSyncedLine, plainLines, pickLineByRatio, hashStringToRatio, lyricPosition } from "../utils/lyrics";
 import { nativeEngine, type EngineMediaInfo } from "../playback/nativeEngine";
+import { useLatestRef } from "./useLatestRef";
 import { subscribeVisiblePlaybackPosition, getPlaybackPosition } from "../playback/positionStore";
 import type { TrackAudioFacts } from "../waveform/types";
 
@@ -36,6 +37,11 @@ const LYRICS_IDS = new Set<string>([NOW_PLAYING_LYRICS_SYNCED_ID, NOW_PLAYING_LY
 // async batch made them wait for its slowest member (the quality probe, a
 // plugin item, up to the 5s budget) while the previous track's artist/album
 // stayed on screen under the new title.
+// Quality resolves on its own, outside the async batch: it waits for the
+// engine to decode the track (a stream's facts exist only then), and holding
+// the batch for that would hold every other item back with it.
+const QUALITY_ID = "builtin:quality";
+
 const SYNC_IDS = new Set<string>([
   NOW_PLAYING_ARTIST_ALBUM_ID,
   "builtin:artist",
@@ -428,6 +434,74 @@ export async function resolveTrackQuality(
   return formatEngineQuality(engineInfo) ?? formatQuality(track.format, null);
 }
 
+/** How long the Quality item waits for the engine to start decoding the
+ *  track it describes (a stream's resolve can take seconds), and then how much
+ *  longer for a stream's bitrate, which mpv reports a moment after decoding
+ *  starts. Past either it shows what it has. */
+export const QUALITY_ENGINE_WAIT_MS = 15_000;
+export const QUALITY_BITRATE_WAIT_MS = 6_000;
+const QUALITY_POLL_MS = 250;
+
+export interface PlayingQualityDeps {
+  readFileProps: (track: QueueTrack) => Promise<AudioProps | null>;
+  readEngineInfo: () => Promise<EngineMediaInfo | null>;
+  sleep: (ms: number) => Promise<void>;
+}
+
+const defaultQualityDeps: PlayingQualityDeps = {
+  readFileProps,
+  readEngineInfo,
+  sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+};
+
+/** The Quality item's text for the track that is playing, reported through
+ *  `onText` as it gets better ("MP3 · 44.1 kHz", then "… · 320 kbps").
+ *
+ *  Unlike `resolveTrackQuality` it never reads the engine before the engine is
+ *  decoding THIS track (`engineOnTrack`): at a track change the engine still
+ *  describes the previous one, or nothing — and for a stream, which has no
+ *  file to read, that read was the whole answer, so the item said only "MP3"
+ *  (the format) or the previous song's facts. A local audio file answers from
+ *  its own properties at once; video waits for the engine (resolution is the
+ *  answer there). Gives up quietly on `signal`. */
+export async function resolvePlayingTrackQuality(
+  track: QueueTrack,
+  engineOnTrack: () => boolean,
+  onText: (text: string | null) => void,
+  signal: AbortSignal,
+  deps: PlayingQualityDeps = defaultQualityDeps,
+): Promise<void> {
+  const fallback = formatQuality(track.format, null);
+  const video = isVideoTrack(track);
+  const props = await deps.readFileProps(track);
+  if (signal.aborted) return;
+  const fileText = props ? formatQuality(track.format, props) : null;
+  if (fileText && !video) {
+    onText(fileText);
+    return;
+  }
+  for (let waited = 0; !engineOnTrack(); waited += QUALITY_POLL_MS) {
+    if (waited >= QUALITY_ENGINE_WAIT_MS) {
+      onText(fileText ?? fallback);
+      return;
+    }
+    await deps.sleep(QUALITY_POLL_MS);
+    if (signal.aborted) return;
+  }
+  for (let waited = 0; ; waited += QUALITY_POLL_MS) {
+    const info = await deps.readEngineInfo();
+    if (signal.aborted) return;
+    const videoText = formatEngineVideoQuality(info);
+    onText(videoText ?? fileText ?? formatEngineQuality(info) ?? fallback);
+    // Done once nothing better is coming: video and file answers are complete,
+    // and a stream's line is complete once its bitrate is in.
+    if (videoText || fileText || (info?.bitrate ?? 0) > 0 || !info) return;
+    if (waited >= QUALITY_BITRATE_WAIT_MS) return;
+    await deps.sleep(QUALITY_POLL_MS);
+    if (signal.aborted) return;
+  }
+}
+
 /** The engine's live decode facts for whatever is playing, or null. */
 async function readEngineInfo(): Promise<EngineMediaInfo | null> {
   try {
@@ -531,6 +605,9 @@ interface UseNowPlayingInfoArgs {
   artistRank: number | null;
   // Plugin-registered descriptors (from usePlugins, already priority-sorted).
   pluginItems: { pluginId: string; itemId: string; label: string; defaultEnabled: boolean; kind?: NowPlayingInfoKind }[];
+  // Whether the engine is decoding this track key (usePlayback): the Quality
+  // item reads the engine's facts only once they describe the playing track.
+  isEngineDecoding: (trackKey: string) => boolean;
   invokeNowPlayingInfo: (pluginId: string, itemId: string, track: PluginTrack) => Promise<NowPlayingInfoResult>;
   selection: Record<string, boolean>;
   // Per-item time-of-persistence multipliers (id → 1/2/5/10). Missing = 1.
@@ -570,6 +647,7 @@ export function useNowPlayingInfo({
   trackRank,
   artistRank,
   pluginItems,
+  isEngineDecoding,
   invokeNowPlayingInfo,
   selection,
   persistence,
@@ -652,7 +730,7 @@ export function useNowPlayingInfo({
   // are excluded — they're resolved synchronously above, not in this effect.
   const selectionSig = availableItems
     .filter((d) => isNowPlayingItemSelected(d.id, selection, availableItems))
-    .filter((d) => !LYRICS_IDS.has(d.id) && !SYNC_IDS.has(d.id))
+    .filter((d) => !LYRICS_IDS.has(d.id) && !SYNC_IDS.has(d.id) && d.id !== QUALITY_ID)
     .map((d) => d.id)
     .join("|");
   const trackSig = currentTrack
@@ -669,7 +747,7 @@ export function useNowPlayingInfo({
     }
     const enabled = availableItems
       .filter((d) => isNowPlayingItemSelected(d.id, selection, availableItems))
-      .filter((d) => !LYRICS_IDS.has(d.id) && !SYNC_IDS.has(d.id));
+      .filter((d) => !LYRICS_IDS.has(d.id) && !SYNC_IDS.has(d.id) && d.id !== QUALITY_ID);
 
     const pluginTrack: PluginTrack = {
       path: track.path,
@@ -698,10 +776,6 @@ export function useNowPlayingInfo({
           console.error("Failed to resolve plays/rank for now-playing info:", e);
           return null;
         }
-      }
-      if (id === "builtin:quality") {
-        const text = await resolveTrackQuality(track, { playing: true });
-        return text ? { id, segments: [{ text }] } : null;
       }
       if (id === "builtin:tags") {
         // Tags only exist for library tracks; resolve the row by metadata, then
@@ -759,6 +833,29 @@ export function useNowPlayingInfo({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trackSig, selectionSig, trackRank, availableItems, invokeNowPlayingInfo]);
 
+  // Quality, resolved apart from the batch (see QUALITY_ID). Stamped with the
+  // track it describes, like the batch, so a previous track's line never shows
+  // under the next title.
+  const qualityEnabled = isNowPlayingItemSelected(QUALITY_ID, selection, availableItems);
+  const engineDecodingRef = useLatestRef(isEngineDecoding);
+  const [qualityResolved, setQualityResolved] = useState<{ sig: string; text: string | null }>({ sig: "", text: null });
+  useEffect(() => {
+    const track = currentTrack;
+    const sig = trackSig;
+    // Nothing to clear: the merge below ignores a line stamped for another
+    // track, and drops the item when it is switched off.
+    if (!track || !qualityEnabled) return;
+    const controller = new AbortController();
+    resolvePlayingTrackQuality(
+      track,
+      () => engineDecodingRef.current(track.key),
+      (text) => setQualityResolved((prev) => (prev.sig === sig && prev.text === text ? prev : { sig, text })),
+      controller.signal,
+    ).catch((e) => console.error("Failed to resolve now-playing quality:", e));
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trackSig, qualityEnabled]);
+
   const syncResolved = useMemo<NowPlayingInfoResolved[]>(() => {
     if (!currentTrack) return [];
     return availableItems
@@ -774,6 +871,9 @@ export function useNowPlayingInfo({
     for (const r of syncResolved) byId.set(r.id, r);
     if (asyncResolved.sig === trackSig) for (const r of asyncResolved.items) byId.set(r.id, r);
     for (const r of lyricsResolved) byId.set(r.id, r);
+    if (qualityResolved.sig === trackSig && qualityResolved.text) {
+      byId.set(QUALITY_ID, { id: QUALITY_ID, segments: [{ text: qualityResolved.text }] });
+    }
     return availableItems
       .filter((d) => isNowPlayingItemSelected(d.id, selection, availableItems))
       .map((d): NowPlayingInfoResolved | undefined => {
@@ -781,7 +881,7 @@ export function useNowPlayingInfo({
         return r ? { ...r, top: nowPlayingItemTop(d, persistence), style: nowPlayingItemStyle(d) } : undefined;
       })
       .filter((r): r is NowPlayingInfoResolved => r !== undefined);
-  }, [syncResolved, asyncResolved, trackSig, lyricsResolved, availableItems, selection, persistence]);
+  }, [syncResolved, asyncResolved, qualityResolved, trackSig, lyricsResolved, availableItems, selection, persistence]);
 
   return { availableItems, resolvedItems };
 }
