@@ -5596,9 +5596,14 @@ function App() {
       // dwell, on/off) — the menu just takes you there, leaving the main
       // window open on that section.
       specs.push({ kind: "item", text: "Now playing info…", action: () => {
-        setSettingsScrollTarget("now-playing-info");
         library.setView("settings");
-        if (mini.miniMode) mini.toggleMiniMode();
+        // Ask for the scroll only once the full window is back and shown.
+        // Leaving mini mode renders the full layout while the window is still
+        // mini-sized and hidden, and a hidden window paints no frames, so a
+        // scroll requested then never moved and Settings opened at the top of
+        // the Playback tab. toggleMiniMode never rejects (it logs).
+        const leaving = mini.miniMode ? mini.toggleMiniMode() : Promise.resolve();
+        void leaving.then(() => setSettingsScrollTarget("now-playing-info"));
       } });
       specs.push({ kind: "separator" });
       specs.push({ kind: "item", text: "Show Main Window", action: mini.toggleMiniMode });
