@@ -7085,7 +7085,19 @@ function App() {
           invokeInfoFetch={plugins.invokeInfoFetch}
           pluginNames={plugins.pluginNames}
           live={editLive}
-          seek={editLive ? playback.handleSeek : undefined}
+          seek={editLive
+            ? playback.handleSeek
+            : editTracks.length === 1
+              // Start it without losing the queue: its queued copy, else after
+              // the playing entry. Sync goes live once it plays; until then a
+              // repeat click is ignored rather than restarting the load.
+              ? (secs: number) => {
+                  if (playback.loadingTrack?.libraryId === editTracks[0].id) return;
+                  playback.setPendingSeek(secs);
+                  queueHook.playLibraryTrackInQueue(editTracks[0]);
+                }
+              : undefined}
+          transport={editLive ? { playing: playback.playing, onTogglePlay: playback.handlePause, durationSecs: playback.durationSecs } : undefined}
           onClose={() => contextMenuActions.setBulkEditTracks(null)}
           onShowInFolder={(track) => { void contextMenuActions.showTrackInFolder(track); }}
           onSave={handleBulkEditSaved}

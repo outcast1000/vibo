@@ -4,7 +4,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { renderHook, act, cleanup } from "@testing-library/react";
 import { useQueue } from "../hooks/useQueue";
-import type { QueueTrack } from "../types";
+import type { QueueTrack, Track } from "../types";
 import { useRef } from "react";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -64,6 +64,39 @@ describe("insertNextAndPlay", () => {
     act(() => { result.current.insertNextAndPlay(makeTrack(9)); });
     expect(result.current.queue.map((t) => t.title)).toEqual(["Song 9"]);
     expect(result.current.queueIndex).toBe(0);
+    expect(handlePlay).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Edit Properties' Sync "Play this song": start the edited library track
+// without doubling it in the queue.
+describe("playLibraryTrackInQueue", () => {
+  const libTrack = (id: number) => ({ ...makeTrack(id), id, key: undefined }) as unknown as Track;
+  const queued = (n: number, libraryId?: number): QueueTrack => ({ ...makeTrack(n), libraryId });
+
+  it("jumps to a copy already queued after the playing entry", () => {
+    const { result, handlePlay } = mountQueue();
+    act(() => { result.current.playTracks([queued(1), queued(2, 7), queued(3), queued(4, 7)], 2); });
+    handlePlay.mockClear();
+
+    act(() => { result.current.playLibraryTrackInQueue(libTrack(7)); });
+
+    expect(result.current.queue).toHaveLength(4);
+    expect(result.current.queueIndex).toBe(3);
+    expect(handlePlay).toHaveBeenCalledWith(result.current.queue[3], "user");
+  });
+
+  it("falls back to an earlier copy, and inserts when there is none", () => {
+    const { result, handlePlay } = mountQueue();
+    act(() => { result.current.playTracks([queued(1, 7), queued(2)], 1); });
+    act(() => { result.current.playLibraryTrackInQueue(libTrack(7)); });
+    expect(result.current.queue).toHaveLength(2);
+    expect(result.current.queueIndex).toBe(0);
+
+    handlePlay.mockClear();
+    act(() => { result.current.playLibraryTrackInQueue(libTrack(8)); });
+    expect(result.current.queue.map((t) => t.libraryId)).toEqual([7, 8, undefined]);
+    expect(result.current.queueIndex).toBe(1);
     expect(handlePlay).toHaveBeenCalledTimes(1);
   });
 });

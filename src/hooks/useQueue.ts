@@ -979,6 +979,19 @@ export function useQueue(
     return unique;
   }
 
+  /** Play a library track without losing the queue or doubling it: jump to a
+   *  copy already queued (the first after the playing entry, else the first),
+   *  otherwise `insertNextAndPlay`. Edit Properties' Sync "Play this song". */
+  function playLibraryTrackInQueue(track: Track): void {
+    const q = queueRef.current;
+    const idx = queueIndexRef.current;
+    const copies = q.flatMap((t, i) => (t.libraryId === track.id ? [i] : []));
+    const at = copies.find(i => i > idx) ?? copies[0];
+    if (at === undefined) { insertNextAndPlay(track); return; }
+    setQueueIndex(at);
+    handlePlay(q[at], "user");
+  }
+
   async function savePlaylist() {
     if (queueRef.current.length === 0) return;
     const filePath = await save({
@@ -1033,7 +1046,7 @@ export function useQueue(
     beginLoadingPlay, isLoadingPlayLive, endLoadingPlay, cancelLoadingPlay, waitForLoadingPlay,
     playNext, playPrevious,
     removeFromQueue, removeMultiple, removeAndAdvance, updateTrackMetadata, refreshFromLibrary, patchTrackFormat, rewritePathPrefix, replaceTrackPath, moveInQueue, moveMultiple, moveToTop, moveToBottom, clearQueue,
-    toggleQueueMode, randomizeQueue, playNextInQueue, addToQueue, addToQueueAndPlay, insertNextAndPlay,
+    toggleQueueMode, randomizeQueue, playNextInQueue, addToQueue, addToQueueAndPlay, insertNextAndPlay, playLibraryTrackInQueue,
     peekNext, advanceIndex, reconcileLibraryIds,
     playlistContext, setPlaylistContext, savePlaylist, loadPlaylist,
     thumbInfo, seedThumbInfo, flushNow,

@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, cleanup, fireEvent, waitFor, screen } from "@testing-library/react";
 import { LyricsRenderer } from "../components/renderers/LyricsRenderer";
+import { LyricsEditor } from "../components/renderers/LyricsEditor";
 import { setPlaybackPosition } from "../playback/positionStore";
 
 /**
@@ -114,5 +115,89 @@ describe("LyricsRenderer editing", () => {
     render(<LyricsRenderer data={{ text: "[00:12.00]Hello", kind: "synced" }} onAction={vi.fn()} context={{ seek }} />);
     fireEvent.click(screen.getByText("Hello"));
     expect(seek).toHaveBeenCalledWith(12);
+  });
+});
+
+describe("LyricsEditor transport (Edit Properties' Sync)", () => {
+  it("plays, pauses and skips from inside the dialog without stealing Space", () => {
+    const seek = vi.fn();
+    const onTogglePlay = vi.fn();
+    const onTextChange = vi.fn();
+    setPlaybackPosition(10);
+    render(
+      <LyricsEditor
+        initialText={"One\nTwo"}
+        live
+        seek={seek}
+        transport={{ playing: true, onTogglePlay, durationSecs: 12 }}
+        onTextChange={onTextChange}
+      />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: /Sync/ }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+    expect(onTogglePlay).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Back 5 seconds" }));
+    expect(seek).toHaveBeenLastCalledWith(5);
+    fireEvent.click(screen.getByRole("button", { name: "Ahead 5 seconds" }));
+    expect(seek).toHaveBeenLastCalledWith(11.5); // stops short of the end
+
+    const list = screen.getByRole("listbox", { name: "Lines to sync" });
+    fireEvent.keyDown(list, { key: "p" });
+    expect(onTogglePlay).toHaveBeenCalledTimes(2);
+    fireEvent.keyDown(list, { key: "[" });
+    expect(seek).toHaveBeenLastCalledWith(5);
+    fireEvent.change(screen.getByLabelText("Seek"), { target: { value: "3" } });
+    expect(seek).toHaveBeenLastCalledWith(3);
+
+    // Space still stamps.
+    fireEvent.keyDown(list, { key: " " });
+    expect(onTextChange).toHaveBeenCalledWith("[00:10.00]One\nTwo");
+  });
+
+  it("offers to start the song when another one is playing", () => {
+    const seek = vi.fn();
+    render(<LyricsEditor initialText={"[00:20.00]One\nTwo"} live={false} seek={seek} transport={{ playing: true, onTogglePlay: vi.fn() }} onTextChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole("tab", { name: /Sync/ }));
+    // The transport belongs to the song being synced — not to what's playing.
+    expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Play this song" }));
+    expect(seek).toHaveBeenLastCalledWith(0);
+    fireEvent.click(screen.getByTitle("Replay from this line"));
+    expect(seek).toHaveBeenLastCalledWith(18);
+  });
+
+  it("seeks once per drag, and leaves ⌘S / Esc to the dialog", () => {
+    const seek = vi.fn();
+    const onDialogKey = vi.fn();
+    setPlaybackPosition(2);
+    render(
+      <div onKeyDown={e => onDialogKey(e.key)}>
+        <LyricsEditor initialText="One" live seek={seek} transport={{ playing: true, onTogglePlay: vi.fn(), durationSecs: 60 }} onTextChange={vi.fn()} />
+      </div>,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: /Sync/ }));
+    const bar = screen.getByLabelText("Seek") as HTMLInputElement;
+
+    fireEvent.pointerDown(bar);
+    fireEvent.change(bar, { target: { value: "20" } });
+    fireEvent.change(bar, { target: { value: "30" } });
+    expect(seek).not.toHaveBeenCalled();
+    expect(bar.value).toBe("30"); // the thumb stays with the pointer
+    fireEvent.pointerUp(bar);
+    expect(seek).toHaveBeenCalledTimes(1);
+    expect(seek).toHaveBeenCalledWith(30);
+
+    fireEvent.keyDown(bar, { key: "ArrowRight" });
+    fireEvent.keyDown(bar, { key: "s", metaKey: true });
+    fireEvent.keyDown(bar, { key: "Escape" });
+    expect(onDialogKey.mock.calls.map(c => c[0])).toEqual(["s", "Escape"]);
+  });
+
+  it("has no transport without one from the host", () => {
+    render(<LyricsEditor initialText="One" live seek={vi.fn()} onTextChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole("tab", { name: /Sync/ }));
+    expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+    expect(screen.queryByLabelText("Seek")).toBeNull();
   });
 });

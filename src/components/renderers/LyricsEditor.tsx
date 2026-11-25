@@ -24,6 +24,21 @@ const NUDGE_COARSE_STEP = 1;
 const REPLAY_PREROLL_SECS = 2;
 /** How long "Start over" waits for its confirming second click. */
 const CONFIRM_WINDOW_MS = 3000;
+/** The transport's skip back / ahead. */
+const SKIP_SECS = 5;
+/** How far before the end a skip ahead stops. */
+const END_MARGIN_SECS = 0.5;
+/** The scrub bar's own keys — kept from the page, while ⌘S / Esc reach the dialog. */
+const SCRUB_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
+
+/** Play / pause for the song being synced, where the host covers the
+ *  player bar (the Edit Properties dialog). Seeking goes through `seek`. */
+export interface LyricsEditorTransport {
+  playing: boolean;
+  onTogglePlay: () => void;
+  /** Song length, for the scrub bar; unknown hides it. */
+  durationSecs?: number | null;
+}
 
 interface LyricsEditorBaseProps {
   initialText: string;
@@ -44,6 +59,8 @@ interface LyricsEditorBaseProps {
   /** Save is held back for this reason (shown in the status line) — a review
    *  whose current lyrics haven't been read yet. */
   saveBlockedReason?: string | null;
+  /** Transport controls in Sync (used only while `live`). */
+  transport?: LyricsEditorTransport;
 }
 
 /** Standalone: the editor has its own Save / Cancel, ⌘S and Esc. */
@@ -72,7 +89,7 @@ type Tab = "write" | "sync";
  * while the song plays. Whether it saves as synced or plain is read off the
  * text (`detectLyricsKind`) — there is no type picker to get wrong.
  */
-export function LyricsEditor({ initialText, live, seek, onSave, onClose, onTextChange, baselineText, banner, review = false, saveBlockedReason = null }: LyricsEditorProps) {
+export function LyricsEditor({ initialText, live, seek, onSave, onClose, onTextChange, baselineText, banner, review = false, saveBlockedReason = null, transport }: LyricsEditorProps) {
   const embedded = onTextChange !== undefined;
   const [text, setText] = useState(initialText);
   const [tab, setTab] = useState<Tab>("write");
@@ -165,6 +182,15 @@ export function LyricsEditor({ initialText, live, seek, onSave, onClose, onTextC
     setLastStamped(target);
   }, [lastStamped, activeCursor, lines, text, edit]);
 
+  const canTransport = live && transport != null;
+  const durationSecs = transport?.durationSecs;
+  const skip = useCallback((delta: number) => {
+    if (!seek) return;
+    // Short of the end: landing on it would finish the song mid-sync.
+    const max = durationSecs != null && durationSecs > 0 ? Math.max(0, durationSecs - END_MARGIN_SECS) : Infinity;
+    seek(Math.min(max, Math.max(0, getPlaybackPosition() + delta)));
+  }, [seek, durationSecs]);
+
   const startOver = () => {
     if (!confirmClear) { setConfirmClear(true); return; }
     setConfirmClear(false);
@@ -221,6 +247,10 @@ export function LyricsEditor({ initialText, live, seek, onSave, onClose, onTextC
       case "ArrowUp": { const p = prevSyncable(lines, activeCursor); if (p >= 0) setCursor(p); break; }
       case "ArrowLeft": nudge(-(e.shiftKey ? NUDGE_COARSE_STEP : NUDGE_STEP)); break;
       case "ArrowRight": nudge(e.shiftKey ? NUDGE_COARSE_STEP : NUDGE_STEP); break;
+      case "p":
+      case "P": if (canTransport) transport.onTogglePlay(); else handled = false; break;
+      case "[": if (canTransport && seek) skip(-SKIP_SECS); else handled = false; break;
+      case "]": if (canTransport && seek) skip(SKIP_SECS); else handled = false; break;
       default: handled = false;
     }
     if (handled) { e.preventDefault(); e.stopPropagation(); }
@@ -290,6 +320,15 @@ export function LyricsEditor({ initialText, live, seek, onSave, onClose, onTextC
               <span className="lyrics-sync-note">Play this song to sync its lines.</span>
             )}
           </div>
+          {canTransport && (
+            <SyncTransport
+              transport={transport}
+              position={position}
+              seek={seek}
+              onSkip={skip}
+              onAfter={() => listRef.current?.focus()}
+            />
+          )}
           <div
             ref={listRef}
             className={`lyrics-sync-list${live ? "" : " is-idle"}`}
@@ -332,6 +371,8 @@ export function LyricsEditor({ initialText, live, seek, onSave, onClose, onTextC
             <span><kbd>⌫</kbd> undo</span>
             <span><kbd>↑</kbd><kbd>↓</kbd> choose line</span>
             <span><kbd>←</kbd><kbd>→</kbd> nudge last stamp (<kbd>⇧</kbd> 1s)</span>
+            {canTransport && <span><kbd>P</kbd> play/pause</span>}
+            {canTransport && seek && <span><kbd>[</kbd><kbd>]</kbd> back / ahead {SKIP_SECS}s</span>}
           </div>
         </>
       )}
@@ -366,6 +407,74 @@ export function LyricsEditor({ initialText, live, seek, onSave, onClose, onTextC
           )}
         </div>}
       </div>
+    </div>
+  );
+}
+
+/** Play/pause, skip and a scrub bar over the sync list — the player bar is
+ *  out of reach behind a dialog. Every control hands focus back to the list
+ *  so Space keeps stamping. */
+function SyncTransport({ transport, position, seek, onSkip, onAfter }: {
+  transport: LyricsEditorTransport;
+  position: number;
+  seek?: (secs: number) => void;
+  onSkip: (delta: number) => void;
+  onAfter: () => void;
+}) {
+  const duration = transport.durationSecs != null && transport.durationSecs > 0 ? transport.durationSecs : null;
+  const then = (fn: () => void) => () => { fn(); onAfter(); };
+  // While the pointer drags, the thumb follows it and one seek lands on
+  // release — the position ticks would otherwise pull it back mid-drag.
+  const [dragAt, setDragAt] = useState<number | null>(null);
+  const endDrag = () => {
+    if (dragAt != null) seek?.(dragAt);
+    setDragAt(null);
+    onAfter();
+  };
+  return (
+    <div className="lyrics-sync-transport">
+      {seek && (
+        <button className="lyrics-transport-btn" onClick={then(() => onSkip(-SKIP_SECS))} title={`Back ${SKIP_SECS} seconds ([)`} aria-label={`Back ${SKIP_SECS} seconds`}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z" /></svg>
+        </button>
+      )}
+      <button className="lyrics-transport-btn lyrics-transport-btn--main" onClick={then(transport.onTogglePlay)} title={transport.playing ? "Pause (P)" : "Play (P)"} aria-label={transport.playing ? "Pause" : "Play"}>
+        {transport.playing
+          ? <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" /></svg>
+          : <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>}
+      </button>
+      {seek && (
+        <button className="lyrics-transport-btn" onClick={then(() => onSkip(SKIP_SECS))} title={`Ahead ${SKIP_SECS} seconds (])`} aria-label={`Ahead ${SKIP_SECS} seconds`}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z" /></svg>
+        </button>
+      )}
+      {seek && duration != null && (
+        <input
+          type="range"
+          className="lyrics-transport-scrub"
+          min={0}
+          max={duration}
+          step={0.1}
+          value={dragAt ?? Math.min(position, duration)}
+          onPointerDown={e => {
+            // Keep the release on the bar when the pointer leaves it mid-drag.
+            e.currentTarget.setPointerCapture?.(e.pointerId);
+            setDragAt(Math.min(position, duration));
+          }}
+          onChange={e => {
+            const secs = Number(e.target.value);
+            if (dragAt != null) setDragAt(secs);
+            else seek(secs);
+          }}
+          onPointerUp={endDrag}
+          onPointerCancel={() => setDragAt(null)}
+          onKeyDown={e => {
+            if (!e.metaKey && !e.ctrlKey && !e.altKey && SCRUB_KEYS.has(e.key)) e.stopPropagation();
+          }}
+          aria-label="Seek"
+        />
+      )}
+      {duration != null && <span className="lyrics-transport-length">{formatClock(duration)}</span>}
     </div>
   );
 }

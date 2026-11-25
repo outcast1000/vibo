@@ -4,7 +4,7 @@ import type { Track } from "../types";
 import type { InfoEntity, LyricsData } from "../types/informationTypes";
 import AutocompleteInput from "./AutocompleteInput";
 import TagEditor from "./TagEditor";
-import { LyricsEditor } from "./renderers/LyricsEditor";
+import { LyricsEditor, type LyricsEditorTransport } from "./renderers/LyricsEditor";
 import {
   addToAll, EMPTY_TAG_SELECTION, hasTagChanges, removeFromAll, selectionFromCounts, tagDelta,
   type TagSelection,
@@ -49,8 +49,11 @@ interface BulkEditModalProps {
   pluginsLoaded?: boolean;
   /** The one edited track is the one playing — the Lyrics tab's Sync needs it. */
   live?: boolean;
-  /** Seek the playing track (only passed while `live`). */
+  /** Play this track from `secs`: a seek while `live`, otherwise it starts
+   *  the track (Sync's "Play this song" and a stamp's replay). */
   seek?: (secs: number) => void;
+  /** Play/pause for the Lyrics tab's Sync — the dialog covers the player bar. */
+  transport?: LyricsEditorTransport;
   onClose: () => void;
   onSave: (result: BulkEditResult) => void;
   /** Reveal the track's file — useContextMenuActions.showTrackInFolder, the
@@ -152,7 +155,7 @@ function sharedValue(tracks: Track[], pick: (t: Track) => string | number | null
 
 export default function BulkEditModal({
   tracks, artistOptions, albumOptions, tagOptions, invokeInfoFetch, pluginNames, pluginsLoaded,
-  live = false, seek, onClose, onSave, onShowInFolder,
+  live = false, seek, transport, onClose, onSave, onShowInFolder,
 }: BulkEditModalProps) {
   const count = tracks.length;
   const single = count === 1 ? tracks[0] : null;
@@ -591,7 +594,7 @@ export default function BulkEditModal({
                     </p>
                   )}
                   {metadataSaved && errors.length === 0 && <p className="bulk-edit-hint">Details and tags are saved.</p>}
-                  <LyricsEditor initialText={lyricsInitial} live={live} seek={live ? seek : undefined} onTextChange={setLyricsText} />
+                  <LyricsEditor initialText={lyricsInitial} live={live} seek={seek} transport={live ? transport : undefined} onTextChange={setLyricsText} />
                 </>
               )}
             </div>
