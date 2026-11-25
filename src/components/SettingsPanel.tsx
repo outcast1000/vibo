@@ -1830,9 +1830,22 @@ export function SettingsPanel({
     // still scroll containers — so a section near the end of the body shoved
     // the whole document up and cut the caption bar in half until the window
     // was resized (an assistant failure's "Open AI control" did exactly this).
-    const section = document.getElementById(scrollToId);
-    if (section && bodyRef.current) scrollLineToCenter(bodyRef.current, section);
-    onScrolledToId?.();
+    //
+    // Wait for two painted frames first. A smooth scroll is animated by the
+    // display refresh, and a window that was hidden a moment ago — leaving the
+    // mini player hides, resizes and re-shows it — has none yet: WebKit learns
+    // the page is visible only some time after `show()` resolves, and a scroll
+    // started before that never moves, so Settings sat at the top of the tab.
+    // rAF doesn't fire while the page is hidden, so this waits exactly as long
+    // as it has to and costs a visible window two frames.
+    let raf = requestAnimationFrame(() => {
+      raf = requestAnimationFrame(() => {
+        const section = document.getElementById(scrollToId);
+        if (section && bodyRef.current) scrollLineToCenter(bodyRef.current, section);
+        onScrolledToId?.();
+      });
+    });
+    return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scrollToId, settingsTab]);
 
