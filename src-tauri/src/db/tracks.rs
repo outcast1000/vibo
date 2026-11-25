@@ -1,6 +1,7 @@
 // Auto-split from db.rs. Shared types/helpers live in db/mod.rs;
 // these are inherent `impl Database` methods reachable via `use super::*`.
 use super::*;
+use crate::placeholder_names::{real_album_title, real_artist_name};
 
 /// How many paths `find_track_ids_by_paths` binds per statement. Each chunk
 /// costs one scan of `tracks` (see that fn), so bigger is cheaper — capped
@@ -208,18 +209,20 @@ impl Database {
         let mut ids = Vec::with_capacity(files.len());
         for f in files {
             let result: SqlResult<i64> = (|| {
-                let artist_id = match f.artist.as_deref() {
+                // A placeholder ("[Unknown Album]", "Unknown Artist") is read as
+                // no tag at all — see `placeholder_names`.
+                let artist_id = match real_artist_name(f.artist.as_deref()) {
                     Some(name) => Some(super::artists::get_or_create_artist_conn(&tx, name)?),
                     None => None,
                 };
                 // The album files under its ALBUMARTIST (falling back to the track
                 // artist), so a compilation's tracks share one album row while each
                 // keeps its own artist_id. Same shape the Subsonic sync produces.
-                let album_artist_id = match f.album_artist.as_deref() {
+                let album_artist_id = match real_artist_name(f.album_artist.as_deref()) {
                     Some(name) => Some(super::artists::get_or_create_artist_conn(&tx, name)?),
                     None => artist_id,
                 };
-                let album_id = match f.album.as_deref() {
+                let album_id = match real_album_title(f.album.as_deref()) {
                     Some(title) => Some(super::albums::get_or_create_album_conn(&tx, title, album_artist_id, f.year)?),
                     None => None,
                 };

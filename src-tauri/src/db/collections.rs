@@ -542,13 +542,15 @@ impl Database {
                     continue;
                 }
 
-                let artist_id = match item.artist.as_deref() {
-                    Some(a) if !a.is_empty() => Some(get_or_create_named("artists", a)?),
-                    _ => None,
+                // Blank and placeholder names ("[Unknown Album]") are no tag —
+                // see `placeholder_names`.
+                let artist_id = match crate::placeholder_names::real_artist_name(item.artist.as_deref()) {
+                    Some(a) => Some(get_or_create_named("artists", a)?),
+                    None => None,
                 };
-                let album_id = match item.album.as_deref() {
-                    Some(al) if !al.is_empty() => Some(get_or_create_album(al, artist_id, item.year)?),
-                    _ => None,
+                let album_id = match crate::placeholder_names::real_album_title(item.album.as_deref()) {
+                    Some(al) => Some(get_or_create_album(al, artist_id, item.year)?),
+                    None => None,
                 };
 
                 tx.execute(
@@ -1067,6 +1069,37 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use crate::db::Database;
+
+    /// A manifest's placeholder album / artist ingest as none, like a scan's.
+    #[test]
+    fn test_manifest_placeholder_names_ingest_as_no_tag() {
+        let db = Database::new_in_memory().unwrap();
+        let cid = db
+            .add_collection("manifest", "Catalog", None, Some("https://example.com/m.json"), None, None, None, None)
+            .unwrap()
+            .id;
+        let item = |title: &str, artist: &str, album: &str| super::ManifestIngestTrack {
+            title: title.into(),
+            artist: Some(artist.into()),
+            album: Some(album.into()),
+            duration_secs: None,
+            track_number: None,
+            format: None,
+            year: None,
+            url: format!("https://example.com/{title}.mp3"),
+            tags: Vec::new(),
+        };
+        db.manifest_ingest(cid, &[item("one", "Mono", "[Unknown Album]"), item("two", "Unknown Artist", "Hymn")], |_, _| {})
+            .unwrap();
+
+        let tracks = db.get_tracks_for_collection(cid).unwrap();
+        let one = tracks.iter().find(|t| t.title == "one").unwrap();
+        assert_eq!(one.album_id, None);
+        assert_eq!(one.artist_name.as_deref(), Some("Mono"));
+        let two = tracks.iter().find(|t| t.title == "two").unwrap();
+        assert_eq!(two.artist_id, None);
+        assert_eq!(two.album_title.as_deref(), Some("Hymn"));
+    }
 
     /// The plugin cleanup path drops the rows under a folder — and only under
     /// it. A prefix without the trailing separator would also take

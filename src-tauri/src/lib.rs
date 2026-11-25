@@ -22,6 +22,7 @@ mod profiles;
 mod scanner;
 #[cfg(debug_assertions)]
 mod seed;
+mod placeholder_names;
 mod plugins;
 mod skins;
 mod subsonic;
@@ -532,8 +533,8 @@ impl ImageTarget {
     /// (`[Unknown Album]`, `[Unknown Artist]`).
     fn is_placeholder(&self) -> bool {
         match self {
-            ImageTarget::Album { title, .. } => image_provider::is_placeholder_album_title(title),
-            ImageTarget::Artist { name } => image_provider::is_placeholder_artist_name(name),
+            ImageTarget::Album { title, .. } => placeholder_names::is_placeholder_album_title(title),
+            ImageTarget::Artist { name } => placeholder_names::is_placeholder_artist_name(name),
             ImageTarget::Tag { .. } => false,
         }
     }

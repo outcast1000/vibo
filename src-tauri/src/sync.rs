@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::db::Database;
+use crate::placeholder_names::{real_album_title, real_artist_name};
 use crate::subsonic::SubsonicClient;
 
 pub fn sync_collection(
@@ -66,18 +67,23 @@ pub fn sync_collection(
 
         // OpenSubsonic's explicit albumArtist outranks the album-level artist
         // (which Navidrome already populates with the album artist anyway).
-        let artist_name = album.album_artist.as_deref().or(album.artist.as_deref());
+        //
+        // Navidrome files untagged tracks under `[Unknown Album]` (one per
+        // artist) and `[Unknown Artist]`. Those are read as no tag at all — no
+        // album row, no artist row — exactly like a local file with no tag
+        // (see `placeholder_names`). A re-sync converges an existing library:
+        // the upsert overwrites `album_id` and `recompute_counts` below drops
+        // the emptied rows.
+        let artist_name = real_artist_name(album.album_artist.as_deref())
+            .or(real_artist_name(album.artist.as_deref()));
         let artist_id = artist_name
             .and_then(|name| db.get_or_create_artist(name).ok());
 
-        let db_album_id = db
-            .get_or_create_album(&album.name, artist_id, album.year)
-            .ok();
+        let db_album_id = real_album_title(Some(&album.name))
+            .and_then(|title| db.get_or_create_album(title, artist_id, album.year).ok());
 
         for track in &tracks {
-            let track_artist_id = track
-                .artist
-                .as_deref()
+            let track_artist_id = real_artist_name(track.artist.as_deref())
                 .and_then(|name| db.get_or_create_artist(name).ok())
                 .or(artist_id);
 
@@ -173,4 +179,86 @@ pub fn sync_collection(
         .map_err(|e| e.to_string())?;
 
     Ok(removed_count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+
+    /// A Subsonic server on a local socket answering `getAlbumList2` and
+    /// `getAlbum` from fixed JSON, the way Navidrome files untagged music.
+    fn fake_server() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut line = String::new();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                // Drain the headers.
+                let mut h = String::new();
+                while reader.read_line(&mut h).map(|n| n > 2).unwrap_or(false) {
+                    h.clear();
+                }
+                // The fields beside `"status":"ok"` in the response.
+                let payload = if line.contains("getAlbumList2.view") && line.contains("offset=0") {
+                    r#","albumList2":{"album":[{"id":"a1"},{"id":"a2"}]}"#
+                } else if line.contains("getAlbumList2.view") {
+                    r#","albumList2":{"album":[]}"#
+                } else if line.contains("id=a1") {
+                    // Navidrome's per-artist bucket for songs with no album tag.
+                    r#","album":{"id":"a1","name":"[Unknown Album]","artist":"Mono","albumArtist":"Mono",
+                        "song":[{"id":"s1","title":"Ashes","artist":"Mono"}]}"#
+                } else if line.contains("id=a2") {
+                    // A tagged album whose songs have no artist tag.
+                    r#","album":{"id":"a2","name":"Real Record","artist":"[Unknown Artist]",
+                        "song":[{"id":"s2","title":"Nameless","artist":"[Unknown Artist]"}]}"#
+                } else {
+                    ""
+                };
+                let json = format!(r#"{{"subsonic-response":{{"status":"ok"{payload}}}}}"#);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    json.len(),
+                    json
+                );
+            }
+        });
+        base
+    }
+
+    #[test]
+    fn test_placeholder_album_and_artist_sync_as_no_tag() {
+        let db = Arc::new(Database::new_in_memory().unwrap());
+        let base = fake_server();
+        let cid = db
+            .add_collection("subsonic", "Navidrome", None, Some(&base), Some("u"), Some("p"), None, Some("plaintext"))
+            .unwrap()
+            .id;
+        // What an earlier sync left: a `[Unknown Album]` row holding s1.
+        let mono = db.get_or_create_artist("Mono").unwrap();
+        let old = db.get_or_create_album("[Unknown Album]", Some(mono), None).unwrap();
+        db.upsert_track("s1", "Ashes", Some(mono), Some(old), None, None, None, None, None, Some(cid), None)
+            .unwrap();
+
+        let client = SubsonicClient::from_stored(&base, "u", "p", None, "plaintext");
+        sync_collection(&db, &client, cid, |_, _| {}).unwrap();
+
+        let tracks = db.get_tracks_for_collection(cid).unwrap();
+        assert_eq!(tracks.len(), 2, "the earlier row was updated, not duplicated");
+        let ashes = tracks.iter().find(|t| t.title == "Ashes").unwrap();
+        assert_eq!(ashes.album_id, None, "[Unknown Album] is no album");
+        assert_eq!(ashes.artist_name.as_deref(), Some("Mono"), "the real artist stays");
+        let nameless = tracks.iter().find(|t| t.title == "Nameless").unwrap();
+        assert_eq!(nameless.artist_id, None, "[Unknown Artist] is no artist");
+        assert_eq!(nameless.album_title.as_deref(), Some("Real Record"), "the real album stays");
+
+        assert!(db.find_album_by_name("[Unknown Album]", None).unwrap().is_none(), "the old row is pruned");
+        assert!(db.find_artist_by_name("[Unknown Artist]").unwrap().is_none());
+    }
 }

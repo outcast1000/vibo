@@ -289,6 +289,36 @@ mod tests {
         }
     }
 
+    /// A placeholder tag ("Unknown Album", "[Unknown Artist]") ingests as no
+    /// tag: no album row, no artist row — and a placeholder ALBUMARTIST falls
+    /// back to the track artist like a missing one. Converges on a rescan.
+    #[test]
+    fn test_placeholder_tags_ingest_as_no_tag() {
+        let db = Database::new_in_memory().unwrap();
+        db.ingest_scanned_files(
+            &[
+                file("a/01.flac", "Ashes", "Mono", None, "Unknown Album"),
+                file("a/02.flac", "Nameless", "[Unknown Artist]", None, "Real Record"),
+                file("a/03.flac", "Owned", "Mono", Some("<unknown>"), "Hymn"),
+            ],
+            None,
+        )
+        .unwrap();
+        db.recompute_counts().unwrap();
+
+        let ashes = db.find_track_by_metadata("Ashes", Some("Mono"), None).unwrap().unwrap();
+        assert_eq!(ashes.album_id, None);
+        assert!(db.find_album_by_name("Unknown Album", None).unwrap().is_none());
+
+        let nameless = db.find_track_by_metadata("Nameless", None, Some("Real Record")).unwrap().unwrap();
+        assert_eq!(nameless.artist_id, None);
+        assert!(db.find_artist_by_name("[Unknown Artist]").unwrap().is_none());
+
+        let hymn = db.find_album_by_name("Hymn", Some("Mono")).unwrap().expect("files under the track artist");
+        assert_eq!(hymn.artist_name.as_deref(), Some("Mono"));
+        assert!(db.find_artist_by_name("<unknown>").unwrap().is_none());
+    }
+
     /// A tagged compilation ingests as ONE album filed under its ALBUMARTIST,
     /// with each track keeping its own artist — and the album artist (zero
     /// tracks of its own) is still a visible, findable artist.
