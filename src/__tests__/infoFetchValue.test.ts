@@ -16,6 +16,7 @@ import {
   saveInfoValue,
   resolveInfoEntityId,
   InfoFetchRequestError,
+  describeInfoFailures,
   type InfoTypeRow,
   type InfoValueRow,
 } from "../utils/infoFetchChain";
@@ -288,5 +289,65 @@ describe("resolveInfoEntityId", () => {
     invoke.mockImplementation(async () => { throw new Error("db closed"); });
     expect(await resolveInfoEntityId({ kind: "track", name: "x" })).toBe(0);
     spy.mockRestore();
+  });
+});
+
+describe("provider failures", () => {
+  it("lists every provider that failed with its reason, and walks past one that throws", async () => {
+    setupBackend();
+    const fetch = vi.fn(async (pluginId: string): Promise<InfoFetchResult> => {
+      if (pluginId === "lastfm") throw new Error("socket hang up");
+      return { status: "error", message: " rate limited " };
+    });
+    const out = await fetchInfoValue({ typeId: "album_wiki", entity: album, invokeInfoFetch: fetch, pluginNames: new Map([["lastfm", "Last.fm"]]) });
+    expect(fetch.mock.calls.map((c) => c[0])).toEqual(["lastfm", "other"]);
+    expect(out.status).toBe("error");
+    expect(out.failures).toEqual([
+      { providerId: "lastfm", name: "Last.fm", message: "socket hang up" },
+      { providerId: "other", name: "other", message: "rate limited" },
+    ]);
+  });
+
+  it("reports an earlier failure beside a later provider's answer", async () => {
+    setupBackend();
+    const fetch = providerReturning({ lastfm: { status: "error" }, other: { status: "ok", value: { summary: "x" } } });
+    const out = await fetchInfoValue({ typeId: "album_wiki", entity: album, invokeInfoFetch: fetch });
+    expect(out.status).toBe("ok");
+    expect(out.failures).toEqual([{ providerId: "lastfm", name: "lastfm", message: undefined }]);
+    expect(out.answeredBy).toEqual({ providerId: "other", name: "other" });
+  });
+
+  it("names the provider a held plain answer came from, not the one that failed after it", async () => {
+    const lyricsRow: InfoTypeRow = ["lyrics", "Lyrics", "lyrics", TTL, 0, [["core:local-lyrics", 21], ["lyrics/lrclib", 22]], ""];
+    setupBackend({ types: [lyricsRow] });
+    const fetch = providerReturning({
+      "core:local-lyrics": { status: "ok", value: { text: "words", kind: "plain" } },
+      "lyrics/lrclib": { status: "error", message: "timed out" },
+    });
+    const track: InfoEntity = { kind: "track", name: "Song", id: 3, artistName: "Band" };
+    const out = await fetchInfoValue({
+      typeId: "lyrics", entity: track, invokeInfoFetch: fetch,
+      pluginNames: new Map([["core:local-lyrics", "Local files"], ["lyrics/lrclib", "LRCLIB"]]),
+    });
+    expect(out).toMatchObject({ status: "ok", value: { text: "words" } });
+    expect(out.answeredBy).toEqual({ providerId: "core:local-lyrics", name: "Local files" });
+    expect(out.failures).toEqual([{ providerId: "lyrics/lrclib", name: "LRCLIB", message: "timed out" }]);
+  });
+
+  it("names nobody when nothing answered", async () => {
+    setupBackend();
+    const out = await fetchInfoValue({ typeId: "album_wiki", entity: album, invokeInfoFetch: providerReturning({}) });
+    expect(out.answeredBy).toBeNull();
+  });
+
+  it("describes failures in one sentence", () => {
+    expect(describeInfoFailures([])).toBe("");
+    expect(describeInfoFailures([{ providerId: "genius", name: "Genius" }])).toBe("Genius couldn't answer");
+    expect(describeInfoFailures([{ providerId: "genius", name: "Genius", message: "timed out" }])).toBe("Genius couldn't answer: timed out");
+    expect(describeInfoFailures([
+      { providerId: "a", name: "A", message: "x".repeat(200) },
+      { providerId: "b", name: "B", message: "403" },
+      { providerId: "c", name: "C" },
+    ])).toBe("A, B (403) and C couldn't answer");
   });
 });

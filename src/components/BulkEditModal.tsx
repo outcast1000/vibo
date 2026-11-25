@@ -13,7 +13,7 @@ import { useCommunityTagsForTracks, type InvokeInfoFetch } from "../hooks/useCom
 import { appendCommunityTags } from "../utils/tagSuggestions";
 import { writeFileMetadata, type FileMetadataEdit } from "../utils/tagOps";
 import { useTagOpsDeps } from "../contexts/TagOpsContext";
-import { fetchInfoValue } from "../utils/infoFetchChain";
+import { CORE_LOCAL_LYRICS_PROVIDER, describeInfoFailures, fetchInfoValue } from "../utils/infoFetchChain";
 import { saveSongLyrics } from "../utils/localLyrics";
 import { detectLyricsKind } from "../utils/lyricsEditor";
 import { isLocalTrack } from "../queueEntry";
@@ -228,6 +228,8 @@ export default function BulkEditModal({
   // holds.
   const [lyricsLoadError, setLyricsLoadError] = useState<string | null>(null);
   const [lyricsRequested, setLyricsRequested] = useState(false);
+  // Some web source couldn't be asked while the editor still opened.
+  const [lyricsLoadWarning, setLyricsLoadWarning] = useState<string | null>(null);
   const lyricsDirty = lyricsInitial != null && lyricsText.trim() !== "" && lyricsText !== lyricsInitial;
   // Emptying the editor saves nothing (there is no "remove lyrics" write) —
   // said, so a disabled Save isn't a mystery.
@@ -235,16 +237,29 @@ export default function BulkEditModal({
 
   async function loadLyrics(entity: InfoEntity) {
     setLyricsLoadError(null);
+    setLyricsLoadWarning(null);
     if (!invokeInfoFetch) {
       setLyricsLoadError("The lyrics providers aren't loaded yet.");
       return;
     }
     try {
       const out = await fetchInfoValue({ typeId: "lyrics", entity, invokeInfoFetch, pluginNames });
-      if (out.status === "error") {
-        setLyricsLoadError("A lyrics provider failed.");
+      const failures = out.failures ?? [];
+      const filesFailed = failures.find((f) => f.providerId === CORE_LOCAL_LYRICS_PROVIDER);
+      // No editor when the song's own files couldn't be read — whatever a
+      // later source said, they may hold lyrics an empty editor's save would
+      // replace — or when the walk failed without saying who. A web source
+      // failing beside readable files is a warning.
+      if (filesFailed || (out.status === "error" && failures.length === 0)) {
+        setLyricsLoadError(filesFailed
+          ? `reading the song's files failed${filesFailed.message ? ` (${filesFailed.message})` : ""}.`
+          : "the lyrics lookup failed.");
         return;
       }
+      const failed = describeInfoFailures(failures);
+      setLyricsLoadWarning(!failed ? null
+        : out.status === "ok" && out.answeredBy ? `${failed}. These are from ${out.answeredBy.name}.`
+          : `${failed}. No other source had lyrics for this song.`);
       const data = out.status === "ok" ? out.value as LyricsData | null : null;
       const text = data?.text ?? "";
       setLyricsFromFile(!!data?.local);
@@ -587,6 +602,7 @@ export default function BulkEditModal({
                   <p className="bulk-edit-hint">
                     {lyricsSourceHint(isLocalTrack(single), lyricsFromFile, lyricsInitial.trim() !== "")}
                   </p>
+                  {lyricsLoadWarning && <p className="bulk-edit-hint bulk-edit-hint--warning">{lyricsLoadWarning}</p>}
                   {lyricsError && <p className="bulk-edit-hint bulk-edit-hint--error">Couldn't save the lyrics: {lyricsError}</p>}
                   {lyricsEmptied && (
                     <p className="bulk-edit-hint bulk-edit-hint--warning">

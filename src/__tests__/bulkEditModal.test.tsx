@@ -20,7 +20,10 @@ vi.mock("../utils/tauriEvents", () => ({ subscribe: () => () => undefined, safeU
 const saveSongLyrics = vi.hoisted(() => vi.fn(async () => ({ savedTo: "file" })));
 vi.mock("../utils/localLyrics", () => ({ saveSongLyrics }));
 const fetchInfoValue = vi.hoisted(() => vi.fn(async () => ({ status: "ok", value: { text: "old line", kind: "plain" } })));
-vi.mock("../utils/infoFetchChain", () => ({ fetchInfoValue }));
+vi.mock("../utils/infoFetchChain", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../utils/infoFetchChain")>()),
+  fetchInfoValue,
+}));
 
 const { default: BulkEditModal } = await import("../components/BulkEditModal");
 
@@ -171,6 +174,54 @@ describe("BulkEditModal", () => {
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByRole("textbox", { name: "Lyrics" })).toBeTruthy();
   });
+
+  it("a web source failing opens the editor anyway, naming the source and its reason", async () => {
+    fetchInfoValue.mockResolvedValueOnce({
+      status: "error", value: null,
+      failures: [{ providerId: "genius", name: "Genius", message: "blocked by the network" }],
+    } as never);
+    renderModal([track(1, "A")]);
+    fireEvent.click(screen.getByRole("tab", { name: "Lyrics" }));
+    expect(await screen.findByRole("textbox", { name: "Lyrics" })).toBeTruthy();
+    expect(screen.getByText("Genius couldn't answer: blocked by the network. No other source had lyrics for this song.")).toBeTruthy();
+  });
+
+  it("a web source failing before a miss says nothing else had lyrics — never that some came", async () => {
+    fetchInfoValue.mockResolvedValueOnce({
+      status: "not_found", value: null,
+      failures: [{ providerId: "genius", name: "Genius", message: "rate limited" }],
+    } as never);
+    renderModal([track(1, "A")]);
+    fireEvent.click(screen.getByRole("tab", { name: "Lyrics" }));
+    expect(await screen.findByText("Genius couldn't answer: rate limited. No other source had lyrics for this song.")).toBeTruthy();
+  });
+
+  it("names the source the shown lyrics are from", async () => {
+    fetchInfoValue.mockResolvedValueOnce({
+      status: "ok", value: { text: "plain words", kind: "plain" },
+      failures: [{ providerId: "lyrics/lrclib", name: "LRCLIB" }],
+      answeredBy: { providerId: "core:local-lyrics", name: "Local files" },
+    } as never);
+    renderModal([track(1, "A")]);
+    fireEvent.click(screen.getByRole("tab", { name: "Lyrics" }));
+    expect(await screen.findByText("LRCLIB couldn't answer. These are from Local files.")).toBeTruthy();
+  });
+
+  // Whatever a later source answered: the files may hold lyrics an empty
+  // editor's save would replace.
+  for (const status of ["error", "not_found", "ok"] as const) {
+    it(`the song's files failing keeps the editor closed and says why (then ${status})`, async () => {
+      fetchInfoValue.mockResolvedValueOnce({
+        status, value: status === "ok" ? { text: "web words", kind: "plain" } : null,
+        failures: [{ providerId: "core:local-lyrics", name: "Local files", message: "permission denied" }],
+        answeredBy: status === "ok" ? { providerId: "lyrics/lrclib", name: "LRCLIB" } : null,
+      } as never);
+      renderModal([track(1, "A")]);
+      fireEvent.click(screen.getByRole("tab", { name: "Lyrics" }));
+      expect(await screen.findByText(/Couldn't read the current lyrics: reading the song's files failed \(permission denied\)/)).toBeTruthy();
+      expect(screen.queryByRole("textbox", { name: "Lyrics" })).toBeNull();
+    });
+  }
 
   it("some files failing still reports the change on Close, and nothing is written twice", async () => {
     invoke.mockImplementationOnce(async (cmd: string) => (cmd === "get_tag_counts_for_tracks" ? [] : null));

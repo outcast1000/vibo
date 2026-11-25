@@ -146,18 +146,54 @@ export interface FetchChainOpts {
   allProviders?: Array<[string, number]>;
 }
 
+/** A provider the walk asked that came back with an error (or threw). */
+export interface InfoFetchFailure {
+  /** The provider row's key (`lrclib`, `lyrics/lrclib`, `core:local-lyrics`). */
+  providerId: string;
+  /** Its display name. */
+  name: string;
+  message?: string;
+}
+
+/** A provider row, named for display. */
+export interface InfoFetchProvider {
+  providerId: string;
+  name: string;
+}
+
+/** Longest provider reason shown in a sentence; the rest is in the console. */
+const FAILURE_REASON_MAX = 160;
+
+/** "Genius couldn't answer: rate limited" / "Genius and LRCLIB couldn't
+ *  answer" — for a status line. Empty for no failures. */
+export function describeInfoFailures(failures: InfoFetchFailure[]): string {
+  if (failures.length === 0) return "";
+  const reason = (f: InfoFetchFailure) => {
+    const m = f.message?.trim();
+    return m && m.length <= FAILURE_REASON_MAX ? m : null;
+  };
+  if (failures.length === 1) {
+    const r = reason(failures[0]);
+    return `${failures[0].name} couldn't answer${r ? `: ${r}` : ""}`;
+  }
+  const parts = failures.map((f) => { const r = reason(f); return r ? `${f.name} (${r})` : f.name; });
+  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]} couldn't answer`;
+}
+
 /** Walk the provider chain (first ok wins), persist the outcome into the
  *  shared cache (`info_upsert_value`) and drop other providers' stale rows.
- *  Never throws — a thrown provider is recorded as an error status, exactly
- *  as the detail pages have always behaved. */
+ *  Never throws — a provider that throws is recorded as an error step and the
+ *  walk moves on, like one that answered an error. `failures` lists every
+ *  provider that errored, with its reason, so a caller can say which one. */
 export async function fetchInfoThroughChain(
   opts: FetchChainOpts,
-): Promise<{ result: InfoFetchResult; usedIntegerId: number }> {
+): Promise<{ result: InfoFetchResult; usedIntegerId: number; failures: InfoFetchFailure[]; answeredBy: InfoFetchProvider | null }> {
   const { typeId, providers, entity, entityKey, invokeInfoFetch, pluginNames, onProgress } = opts;
   const allProviders = opts.allProviders ?? providers;
   let usedIntegerId = providers[0]?.[1] ?? 0;
   let usedPluginId: string | null = providers[0]?.[0] ?? null;
   const steps: FetchProgressEntry[] = [];
+  const failures: InfoFetchFailure[] = [];
   try {
     let result: InfoFetchResult = { status: "error" };
     // The first provisional ok (plain lyrics) seen, held while the walk looks
@@ -172,13 +208,23 @@ export async function fetchInfoThroughChain(
       steps.push(step);
       onProgress?.(steps);
 
-      result = await invokeInfoFetch(pluginId, typeId, entity, (url) => {
-        step.url = url;
-        onProgress?.(steps);
-      });
+      try {
+        result = await invokeInfoFetch(pluginId, typeId, entity, (url) => {
+          step.url = url;
+          onProgress?.(steps);
+        });
+      } catch (e) {
+        console.error(`Info provider "${pluginId}" failed for "${typeId}" (${entityKey}):`, e);
+        result = { status: "error", message: e instanceof Error ? e.message : String(e) };
+      }
       usedIntegerId = integerId;
       usedPluginId = pluginId;
       step.status = result.status === "ok" ? "ok" : result.status === "not_found" ? "not_found" : "error";
+      if (result.status === "error") {
+        const message = typeof result.message === "string" && result.message.trim() ? result.message.trim() : undefined;
+        step.message = message;
+        failures.push({ providerId: pluginId, name: step.provider, message });
+      }
       onProgress?.(steps);
       if (result.status === "ok") {
         if (!isProvisionalAnswer(typeId, result.value)) break;
@@ -216,7 +262,12 @@ export async function fetchInfoThroughChain(
       }
     }
 
-    return { result, usedIntegerId };
+    // Who answered, on an `ok` — not always the last one asked: a held
+    // provisional answer (plain lyrics) can outlive later providers.
+    const answeredBy = result.status === "ok" && usedPluginId
+      ? { providerId: usedPluginId, name: pluginNames?.get(usedPluginId) ?? usedPluginId }
+      : null;
+    return { result, usedIntegerId, failures, answeredBy };
   } catch (e) {
     console.error(`Info fetch chain for "${typeId}" (${entityKey}) failed:`, e);
     await invoke("info_upsert_value", {
@@ -225,7 +276,7 @@ export async function fetchInfoThroughChain(
       value: "{}",
       status: "error",
     }).catch(() => {}); // eslint-disable-line no-restricted-syntax -- Fire-and-forget: recording an error status; the error is already logged above
-    return { result: { status: "error" }, usedIntegerId };
+    return { result: { status: "error", message: e instanceof Error ? e.message : String(e) }, usedIntegerId, failures, answeredBy: null };
   }
 }
 
@@ -276,6 +327,13 @@ export interface FetchInfoValueOutcome {
   /** A fresh cache row, or a chain walk this call ran. */
   source: "cache" | "fetch";
   value: unknown;
+  /** Providers this call's walk asked that failed, with their reasons (a
+   *  cache serve asked nobody: empty). Present on any status — an `ok` from
+   *  a later provider can follow an earlier one's failure. */
+  failures: InfoFetchFailure[];
+  /** The provider whose value this is, when this call's walk found one
+   *  (null for a cache serve or no answer). */
+  answeredBy: InfoFetchProvider | null;
 }
 
 function parseStoredValue(raw: string): unknown {
@@ -438,13 +496,13 @@ export async function fetchInfoValue(opts: FetchInfoValueOpts): Promise<FetchInf
     // Local (`core:`) rows and misses on a type with a local provider expire
     // daily — the answer can change on disk. See cacheTtlForRow.
     if (c && decideCacheAction(c[3], c[4], cacheTtlForRow(providers, c[0], c[3], ttl, typeId, c[2]), now) === "render") {
-      return { typeId, name, displayKind, status: "ok", source: "cache", value: parseStoredValue(c[2]) };
+      return { typeId, name, displayKind, status: "ok", source: "cache", value: parseStoredValue(c[2]), failures: [], answeredBy: null };
     }
   }
   if (chain.length === 0) {
     throw new InfoFetchRequestError(`no providers registered for "${typeId}" — is the plugin enabled?`);
   }
-  const { result } = await fetchInfoThroughChain({
+  const { result, failures, answeredBy } = await fetchInfoThroughChain({
     typeId, providers: chain, allProviders: providers, entity, entityKey, invokeInfoFetch, pluginNames,
   });
   // A plugin or the control API changed what this entity shows — tell any open
@@ -459,5 +517,7 @@ export async function fetchInfoValue(opts: FetchInfoValueOpts): Promise<FetchInf
     status: result.status,
     source: "fetch",
     value: result.status === "ok" ? result.value : null,
+    failures,
+    answeredBy,
   };
 }

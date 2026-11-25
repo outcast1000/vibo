@@ -42,13 +42,16 @@ export interface InfoEntity {
 export type InfoFetchResult =
   | { status: "ok"; value: Record<string, unknown> }
   | { status: "not_found" }
-  | { status: "error" };
+  /** `message`: why, in words a user can act on — shown where the failure is. */
+  | { status: "error"; message?: string };
 
 /** Progress entry during fetch chain */
 export interface FetchProgressEntry {
   provider: string;
   url?: string;
   status?: "fetching" | "ok" | "not_found" | "error";
+  /** The provider's reason, on an error. */
+  message?: string;
 }
 
 /** Resolved section state for rendering */

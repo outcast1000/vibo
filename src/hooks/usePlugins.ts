@@ -3862,9 +3862,9 @@ export function usePlugins(
       // `<pluginId>/<provider>` for a plugin offering several (providerKey.ts).
       const { pluginId: owner, provider } = parseProviderKey(pluginId);
       const loaded = loadedPluginsRef.current.get(owner);
-      if (!loaded) return { status: "error" };
+      if (!loaded) return { status: "error", message: "the plugin isn't running" };
       const handler = loaded.infoFetchHandlers.get(handlerKey(infoTypeId, provider));
-      if (!handler) return { status: "error" };
+      if (!handler) return { status: "error", message: "the plugin didn't register this lookup" };
       const prev = fetchUrlCallbackRef.current;
       fetchUrlCallbackRef.current = onFetchUrl ?? null;
       try {
