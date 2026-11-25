@@ -1,7 +1,7 @@
 // In-app keyboard shortcuts (window keydown), extracted from App.tsx.
 //
-// Distinct from useGlobalShortcuts.ts, which registers OS-level media keys via
-// Tauri's global-shortcut plugin. This handles the in-window shortcuts documented
+// Distinct from the OS-level media keys: useOsMediaControls.ts (macOS / Windows,
+// through the system Now Playing integration) and useGlobalShortcuts.ts (Linux). This handles the in-window shortcuts documented
 // in frontend.md (Space, arrows, Cmd+1/2/K/F/L/P/M, etc.).
 //
 // All inputs are funneled through a ref that is refreshed every render, so the

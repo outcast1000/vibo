@@ -512,6 +512,8 @@ window.__TAURI_INTERNALS__.invoke = async function (cmd, args) {
     }
     case 'fetch_tag_image': return null;
     case 'record_play': return null;
+    case 'set_now_playing': return null;
+    case 'now_playing_available': return false;
     default:
       console.warn('[screenshot-mock] unhandled invoke:', cmd, args);
       return null;

@@ -125,6 +125,7 @@ import { LIBRARY_PREFETCH_LEAD_SECS, prefetchLeadSecs, prefetchStillWanted, type
 import { useStoryboard } from "./hooks/useStoryboard";
 import { partialStoryboard } from "./utils/storyboard";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
+import { useOsMediaControls } from "./hooks/useOsMediaControls";
 import { useInAppKeyboardShortcuts } from "./hooks/useInAppKeyboardShortcuts";
 import { useSkins } from "./hooks/useSkins";
 import { usePlugins, type PluginHostCallbacks } from "./hooks/usePlugins";
@@ -1660,7 +1661,7 @@ function App() {
     }
   }, [playback.currentTrack]);
 
-  const mediaSessionNextRef = useRef<() => void>(() => {});
+  const osMediaNextRef = useRef<() => void>(() => {});
 
   // A play crossed the scrobble threshold. Settings → Playback → Scrobbling decides who
   // hears about it, per media type: the local history (`record_play`) and each
@@ -2451,32 +2452,26 @@ function App() {
     }).catch(console.error);
   }, [mini.miniMode, minimizeToMiniPlayer]);
 
-  useEffect(() => {
-    if (!("mediaSession" in navigator)) return;
-    const track = playback.currentTrack;
-    if (!track) {
-      navigator.mediaSession.metadata = null;
-      return;
-    }
-    const artwork: MediaImage[] = nowPlayingArtSrc ? [{ src: nowPlayingArtSrc }] : [];
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: track.title,
-      artist: track.artist_name ?? undefined,
-      album: track.album_title ?? undefined,
-      artwork,
-    });
-  }, [playback.currentTrack, nowPlayingArtSrc]);
-
-  useEffect(() => {
-    if (!("mediaSession" in navigator)) return;
-    navigator.mediaSession.setActionHandler("play", () => {
-      if (!playback.playing) playback.handlePause();
-    });
-    navigator.mediaSession.setActionHandler("pause", () => playback.handlePause());
-    navigator.mediaSession.setActionHandler("previoustrack", () => queueHook.playPrevious());
-    navigator.mediaSession.setActionHandler("nexttrack", () => mediaSessionNextRef.current());
-    navigator.mediaSession.setActionHandler("stop", () => playback.handleStop());
-  }, [playback.handlePause, playback.handleStop, queueHook.playPrevious]);
+  // The OS Now Playing entry + media keys (Control Center / F7–F9 on macOS,
+  // the media flyout + keyboard keys on Windows). The webview's mediaSession
+  // can't do this: it only reaches the OS while an HTML media element plays,
+  // and playback is libmpv-only.
+  useOsMediaControls({
+    track: playingTrack,
+    playing: playback.playing,
+    stopped: playback.stopped,
+    rate: playback.playbackRate,
+    durationSecs: playback.durationSecs,
+    video: playingTrack ? isVideoTrack(playingTrack) : false,
+    artwork: playingTrack?.image_url ?? nowPlayingArtPath,
+    actions: {
+      togglePlayPause: () => playback.handlePause(),
+      next: () => osMediaNextRef.current(),
+      previous: () => queueHook.playPrevious(),
+      stop: () => playback.handleStop(),
+      seek: (secs) => playback.handleSeek(secs),
+    },
+  });
 
   // Context menu actions
   const showNativeMenuRef = useRef<((state: import("./types/contextMenu").ContextMenuState) => void) | null>(null);
@@ -4160,7 +4155,7 @@ function App() {
   const handleToggleDislikeRef = useRef((_track: QueueTrack) => {});
 
   // In-app keyboard shortcuts (window keydown). OS-level media keys are handled
-  // separately by useGlobalShortcuts above.
+  // separately: useOsMediaControls (macOS / Windows), useGlobalShortcuts (Linux).
   useInAppKeyboardShortcuts({
     library, playback, queueHook, mini,
     volume: controlsVolume,
@@ -4300,7 +4295,7 @@ function App() {
     await endOfQueue(source);
   }, [endOfQueue, waitForLoadingPlayRef, playNextRef]);
 
-  useAssignRef(mediaSessionNextRef, () => handleNext());
+  useAssignRef(osMediaNextRef, () => handleNext());
   // Engine-side "ended with nothing gapless-armed" (gapless and crossfade
   // hand over inside the engine, so reaching here means the queue advances).
   useAssignRef(nativeEndedRef, () => handleNext("auto"));

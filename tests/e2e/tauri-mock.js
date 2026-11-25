@@ -661,6 +661,10 @@ window.__TAURI_INTERNALS__.invoke = async function (cmd, args) {
       return !!(args && args.paused);
     case 'popup_native_menu':
       return null;
+    case 'set_now_playing': // OS Now Playing entry — nothing to mirror in a browser
+      return null;
+    case 'now_playing_available':
+      return false;
     default:
       console.warn('[tauri-mock] unhandled invoke:', cmd, args);
       return null;

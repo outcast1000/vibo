@@ -78,8 +78,13 @@ libc = "0.2"
 # (browse_window.rs). Already in the build through tao/wry — declared, not
 # added. Replaced cocoa + objc 0.2, whose whole API was deprecated.
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry", "NSDate", "NSProcessInfo", "objc2-core-foundation"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSView", "NSWindow", "NSEvent", "NSGraphics", "NSGraphicsContext", "NSApplication", "NSOpenGL", "NSOpenGLView"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry", "NSDate", "NSProcessInfo", "objc2-core-foundation", "NSData", "NSDictionary", "NSObject", "NSString", "NSValue"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSView", "NSWindow", "NSEvent", "NSGraphics", "NSGraphicsContext", "NSApplication", "NSOpenGL", "NSOpenGLView", "NSImage"] }
+# The system Now Playing entry (Control Center, the menu-bar widget, the lock
+# screen) and the media keys / AirPods buttons that go with it — now_playing/
+# macos.rs. Same objc2 family as above; block2 is already in the graph through it.
+objc2-media-player = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "MPMediaItem", "MPNowPlayingInfoCenter", "MPRemoteCommand", "MPRemoteCommandCenter", "MPRemoteCommandEvent"] }
+block2 = "0.6"
 # Trust-settings walk for trust_store.rs. Already in the build through
 # native-tls / rustls-platform-verifier — declared, not added.
 security-framework = { version = "3.7", default-features = false }
@@ -111,6 +116,12 @@ windows = { version = "0.61", features = [
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_Devices_FunctionDiscovery",
     "Win32_Devices_Properties",
+    # System Media Transport Controls (now_playing/win.rs): the media
+    # overlay, the lock-screen entry and the hardware media keys.
+    "Foundation",
+    "Media",
+    "Storage_Streams",
+    "Win32_System_WinRT",
 ] }
 
 [dev-dependencies]

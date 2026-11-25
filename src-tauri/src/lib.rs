@@ -36,6 +36,7 @@ mod mixtape;
 mod main_playlist;
 mod recent_plays;
 mod mpv_engine;
+mod now_playing;
 mod timing;
 mod telemetry;
 mod downloader;
@@ -367,6 +368,8 @@ macro_rules! invoke_handler {
             commands::set_cursor_tracker,
             commands::start_window_drag,
             commands::set_window_behavior,
+            now_playing::set_now_playing,
+            now_playing::now_playing_available,
             browse_window::open_browse_window,
             browse_window::browse_window_eval,
             browse_window::close_browse_window,
@@ -1443,6 +1446,11 @@ pub fn run() {
                 // corners rely on it): tao sets `NSColor::clearColor` itself when it
                 // builds a `transparent: true` window with no `backgroundColor`
                 // (tauri.conf.json). Setting a `backgroundColor` there would undo it.
+
+                // Publish to the OS Now Playing surface and take its media
+                // commands (Control Center, media keys, headset buttons, the
+                // Windows media flyout) — now_playing/.
+                now_playing::install(app.handle(), &window);
 
                 // Tell the frontend when displays are plugged/unplugged/rearranged,
                 // so it can restore the geometry saved for the new arrangement.
