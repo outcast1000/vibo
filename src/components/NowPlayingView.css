@@ -398,17 +398,18 @@
   transition:
     color 0.45s cubic-bezier(0.22, 1, 0.36, 1),
     opacity 0.45s cubic-bezier(0.22, 1, 0.36, 1),
-    transform 0.45s cubic-bezier(0.22, 1, 0.36, 1),
-    filter 0.45s ease;
+    transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* synced states */
+/* synced states. No blur on the dimmed lines: a `filter` on each line made it
+   its own blurred compositing layer, and WKWebView left stray coloured seams
+   along those layers' edges (and animating `filter` breaks the motion rules).
+   Opacity + scale carry the dimming. */
 .np-lyric-line--past,
 .np-lyric-line--upcoming {
   color: var(--np-text-secondary);
   text-shadow: var(--np-text-shadow-sm);
   opacity: 0.38;
-  filter: blur(0.5px);
   transform: scale(0.97);
 }
 .np-lyric-line--active {
@@ -416,7 +417,6 @@
   text-shadow: var(--np-text-shadow);
   opacity: 1;
   font-weight: 800;
-  filter: none;
   transform: scale(1.12) translateY(-1px);
 }
 
@@ -427,7 +427,6 @@
 .np-lyrics-scroll--synced:hover .np-lyric-line--seekable:not(.np-lyric-line--active):hover {
   color: var(--np-text-primary);
   opacity: 0.85;
-  filter: none;
 }
 
 /* plain text: identical font/size/weight to synced lines (inherits the base
@@ -446,8 +445,8 @@
    than the blurred backdrop, and the side scrim alone left them blending into
    bright or busy pictures. Each letter carries its own contrast instead: a dark
    outline, painted under the fill (`paint-order`) so only its outer half shows
-   and the letters keep their weight. Lines not being sung drop the dimming
-   blur and come up from 0.38, which over a sharp picture read as noise.
+   and the letters keep their weight. Lines not being sung come up from 0.38,
+   which over a sharp picture read as noise.
    The outline is black on purpose, like the scrim: the text here is always
    light, whatever the skin. */
 .np-audio--fill .np-lyric-line {
@@ -458,7 +457,6 @@
 .np-audio--fill .np-lyric-line--upcoming {
   color: rgba(255, 255, 255, 0.82);
   opacity: 0.72;
-  filter: none;
 }
 
 /* Timing offset, parked at the foot of the lyrics column. Out of flow so it
