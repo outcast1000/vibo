@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 // @ts-expect-error — plain .mjs script, no type declarations
-import { TOOLS, buildPluginProxies, mergeProxyRoster, discoveryPidAlive, parseCliArgs, versionCmp, launchCommands, readTextFile, httpCall } from "../../mcp/viboplr-mcp.mjs";
+import { TOOLS, buildPluginProxies, mergeProxyRoster, discoveryPidAlive, parseCliArgs, versionCmp, launchCommands, readTextFile, httpCall, pluginToolAnswer } from "../../mcp/viboplr-mcp.mjs";
 
 // The MCP server is the one satellite that talks to the control API on the
 // user's behalf from clients we don't control, so the protocol handshake, the
@@ -876,6 +876,38 @@ describe("MCP server started with the retired --tier=full flag", () => {
 // own timeout — installs and plugin downloads, allowed ~10 min, all failed at
 // 5 min as "Vibo is not reachable". These pin that the caller's timeout is the
 // limit and that a timeout and a refused connection stay distinguishable.
+describe("pluginToolAnswer (a plugin tool's reply to the model)", () => {
+  it("hands back the tool's return value", () => {
+    expect(pluginToolAnswer({ result: { status: "saved" } })).toEqual({ status: "saved" });
+    expect(pluginToolAnswer({ result: null })).toBeNull();
+    expect(pluginToolAnswer(undefined)).toBeNull();
+  });
+
+  // A tool still running after ~40s comes back as a job (control_api.rs);
+  // dropping it to null would tell the model the tool returned nothing.
+  it("hands back the job a long tool became, for the jobs tool to follow", () => {
+    const job = { jobId: "j3", status: "running", kind: "plugin-tool", label: "whisper: sync_lyrics", note: "…" };
+    expect(pluginToolAnswer(job)).toEqual(job);
+  });
+
+  it("never mistakes a tool result that happens to carry a jobId for a job", () => {
+    expect(pluginToolAnswer({ result: { jobId: "x" } })).toEqual({ jobId: "x" });
+  });
+
+  // The model must know before it calls a `long` tool that the answer is a
+  // job to follow, not the result.
+  it("tells the model a tool declared long answers with a job", () => {
+    const proxies = buildPluginProxies({
+      plugins: [{ pluginId: "whisper", name: "Whisper", tools: [
+        { name: "sync_lyrics", description: "Time lyrics", long: true },
+        { name: "status", description: "Status", readOnly: true },
+      ] }],
+    });
+    expect(proxies.find((p: { tool: string }) => p.tool === "sync_lyrics").description).toContain("jobs action=wait");
+    expect(proxies.find((p: { tool: string }) => p.tool === "status").description).not.toContain("jobs action=wait");
+  });
+});
+
 describe("httpCall (the control API transport)", () => {
   function server(handler: http.RequestListener): Promise<{ port: number; close: () => void }> {
     const s = http.createServer(handler);

@@ -31,10 +31,10 @@ import http from "node:http";
 import { homedir } from "node:os";
 import { isAbsolute, join, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
-import { DEFAULT_MS, INSTRUCTIONS, PROXY_DROP_GRACE_MS, PROXY_SEP, SLOW_MS, TOOLS, buildPluginProxies, mergeProxyRoster, runTool, toolsFor, versionCmp } from "./tools.mjs";
+import { DEFAULT_MS, INSTRUCTIONS, PROXY_DROP_GRACE_MS, PROXY_SEP, SLOW_MS, TOOLS, buildPluginProxies, mergeProxyRoster, pluginToolAnswer, runTool, toolsFor, versionCmp } from "./tools.mjs";
 
 // Re-exported for the tests and any caller that imported them from here.
-export { TOOLS, buildPluginProxies, mergeProxyRoster, versionCmp };
+export { TOOLS, buildPluginProxies, mergeProxyRoster, pluginToolAnswer, versionCmp };
 
 const VERSION = "0.11.0";
 const BUNDLE_ID = "com.alex.viboplr";
@@ -479,7 +479,7 @@ async function callPluginProxy(proxy, args) {
     { pluginId: proxy.pluginId, tool: proxy.tool, args },
     { timeoutMs: SLOW_MS },
   );
-  return out?.result ?? null;
+  return pluginToolAnswer(out);
 }
 
 // ---------------------------------------------------------------------------

@@ -178,8 +178,25 @@ export interface AssistantOpsRegistry {
   assistantTools: PluginAssistantTool[];
   assistantInstructions: Map<string, string>;
   pluginNames?: Map<string, string>;
-  invokeAssistantTool: (pluginId: string, name: string, args: Record<string, unknown>) => Promise<unknown>;
+  invokeAssistantTool: (
+    pluginId: string,
+    name: string,
+    args: Record<string, unknown>,
+    opts?: AssistantInvokeOptions,
+  ) => Promise<unknown>;
 }
+
+/** `timeoutMs` replaces the 60s backstop on a plugin tool — the control API
+ *  passes its long budget, since there the call is a job (backend.md). */
+export interface AssistantInvokeOptions {
+  timeoutMs?: number;
+}
+
+/** A plugin tool called through the control API may run this long (Whisper
+ *  timing a song takes minutes). There the call is a job, so nobody holds a
+ *  request open for it; Rust's bridge budget is the same (`control_api.rs` →
+ *  `ASSISTANT_TOOL_BUDGET_FACTOR`). Every other caller keeps the 60s backstop. */
+export const ASSISTANT_TOOL_LONG_TIMEOUT_MS = 30 * 60 * 1000;
 
 export function listAssistantTools(
   reg: Omit<AssistantOpsRegistry, "pluginStates" | "invokeAssistantTool">,
@@ -194,11 +211,12 @@ export function listAssistantTools(
  * Checks, in order: the plugin is callable (installed → enabled → active),
  * then the tool is registered — so "not installed" beats "no such tool", and
  * the no-such-tool rejection lists what the plugin does register. Handler
- * throws and the 60s timeout propagate as rejections.
+ * throws and the timeout (60s unless `timeoutMs` says otherwise) propagate
+ * as rejections.
  */
 export async function invokeAssistantTool(
   reg: AssistantOpsRegistry,
-  args: { pluginId: string; tool: string; args?: unknown },
+  args: { pluginId: string; tool: string; args?: unknown; timeoutMs?: number },
   via: OpVia = direct,
 ): Promise<unknown> {
   const { pluginId, tool } = args;
@@ -212,5 +230,10 @@ export async function invokeAssistantTool(
     typeof args.args === "object" && args.args !== null && !Array.isArray(args.args)
       ? (args.args as Record<string, unknown>)
       : {};
-  return via(pluginId, `tool:${tool}`, () => reg.invokeAssistantTool(pluginId, tool, toolArgs));
+  const timeoutMs = args.timeoutMs;
+  return via(pluginId, `tool:${tool}`, () =>
+    timeoutMs === undefined
+      ? reg.invokeAssistantTool(pluginId, tool, toolArgs)
+      : reg.invokeAssistantTool(pluginId, tool, toolArgs, { timeoutMs }),
+  );
 }

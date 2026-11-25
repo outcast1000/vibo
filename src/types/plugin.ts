@@ -261,6 +261,8 @@ export interface PluginManifestAssistant {
     inputSchema?: Record<string, unknown>;
     /** See `PluginAssistantToolDescriptor.readOnly`. */
     readOnly?: boolean;
+    /** See `PluginAssistantToolDescriptor.long`. */
+    long?: boolean;
     /** See `PluginAssistantToolDescriptor.categories`. */
     categories?: string[];
   }>;
@@ -2126,6 +2128,17 @@ export interface PluginAssistantToolDescriptor {
    */
   readOnly?: boolean;
   /**
+   * `true` when a call routinely takes longer than a minute (Whisper timing a
+   * song's lyrics). An AI assistant's call then always answers at once with a
+   * background job — `{ jobId, status: "running", kind: "plugin-tool" }` —
+   * that it follows with the `jobs` tool, instead of a reply that is the result
+   * when the tool is quick and a job when it isn't. Undeclared tools still
+   * become a job when they run past ~40s, so this only makes the shape
+   * predictable. The handler is given up to 30 minutes through the control API
+   * (60s for a plugin-to-plugin `invoke`). Older hosts ignore the field.
+   */
+  long?: boolean;
+  /**
    * What the tool is about, from the app catalog's categories (library,
    * playback, queue, playlists, likes, tags, info, catalog, web, download,
    * files, plugins, app). An in-app agent picks tools by category, so a lyrics
@@ -2175,7 +2188,7 @@ export interface PluginAssistantAPI {
     pluginId: string;
     name: string;
     instructions: string | null;
-    tools: Array<{ name: string; description: string; inputSchema: Record<string, unknown> | null; readOnly: boolean; categories?: string[] }>;
+    tools: Array<{ name: string; description: string; inputSchema: Record<string, unknown> | null; readOnly: boolean; long?: true; categories?: string[] }>;
   }>;
   /**
    * Call ANOTHER plugin's assistant tool and get its return value — the

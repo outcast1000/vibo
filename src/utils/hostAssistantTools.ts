@@ -14,7 +14,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import {
-  INSTRUCTIONS, PROXY_SEP, buildPluginProxies, runTool, schemaFor, toolsFor,
+  INSTRUCTIONS, PROXY_SEP, buildPluginProxies, pluginToolAnswer, runTool, schemaFor, toolsFor,
   type AssistantRoster, type CatalogTool, type ToolCategory, type ToolContext,
 } from "../../mcp/tools.mjs";
 
@@ -109,12 +109,14 @@ export async function invokeHostTool(
     const roster = (await ctx.request("GET", "/v1/assistant/tools")) as AssistantRoster;
     const proxy = buildPluginProxies(roster).find((p) => p.name === name);
     if (proxy) {
-      const out = (await ctx.request("POST", "/v1/assistant/invoke", {
+      const out = await ctx.request("POST", "/v1/assistant/invoke", {
         pluginId: proxy.pluginId,
         tool: proxy.tool,
         args,
-      })) as { result?: unknown };
-      return out?.result ?? null;
+      });
+      // A long tool answers with its job ({ jobId }), which the agent follows
+      // with the `jobs` tool — never read it as an empty result.
+      return pluginToolAnswer(out);
     }
   }
   throw new Error(`Unknown tool "${name}" — call listTools() for the current roster`);

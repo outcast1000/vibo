@@ -95,6 +95,13 @@ impl Jobs {
         id
     }
 
+    /// Drop a job nobody was told about — a plugin tool call answered in
+    /// place (`control_api::handle_assistant_invoke`). Left in, a burst of
+    /// quick calls would fill `MAX_JOBS` and push out a real job's result.
+    pub fn remove(&self, id: &str) {
+        self.map.lock().unwrap().remove(id);
+    }
+
     pub fn get(&self, id: &str) -> Option<Job> {
         let mut map = self.map.lock().unwrap();
         prune(&mut map, Instant::now());
@@ -146,6 +153,22 @@ pub async fn wait_done(rx: &mut OutcomeRx) -> bool {
     }
 }
 
+/// What a finished job reports as `result`. A plugin tool's handler answers
+/// `{ result: <the tool's value> }`; the job hands back the tool's value
+/// itself, which is what the same tool answered in place gives the caller
+/// once the MCP server unwraps it — one shape for a quick and a slow call.
+fn done_result(kind: &str, body: Value) -> Value {
+    match body {
+        Value::Object(mut map) if kind == PLUGIN_TOOL && map.contains_key("result") => {
+            map.remove("result").unwrap_or(Value::Null)
+        }
+        other => other,
+    }
+}
+
+/// The job kind of a plugin tool call that ran long.
+pub const PLUGIN_TOOL: &str = "plugin-tool";
+
 /// How a job reads to the caller. `status` is `running`, `done` (the handler
 /// answered 2xx: `result` is its body) or `failed` (`error` says why, the way
 /// the direct call would have).
@@ -168,7 +191,7 @@ pub fn view(id: &str, job: &Job, now: Instant) -> Value {
             if (200..300).contains(&o.status) {
                 let mut v = base("done", secs);
                 v["httpStatus"] = json!(o.status);
-                v["result"] = o.body;
+                v["result"] = done_result(job.kind, o.body);
                 v
             } else {
                 let mut v = base("failed", secs);

@@ -97,7 +97,7 @@ import {
 } from "../utils/controlApi";
 import {
   clampSearchLimit, invokeAssistantTool, listAssistantTools, listSearchProviders, listWebSearchProviders,
-  searchCatalog, webSearch,
+  searchCatalog, webSearch, ASSISTANT_TOOL_LONG_TIMEOUT_MS, type AssistantInvokeOptions,
 } from "../utils/hostOps";
 import { addToQueue, playNow, playWithBackfill, type QueueOpsDeps } from "../utils/queueOps";
 import { homeCardOriginKey } from "../utils/homeCardOrigin";
@@ -192,7 +192,12 @@ export interface ControlApiDeps {
      *  instructions — the plugin's own "small MCP server" surface. */
     assistantTools: PluginAssistantTool[];
     assistantInstructions: Map<string, string>;
-    invokeAssistantTool: (pluginId: string, name: string, args: Record<string, unknown>) => Promise<unknown>;
+    invokeAssistantTool: (
+      pluginId: string,
+      name: string,
+      args: Record<string, unknown>,
+      opts?: AssistantInvokeOptions,
+    ) => Promise<unknown>;
     /** usePlugins.invokeImageFetch — one plugin's image provider, directly
      *  (the targeted images.fetch path; the untargeted path runs the Rust
      *  worker's whole chain). */
@@ -1479,7 +1484,11 @@ export function useControlApi(deps: ControlApiDeps) {
         const tool = optionalString(payload.tool) ?? bad("tool is required");
         // Rejections (not callable, unknown tool, handler throw, timeout)
         // propagate to the dispatcher's catch and land in the HTTP error body.
-        const result = await invokeAssistantTool(d.plugins, { pluginId, tool, args: payload.args });
+        // The long budget: Rust turns a call still running after 40s into a
+        // job, so nothing waits on it here but the tool itself.
+        const result = await invokeAssistantTool(d.plugins, {
+          pluginId, tool, args: payload.args, timeoutMs: ASSISTANT_TOOL_LONG_TIMEOUT_MS,
+        });
         return { result: result === undefined ? null : result };
       }
 

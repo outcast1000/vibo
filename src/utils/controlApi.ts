@@ -504,7 +504,7 @@ export function buildAssistantRoster(
   pluginId: string;
   name: string;
   instructions: string | null;
-  tools: Array<{ name: string; description: string; inputSchema: Record<string, unknown> | null; readOnly: boolean; categories?: string[] }>;
+  tools: Array<{ name: string; description: string; inputSchema: Record<string, unknown> | null; readOnly: boolean; long?: true; categories?: string[] }>;
 }> {
   const byPlugin = new Map<string, PluginAssistantTool[]>();
   for (const t of tools) {
@@ -524,6 +524,9 @@ export function buildAssistantRoster(
       // Rust's /v1/assistant/invoke gate reads this: anything not exactly
       // `true` needs the "Plugin actions" scope.
       readOnly: t.readOnly === true,
+      // Rust's /v1/assistant/invoke answers a `long` tool with its job at
+      // once. Only ever `true` or absent, so existing rosters don't change.
+      ...(t.long === true ? { long: true as const } : {}),
       ...knownCategories(t.categories),
     })),
   }));

@@ -1630,13 +1630,64 @@ where
     W: FnOnce(String) -> F,
     F: std::future::Future<Output = Response> + Send + 'static,
 {
+    let job = spawn_job(state, kind, label, cancel, true, work);
+    accepted_response(&job, kind)
+}
+
+/// A job `spawn_job` started.
+struct SpawnedJob {
+    id: String,
+    label: String,
+    rx: crate::control_jobs::OutcomeRx,
+    /// Whether the caller was told about the job (its 202). Its task reads it
+    /// under the same lock as it publishes the outcome, so a job is either
+    /// announced before it finished (and logs its end) or answered in place
+    /// with its outcome (and logs nothing) — never a log line for a job the
+    /// caller never saw.
+    announced: Arc<Mutex<bool>>,
+}
+
+impl SpawnedJob {
+    /// Announce the job unless it has already finished — then hand back its
+    /// outcome to answer in place instead. Decided under the announce lock.
+    fn announce_unless_done(&self) -> Option<crate::control_jobs::Outcome> {
+        let mut announced = self.announced.lock().unwrap();
+        if let Some(outcome) = self.rx.borrow().clone() {
+            return Some(outcome);
+        }
+        *announced = true;
+        None
+    }
+}
+
+/// The first half of `start_job`: register the job, start `work`, and hand
+/// back its id, cleaned label and outcome channel. `announced` says whether
+/// the caller is told at once (`start_job`, always) or only if the work runs
+/// long (`handle_assistant_invoke`, through `announce_unless_done`). The
+/// job's start and end go to the app log only when it was announced — a
+/// plugin tool answered in place is an ordinary call, already logged by the
+/// activity middleware, not a job anyone follows.
+fn spawn_job<W, F>(
+    state: &ServerState,
+    kind: &'static str,
+    label: String,
+    cancel: Cancel,
+    announced: bool,
+    work: W,
+) -> SpawnedJob
+where
+    W: FnOnce(String) -> F,
+    F: std::future::Future<Output = Response> + Send + 'static,
+{
     use crate::control_jobs::{clean_label, Outcome};
     let label = clean_label(&label);
     let (tx, rx) = tokio::sync::watch::channel::<Option<Outcome>>(None);
     let started = Instant::now();
-    let id = state.jobs.insert(kind, label.clone(), started, rx, cancel);
+    let id = state.jobs.insert(kind, label.clone(), started, rx.clone(), cancel);
     let future = work(id.clone());
     let (log_id, log_label) = (id.clone(), label.clone());
+    let announced = Arc::new(Mutex::new(announced));
+    let gate = Arc::clone(&announced);
     tokio::spawn(async move {
         let response = future.await;
         let status = response.status().as_u16();
@@ -1644,14 +1695,28 @@ where
         let body = serde_json::from_slice::<Value>(&bytes)
             .unwrap_or_else(|_| json!({ "error": String::from_utf8_lossy(&bytes) }));
         let secs = started.elapsed().as_secs();
-        if (200..300).contains(&status) {
-            log::info!("Assistant job {} done: {} ({}s)", log_id, log_label, secs);
-        } else {
-            let error = body.get("error").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| body.to_string());
-            log::warn!("Assistant job {} failed: {} — {} ({}s)", log_id, log_label, error, secs);
+        let error = (!(200..300).contains(&status))
+            .then(|| body.get("error").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| body.to_string()));
+        let was_announced = {
+            let announced = gate.lock().unwrap();
+            let _ = tx.send(Some(Outcome { status, body, finished: Instant::now() }));
+            *announced
+        };
+        // Answered in place: an ordinary call, logged by the middleware.
+        if !was_announced {
+            return;
         }
-        let _ = tx.send(Some(Outcome { status, body, finished: Instant::now() }));
+        match error {
+            None => log::info!("Assistant job {} done: {} ({}s)", log_id, log_label, secs),
+            Some(error) => log::warn!("Assistant job {} failed: {} — {} ({}s)", log_id, log_label, error, secs),
+        }
     });
+    SpawnedJob { id, label, rx, announced }
+}
+
+/// The `202 { jobId }` answer for an announced job.
+fn accepted_response(job: &SpawnedJob, kind: &'static str) -> Response {
+    let (id, label) = (&job.id, &job.label);
     log::info!("Assistant job {} started: {}", id, label);
     (
         StatusCode::ACCEPTED,
@@ -1768,7 +1833,7 @@ async fn handle_extension_bridge(
 // --- Assistant write handlers (scope-gated; see assistant_write.rs) ---
 
 use crate::assistant_write::{self, Scope};
-use crate::control_jobs::Cancel;
+use crate::control_jobs::{Cancel, PLUGIN_TOOL};
 
 /// The write-scope gate. Scopes are re-read from disk on every call — the
 /// user flipping a Settings switch takes effect immediately, and there is no
@@ -1878,16 +1943,25 @@ fn ui_input_summary(payload: &Value) -> String {
     parts.join(" ")
 }
 
-/// Whether the roster (`assistant.tools` — `{ plugins: [{ pluginId, tools:
-/// [{ name, readOnly }] }] }`) lists this tool, and if so whether it is
-/// declared read-only. `None` = not listed.
-fn roster_tool_read_only(roster: &Value, plugin_id: &str, tool: &str) -> Option<bool> {
+/// What the roster (`assistant.tools` — `{ plugins: [{ pluginId, tools:
+/// [{ name, readOnly, long? }] }] }`) declares about one tool. `None` = not
+/// listed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ToolDeclaration {
+    read_only: bool,
+    long: bool,
+}
+
+fn roster_tool(roster: &Value, plugin_id: &str, tool: &str) -> Option<ToolDeclaration> {
     let plugin = roster["plugins"]
         .as_array()?
         .iter()
         .find(|p| p["pluginId"].as_str() == Some(plugin_id))?;
     let entry = plugin["tools"].as_array()?.iter().find(|t| t["name"].as_str() == Some(tool))?;
-    Some(entry["readOnly"].as_bool() == Some(true))
+    Some(ToolDeclaration {
+        read_only: entry["readOnly"].as_bool() == Some(true),
+        long: entry["long"].as_bool() == Some(true),
+    })
 }
 
 /// Invoke a plugin's assistant tool. Tools the plugin declared `readOnly` run
@@ -1899,32 +1973,100 @@ fn roster_tool_read_only(roster: &Value, plugin_id: &str, tool: &str) -> Option<
 /// file, so the HTTP caller cannot talk its way past it. A tool the roster
 /// doesn't list is forwarded unchanged so the caller gets the dispatcher's
 /// "registers no tool … (its tools: …)" answer instead of a misleading 403.
+/// The same roster read says whether the tool is declared `long` (below).
 async fn handle_assistant_invoke(state: AxumState<ServerState>, body: Bytes) -> Response {
     let payload = match parse_body(json!({}), &body) {
         Ok(payload) => payload,
         Err(e) => return error_response(StatusCode::BAD_REQUEST, e),
     };
     let scopes = assistant_write::load_scopes(&state.0.app_dir);
-    if !scopes.allows(Scope::PluginActions) {
-        if let (Some(plugin_id), Some(tool)) = (payload["pluginId"].as_str(), payload["tool"].as_str()) {
-            let roster = match bridge_value(&state.0, "assistant.tools", json!({}), state.0.bridge_timeout).await {
-                Ok(roster) => roster,
-                Err(resp) => return resp,
-            };
-            if roster_tool_read_only(&roster, plugin_id, tool) == Some(false) {
-                return scope_forbidden(
-                    Scope::PluginActions,
-                    scopes.access_level(),
-                    Some(format!("\"{}\" is not a read-only tool of plugin \"{}\"", tool, plugin_id)),
-                );
-            }
+    let mut declared: Option<ToolDeclaration> = None;
+    if let (Some(plugin_id), Some(tool)) = (payload["pluginId"].as_str(), payload["tool"].as_str()) {
+        let gated = !scopes.allows(Scope::PluginActions);
+        match bridge_value(&state.0, "assistant.tools", json!({}), state.0.bridge_timeout).await {
+            Ok(roster) => declared = roster_tool(&roster, plugin_id, tool),
+            // Without the scope the roster decides whether the call may run,
+            // so no roster, no call. With it the roster only says `long`, and
+            // a slow webview must not cost the user a tool that would run:
+            // go on as an undeclared tool (it still becomes a job past 40s).
+            Err(resp) if gated => return resp,
+            Err(_) => log::warn!("Assistant tool roster unavailable; running {}: {} as undeclared", plugin_id, tool),
+        }
+        if gated && declared.is_some_and(|d| !d.read_only) {
+            return scope_forbidden(
+                Scope::PluginActions,
+                scopes.access_level(),
+                Some(format!("\"{}\" is not a read-only tool of plugin \"{}\"", tool, plugin_id)),
+            );
         }
     }
-    // Slow: a plugin tool may legitimately shell out or hit a network (same
-    // budget as plugin catalog search).
-    let timeout = state.0.bridge_timeout.saturating_mul(7);
-    bridge(&state.0, "assistant.invoke", payload, timeout).await
+    // A plugin tool may run for minutes (Whisper timing a song's lyrics), so
+    // the call is a job from the start. One that answers within the inline
+    // wait is returned as it always was; a longer one answers 202 { jobId }
+    // and is followed with GET /v1/jobs/{id} — the work keeps going either
+    // way, so a caller that hangs up no longer reads as a failed tool.
+    let label = format!(
+        "{}: {}",
+        payload["pluginId"].as_str().unwrap_or("?"),
+        payload["tool"].as_str().unwrap_or("?")
+    );
+    // One bridge timeout past the webview's own cap, so a tool that runs the
+    // whole budget fails with the webview's "timed out after 1800s", not a
+    // 504 that reads as the app being gone.
+    let budget = state
+        .0
+        .bridge_timeout
+        .saturating_mul(ASSISTANT_TOOL_BUDGET_FACTOR)
+        .saturating_add(state.0.bridge_timeout);
+    let inner = state.0.clone();
+    let job = spawn_job(
+        &state.0,
+        PLUGIN_TOOL,
+        label,
+        Cancel::Refuse("a plugin tool can't be stopped from here; it finishes (or is cancelled) in Vibo"),
+        false,
+        move |_| async move { bridge(&inner, "assistant.invoke", payload, budget).await },
+    );
+    // A tool its plugin declared `long` always answers with its job, so the
+    // caller sees one shape for it; the others answer in place when quick.
+    if !declared.is_some_and(|d| d.long) {
+        let inline = state.0.bridge_timeout.saturating_mul(ASSISTANT_TOOL_INLINE_FACTOR);
+        let mut wait_rx = job.rx.clone();
+        let finished = tokio::time::timeout(inline, crate::control_jobs::wait_done(&mut wait_rx)).await;
+        if finished == Ok(false) {
+            // The job's task ended without an answer (it panicked): say so
+            // now rather than hand out a job that will never finish.
+            state.0.jobs.remove(&job.id);
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "the plugin tool call stopped without an answer");
+        }
+    }
+    // Announced, or answered in place when it finished meanwhile — decided
+    // under the job's lock, so the log never names a job the caller didn't get.
+    match job.announce_unless_done() {
+        Some(outcome) => {
+            // Nobody was told about this job: drop it, or quick calls would
+            // fill the registry and push out real jobs' unread results.
+            state.0.jobs.remove(&job.id);
+            outcome_response(outcome)
+        }
+        None => accepted_response(&job, PLUGIN_TOOL),
+    }
 }
+
+fn outcome_response(outcome: crate::control_jobs::Outcome) -> Response {
+    let status = StatusCode::from_u16(outcome.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    (status, axum::Json(outcome.body)).into_response()
+}
+
+/// How long a plugin tool call holds the request before it answers with its
+/// job instead, in bridge timeouts (10s → 40s): under the MCP server's own
+/// per-call wait and clients' limits, and long enough that every quick tool
+/// answers in place.
+const ASSISTANT_TOOL_INLINE_FACTOR: u32 = 4;
+/// The most a plugin tool may run, in bridge timeouts (10s → 30 min) — the
+/// webview's own cap for a control-API call (`utils/hostOps.ts` →
+/// `ASSISTANT_TOOL_LONG_TIMEOUT_MS`); Rust waits one bridge timeout longer.
+const ASSISTANT_TOOL_BUDGET_FACTOR: u32 = 180;
 
 /// Run one blocking write operation and log it on success.
 async fn write_op<F>(verb: &'static str, f: F) -> Response
@@ -3367,8 +3509,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        // With the scope on there is nothing to classify — no roster round trip.
-        assert_eq!(*seen.lock().unwrap(), vec!["assistant.invoke"]);
+        // The roster is read with the scope on too — it also says whether the
+        // tool is declared `long` — but nothing is refused.
+        assert_eq!(*seen.lock().unwrap(), vec!["assistant.tools", "assistant.invoke"]);
     }
 
     /// An unknown tool is forwarded so the dispatcher's "registers no tool"
@@ -4020,8 +4163,16 @@ mod tests {
                     failures.push(format!("{name}: {method} {path} matches no route ({status})"));
                 }
             }
-            let bridged = seen.lock().unwrap().clone();
+            let mut bridged = seen.lock().unwrap().clone();
             let want: Vec<String> = expected_verb.map(|v| vec![v.to_string()]).unwrap_or_default();
+            // `/v1/assistant/invoke` reads the roster before the tool runs, to
+            // classify it (read-only, long) — the route's own lookup, not the
+            // verb the call is for. Only that route does this.
+            if requests.iter().any(|r| r["path"] == json!("/v1/assistant/invoke")) && want != ["assistant.tools"] {
+                if let Some(at) = bridged.iter().position(|v| v == "assistant.tools") {
+                    bridged.remove(at);
+                }
+            }
             if bridged != want {
                 failures.push(format!("{name}: bridged {bridged:?}, scenarios.json says {want:?}"));
             }
@@ -4084,6 +4235,127 @@ mod tests {
         let res = router.oneshot(request("GET", "/v1/jobs", Some(TEST_TOKEN))).await.unwrap();
         let list = body_json(res).await;
         assert_eq!(list["jobs"][0]["jobId"], json!(id));
+    }
+
+    /// The webview for the plugin-tool job tests: the roster answers at once
+    /// (whisper's `sync_lyrics` undeclared, `transcribe` declared `long`), the
+    /// tool itself after `tool_ms`.
+    fn whisper_plan(verb: &str, tool_ms: u64) -> (u64, bool, Value) {
+        if verb == "assistant.tools" {
+            return (0, true, json!({ "plugins": [{ "pluginId": "whisper", "tools": [
+                { "name": "sync_lyrics", "readOnly": false },
+                { "name": "transcribe", "readOnly": false, "long": true },
+            ] }] }));
+        }
+        (tool_ms, true, json!({ "result": { "status": "saved" } }))
+    }
+
+    /// A plugin tool that answers within the inline wait (4 bridge timeouts —
+    /// 200 ms here) is returned in place, exactly as before jobs existed.
+    #[tokio::test]
+    async fn test_a_quick_plugin_tool_answers_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        grant_scopes(dir.path(), WriteScopes { plugin_actions: true, ..Default::default() });
+        let (state, _) = delayed_state(dir.path().to_path_buf(), |verb| whisper_plan(verb, 20));
+        let router = build_router(state);
+        let res = router
+            .clone()
+            .oneshot(request_json("POST", "/v1/assistant/invoke", TEST_TOKEN, r#"{"pluginId":"whisper","tool":"sync_lyrics"}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(body_json(res).await["result"]["status"], json!("saved"));
+        // Nobody was told about a job, so none is kept: a burst of quick calls
+        // must not fill the registry and push out a real job's result.
+        let res = router.oneshot(request("GET", "/v1/jobs", Some(TEST_TOKEN))).await.unwrap();
+        assert_eq!(body_json(res).await["jobs"], json!([]));
+    }
+
+    /// With Plugin actions on, the roster only says whether a tool is `long`,
+    /// so a webview too slow to answer it costs nothing: the tool still runs.
+    /// Without the scope the roster decides whether the call may run at all,
+    /// so its failure is the answer.
+    #[tokio::test]
+    async fn test_a_slow_roster_blocks_a_tool_only_when_it_decides_the_gate() {
+        // The roster takes 300 ms, past the 50 ms test bridge timeout.
+        fn plan(verb: &str) -> (u64, bool, Value) {
+            if verb == "assistant.tools" { (300, true, json!({ "plugins": [] })) } else { (0, true, json!({ "result": "ran" })) }
+        }
+        let body = r#"{"pluginId":"whisper","tool":"sync_lyrics"}"#;
+
+        let dir = tempfile::tempdir().unwrap();
+        grant_scopes(dir.path(), WriteScopes { plugin_actions: true, ..Default::default() });
+        let (state, seen) = delayed_state(dir.path().to_path_buf(), plan);
+        let res = build_router(state).oneshot(request_json("POST", "/v1/assistant/invoke", TEST_TOKEN, body)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(body_json(res).await["result"], json!("ran"));
+        assert_eq!(*seen.lock().unwrap(), vec!["assistant.tools", "assistant.invoke"]);
+
+        let dir = tempfile::tempdir().unwrap();
+        let (state, seen) = delayed_state(dir.path().to_path_buf(), plan);
+        let res = build_router(state).oneshot(request_json("POST", "/v1/assistant/invoke", TEST_TOKEN, body)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(*seen.lock().unwrap(), vec!["assistant.tools"], "the tool must not run unclassified");
+    }
+
+    /// A plugin tool still running past the inline wait becomes a job the
+    /// caller follows — it no longer times out while the plugin works on
+    /// (Whisper takes minutes per song), and its answer is the job's result.
+    #[tokio::test]
+    async fn test_a_long_plugin_tool_becomes_a_job_and_keeps_running() {
+        let dir = tempfile::tempdir().unwrap();
+        grant_scopes(dir.path(), WriteScopes { plugin_actions: true, ..Default::default() });
+        // 1.5 s: well past the inline wait (200 ms) and the old 7-timeout
+        // budget (350 ms), well inside the long one (9 s).
+        let (state, _) = delayed_state(dir.path().to_path_buf(), |verb| whisper_plan(verb, 1500));
+        let router = build_router(state);
+        let res = router
+            .clone()
+            .oneshot(request_json("POST", "/v1/assistant/invoke", TEST_TOKEN, r#"{"pluginId":"whisper","tool":"sync_lyrics"}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::ACCEPTED);
+        let started = body_json(res).await;
+        assert_eq!(started["kind"], json!("plugin-tool"));
+        assert_eq!(started["label"], json!("whisper: sync_lyrics"));
+        let id = started["jobId"].as_str().unwrap().to_string();
+
+        let res = router.clone().oneshot(request("GET", &format!("/v1/jobs/{id}?waitSecs=5"), Some(TEST_TOKEN))).await.unwrap();
+        let done = body_json(res).await;
+        assert_eq!(done["status"], json!("done"), "{done}");
+        // The tool's own value, as the same tool answered in place gives it —
+        // not the webview's `{ result }` envelope around it.
+        assert_eq!(done["result"]["status"], json!("saved"), "{done}");
+
+        // Finished: nothing left to cancel.
+        let res = router.oneshot(request("DELETE", &format!("/v1/jobs/{id}"), Some(TEST_TOKEN))).await.unwrap();
+        assert_eq!(body_json(res).await["cancelled"], json!(false));
+    }
+
+    /// A tool its plugin declared `long` answers with its job at once, even
+    /// when the work would have finished inside the inline wait — one shape
+    /// for that tool, every time.
+    #[tokio::test]
+    async fn test_a_plugin_tool_declared_long_is_always_a_job() {
+        let dir = tempfile::tempdir().unwrap();
+        grant_scopes(dir.path(), WriteScopes { plugin_actions: true, ..Default::default() });
+        let (state, seen) = delayed_state(dir.path().to_path_buf(), |verb| whisper_plan(verb, 120));
+        let router = build_router(state);
+        // 120 ms is inside the 200 ms inline wait: undeclared, it would answer
+        // in place (the test above), so a 202 here is the declaration at work.
+        let res = router
+            .clone()
+            .oneshot(request_json("POST", "/v1/assistant/invoke", TEST_TOKEN, r#"{"pluginId":"whisper","tool":"transcribe"}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::ACCEPTED);
+        let id = body_json(res).await["jobId"].as_str().unwrap().to_string();
+
+        let res = router.oneshot(request("GET", &format!("/v1/jobs/{id}?waitSecs=5"), Some(TEST_TOKEN))).await.unwrap();
+        let done = body_json(res).await;
+        assert_eq!(done["status"], json!("done"), "{done}");
+        assert_eq!(done["result"]["status"], json!("saved"), "{done}");
+        assert_eq!(*seen.lock().unwrap(), vec!["assistant.tools", "assistant.invoke"]);
     }
 
     /// Async-only: even an answer that is ready at once comes back as a job,

@@ -181,6 +181,15 @@ download that happens to be running. Before this a long call held the
 assistant's turn for up to ten minutes, and a client that gave up on it left
 the work running while the assistant retried.
 
+**A plugin tool becomes a job only when it runs long.** A `<pluginId>__<tool>`
+call answers with the tool's result as usual; one still running after ~40 s
+returns `{ jobId, status: "running", kind: "plugin-tool" }` instead, followed
+with `jobs wait` like the rest. A tool its plugin declares `long: true`
+(Whisper's `sync_lyrics` and `transcribe` take minutes) returns its job at
+once, every time, and its description says so. Such a job can't be cancelled from here — the plugin owns its own stop.
+Before this, every plugin tool was cut off after 60 s while the plugin carried
+on, so the result was lost and the assistant saw a failure.
+
 Their authorization is the **AI access level in Vibo → Settings →
 AI control**: **Low** allows none of the six permissions below, **Full** all of
 them, **Custom** shows one switch each. The level is derived from the six

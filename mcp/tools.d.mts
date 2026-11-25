@@ -61,11 +61,16 @@ export interface AssistantRoster {
       description?: string;
       inputSchema?: Record<string, unknown> | null;
       readOnly?: boolean;
+      /** Declared long-running: its call always answers with a job. */
+      long?: boolean;
       /** Plugin-declared; unknown names are dropped, none left → ["plugins"]. */
       categories?: string[];
     }>;
   }>;
 }
+
+/** A plugin tool call's reply → the tool's result, or the job it became. */
+export function pluginToolAnswer(out: unknown): unknown;
 
 export const SLOW_MS: number;
 export const DEFAULT_MS: number;

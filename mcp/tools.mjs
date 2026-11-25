@@ -1080,7 +1080,7 @@ export const TOOLS = [
     readOnlyWhen: { action: ["list", "wait"] },
     categories: ["download", "app"],
     description:
-      "Follow the background jobs the long calls start — manage_extensions install (waits on the user's dialog), download_plugin_track, replace_track_file staging, download_track and manage_files create_mixtape all return { jobId, status: \"running\" } at once, never their result. action=wait returns the job once it finishes, or after waitSecs (default 30, at most 50) still running: repeat it, telling the user it's still going in between. A finished job reads status done with `result` (what the call produces) or failed with `error` (reported as this tool's error). action=list shows every job still kept (running, and finished in the last 30 minutes) — use it if you lost a jobId. action=cancel stops exactly that job (a download, a replace stage, a mixtape); an install can't be cancelled here (it waits on the user's answer in Vibo).",
+      "Follow the background jobs the long calls start — manage_extensions install (waits on the user's dialog), download_plugin_track, replace_track_file staging, download_track and manage_files create_mixtape all return { jobId, status: \"running\" } at once, never their result. A plugin tool (<pluginId>__<tool>) returns one too when it is declared long-running, or is still running after ~40s (kind plugin-tool). action=wait returns the job once it finishes, or after waitSecs (default 30, at most 50) still running: repeat it, telling the user it's still going in between. A finished job reads status done with `result` (what the call produces) or failed with `error` (reported as this tool's error). action=list shows every job still kept (running, and finished in the last 30 minutes) — use it if you lost a jobId. action=cancel stops exactly that job (a download, a replace stage, a mixtape); an install can't be cancelled here (it waits on the user's answer in Vibo), nor can a plugin tool (the plugin has its own Cancel in Vibo).",
     inputSchema: obj(
       {
         action: en(["wait", "list", "cancel"], "What to do"),
@@ -1547,6 +1547,22 @@ function proxyCategories(declared) {
   return known.length ? known : ["plugins"];
 }
 
+/** Appended to a plugin tool declared `long`: what its call answers with. */
+const LONG_TOOL_NOTE =
+  " (Runs long: answers at once with { jobId, status: \"running\" } — follow it with jobs action=wait until done; don't call it again.)";
+
+/**
+ * What a plugin tool call (`POST /v1/assistant/invoke`) hands the model: the
+ * tool's return value, or the job Vibo turned the call into — always for a
+ * tool declared `long`, and for any tool still running after ~40s — which
+ * the `jobs` tool follows. Shared by the MCP server and the in-app agent
+ * (`src/utils/hostAssistantTools.ts`).
+ */
+export function pluginToolAnswer(out) {
+  if (out && typeof out === "object" && !("result" in out) && typeof out.jobId === "string") return out;
+  return out?.result ?? null;
+}
+
 /** Pure: roster (GET /v1/assistant/tools) → MCP tool entries. Exported for tests. */
 export function buildPluginProxies(roster) {
   const out = [];
@@ -1563,6 +1579,7 @@ export function buildPluginProxies(roster) {
       const readOnly = t.readOnly === true;
       let description = `[${label} plugin] ${t.description || t.name}`;
       if (!readOnly) description += ' (Needs the "Plugin actions" permission.)';
+      if (t.long === true) description += LONG_TOOL_NOTE;
       if (p.instructions) {
         description += first
           ? ` (Usage notes for the ${label} plugin: see ${first}.)`

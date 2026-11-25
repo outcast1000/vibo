@@ -115,7 +115,7 @@ import {
 } from "../utils/tagOps";
 import {
   invokeAssistantTool as invokeAssistantToolOp, listAssistantTools, listSearchProviders, listWebSearchProviders,
-  searchCatalog, webSearch,
+  searchCatalog, webSearch, type AssistantInvokeOptions,
 } from "../utils/hostOps";
 import {
   mergeWebSearchOrder, normalizeWebSearchResult, orderWebSearchProviders, WEB_SEARCH_ORDER_KEY,
@@ -151,7 +151,12 @@ interface HostRegistry {
   invokeWebSearch: (pluginId: string, providerId: string, query: string, limit: number) => Promise<PluginWebSearchResult>;
   assistantTools: PluginAssistantTool[];
   assistantInstructions: Map<string, string>;
-  invokeAssistantTool: (pluginId: string, name: string, args: Record<string, unknown>) => Promise<unknown>;
+  invokeAssistantTool: (
+    pluginId: string,
+    name: string,
+    args: Record<string, unknown>,
+    opts?: AssistantInvokeOptions,
+  ) => Promise<unknown>;
   homeShelves: Array<{ pluginId: string }>;
   menuItems: Array<{ pluginId: string }>;
   pluginNames: Map<string, string>;
@@ -2187,6 +2192,7 @@ export function usePlugins(
               description: descriptor.description,
               inputSchema: descriptor.inputSchema,
               readOnly: descriptor.readOnly === true,
+              long: descriptor.long === true,
               categories: descriptor.categories,
             };
             return trackUnsubscribe(registerKeyed(dynamicAssistantToolsRef.current, key, entry, () => setAssistantVersion((v) => v + 1)));
@@ -3258,6 +3264,7 @@ export function usePlugins(
                 description: tool.description,
                 inputSchema: tool.inputSchema,
                 readOnly: tool.readOnly === true,
+                long: tool.long === true,
                 categories: tool.categories,
               });
             }
@@ -4402,9 +4409,16 @@ export function usePlugins(
   /** Invoke one plugin assistant tool. Rejects with the plugin's own error
    *  message (or the timeout) — the control API turns that into the HTTP
    *  error body, so throw something a model can act on. Same generous budget
-   *  as catalog search: a tool may legitimately shell out or hit a network. */
+   *  as catalog search by default (a tool may legitimately shell out or hit a
+   *  network); `opts.timeoutMs` replaces it — the control API passes
+   *  `ASSISTANT_TOOL_LONG_TIMEOUT_MS` (hostOps). */
   const invokeAssistantTool = useCallback(
-    async (pluginId: string, name: string, args: Record<string, unknown>): Promise<unknown> => {
+    async (
+      pluginId: string,
+      name: string,
+      args: Record<string, unknown>,
+      opts?: AssistantInvokeOptions,
+    ): Promise<unknown> => {
       const handler = assistantToolHandlersRef.current.get(`${pluginId}:${name}`);
       if (!handler) {
         throw new Error(
@@ -4415,13 +4429,14 @@ export function usePlugins(
       // setup wizard's Spotify step) would otherwise leave a live 60s timer
       // behind for every call.
       let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeoutMs = opts?.timeoutMs ?? PLUGIN_SEARCH_TIMEOUT_MS;
       try {
         return await Promise.race([
           Promise.resolve().then(() => handler(args)),
           new Promise((_, reject) => {
             timer = setTimeout(
-              () => reject(new Error(`tool "${name}" timed out after ${PLUGIN_SEARCH_TIMEOUT_MS / 1000}s`)),
-              PLUGIN_SEARCH_TIMEOUT_MS,
+              () => reject(new Error(`tool "${name}" timed out after ${Math.round(timeoutMs / 1000)}s`)),
+              timeoutMs,
             );
           }),
         ]);
