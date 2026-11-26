@@ -46,6 +46,76 @@
       <div class="timeline" id="timeline">
         <div class="timeline-entry reveal">
         <div class="timeline-header">
+          <span class="timeline-version">Viboplr v1.0.124</span>
+          <span class="timeline-date">November 26, 2026</span>
+        </div>
+        <div class="timeline-body">
+          <h4>Features</h4>
+          <ul>
+          <li><strong>assistant</strong>: long-running plugin tools become background jobs</li>
+          <li><strong>library</strong>: read placeholder album/artist names as no tag</li>
+          <li><strong>lyrics-editor</strong>: playback controls in Edit Properties' Sync</li>
+          <li><strong>playback</strong>: native OS Now Playing + media keys on macOS and Windows</li>
+          <li><strong>now-playing</strong>: rethink the info items — history, up next, playing from</li>
+          <li><strong>now-playing</strong>: items declare a kind; the host picks the look</li>
+          <li><strong>player</strong>: disliking the playing song from the player bar skips it</li>
+          <li><strong>retrieve</strong>: show each lyrics copy's source facts in the compare</li>
+          <li><strong>retrieve</strong>: show line times in the lyrics compare</li>
+          <li><strong>menus</strong>: playlist entries get the shared track menu; one folder reveal</li>
+          <li><strong>menus</strong>: tidy the track menus; queue follows Edit Properties</li>
+          <li><strong>menus</strong>: Download / Find downloads groups; Get lyrics and Get image</li>
+          <li><strong>menus</strong>: group plugin menu items by a declared shared action</li>
+          <li><strong>detail</strong>: one-row tab bar with a &quot;More&quot; menu for tabs that don't fit</li>
+          <li><strong>now-playing</strong>: brief song intro — title over artist · album when a song starts</li>
+          <li><strong>lyrics</strong>: 200ms offset steps + Save timing into the lyrics</li>
+          <li><strong>library</strong>: Edit Properties — tabbed dialog with Lyrics and File tabs, exact tag delta</li>
+          <li><strong>plugins</strong>: review-lyrics — a plugin's lyrics draft opens in the editor for approval</li>
+          <li><strong>plugins</strong>: api.system.onDependencyInstalled — tell a plugin its tool landed</li>
+          <li><strong>plugins</strong>: api.cues.onChanged — plugins hear when a cue sheet is saved or deleted</li>
+          </ul>
+          <h4>Bug Fixes</h4>
+          <ul>
+          <li><strong>edit-properties</strong>: a failing web lyrics source no longer blocks the editor</li>
+          <li><strong>now-playing</strong>: drop the blur on dimmed lyric lines</li>
+          <li><strong>settings</strong>: deep-link scroll waits for painted frames</li>
+          <li><strong>now-playing</strong>: Quality waits for the engine before describing a stream</li>
+          <li><strong>mini</strong>: &quot;Now playing info…&quot; lands on its Settings section</li>
+          <li><strong>browse</strong>: don't let a hidden browse window take focus</li>
+          <li><strong>playback</strong>: don't preload the new queue's 2nd entry while its head resolves</li>
+          <li><strong>retrieve</strong>: name the provider when only one was asked</li>
+          <li><strong>now-playing</strong>: artist/album line changes with the title</li>
+          <li><strong>network</strong>: time out Subsonic and image downloads; reuse one Subsonic client</li>
+          <li><strong>library</strong>: make loose title matching playback-only and edition-only</li>
+          <li><strong>library</strong>: match a library copy whose title differs by punctuation or a remaster tag</li>
+          <li><strong>info</strong>: re-ask a &quot;nothing found&quot; after 7 days, not the type TTL</li>
+          <li><strong>library</strong>: Edit Properties UX pass — no accidental clears, clearer lyrics, a11y</li>
+          <li><strong>detail</strong>: don't clip tab tooltips; More tab at its intended opacity</li>
+          <li><strong>now-playing</strong>: pin the side column to the right edge when images fill the view</li>
+          <li><strong>now-playing</strong>: outline lyrics when images fill the view</li>
+          <li><strong>deps</strong>: no empty terminal box for a tool with no install command</li>
+          <li><strong>plugins</strong>: settings-row controls align right, toolbars lose header chrome</li>
+          </ul>
+          <h4>Refactoring</h4>
+          <ul>
+          <li><strong>now-playing</strong>: Plays · Rank shares History's per-play read</li>
+          </ul>
+          <h4>Chores</h4>
+          <ul>
+          <li><strong>lastfm</strong>: bundle v1.11.6; drop the host's Last.fm style fallback</li>
+          <li><strong>cleanup</strong>: remove dead helpers; one m:ss formatter</li>
+          <li><strong>skills</strong>: refresh code-health and script its mechanical checks</li>
+          <li><strong>plugins</strong>: bundle Last.fm 1.11.5</li>
+          <li><strong>plugins</strong>: bundle Last.fm 1.11.3 — &quot;Plays (Last.fm)&quot;</li>
+          </ul>
+        </div>
+        <div class="timeline-assets">
+            <a href="https://github.com/outcast1000/vibo/releases/download/v1.0.124/Viboplr_1.0.124_aarch64.dmg" class="timeline-asset-link"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Viboplr_1.0.124_aarch64.dmg</a>
+            <a href="https://github.com/outcast1000/vibo/releases/download/v1.0.124/Viboplr_1.0.124_x64-setup.exe" class="timeline-asset-link"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Viboplr_1.0.124_x64-setup.exe</a>
+        </div>
+      </div>
+      
+        <div class="timeline-entry reveal">
+        <div class="timeline-header">
           <span class="timeline-version">Viboplr v1.0.123</span>
           <span class="timeline-date">November 21, 2026</span>
         </div>
