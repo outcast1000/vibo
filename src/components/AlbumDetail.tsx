@@ -350,6 +350,7 @@ export function AlbumDetail({ name, artistName }: AlbumDetailProps) {
         onStartRadioMissing={startRadioMissing}
         onLocateMissing={locateMissing}
         onMissingContextMenu={handleMissingContextMenu}
+        onRateMissing={(t, action) => (action === "like" ? actions.toggleLike(t) : actions.toggleDislike(t))}
         emptyMessage={filteredOut ? "No tracks match the filter." : "No tracks found."}
       />
     </>
@@ -385,6 +386,7 @@ export function AlbumDetail({ name, artistName }: AlbumDetailProps) {
           onPlayMissing={playProviderFrom}
           onEnqueueMissing={enqueueOneExternal}
           onMissingContextMenu={handleMissingContextMenu}
+          onRateMissing={(t, action) => (action === "like" ? actions.toggleLike(t) : actions.toggleDislike(t))}
           emptyMessage="No tracks match the filter."
         />
       </>

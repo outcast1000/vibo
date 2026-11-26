@@ -351,6 +351,7 @@ export function ArtistDetail({ name }: ArtistDetailProps) {
             onStartRadioMissing={startRadioMissing}
             onLocateMissing={locateMissing}
             onMissingContextMenu={handleMissingContextMenu}
+            onRateMissing={(t, action) => (action === "like" ? actions.toggleLike(t) : actions.toggleDislike(t))}
             emptyMessage={visibleRowCount < listRowCount ? "No tracks match the filter." : "No tracks found for this artist."}
           />
         </>
@@ -390,6 +391,7 @@ export function ArtistDetail({ name }: ArtistDetailProps) {
             onStartRadioMissing={startRadioMissing}
             onLocateMissing={locateMissing}
             onMissingContextMenu={handleMissingContextMenu}
+            onRateMissing={(t, action) => (action === "like" ? actions.toggleLike(t) : actions.toggleDislike(t))}
             emptyMessage="No tracks match the filter."
           />
         </>

@@ -106,4 +106,31 @@ describe("TrackList missing rows", () => {
     fireEvent.click(missingRow.querySelector("[title='Enqueue']")!);
     expect(props.onEnqueueMissing).toHaveBeenCalledWith(expect.objectContaining({ title: "Joga" }));
   });
+
+  it("carry the heart when the surface wires it: like on click, the rating menu on right-click", async () => {
+    const { showNativeMenu } = await import("../nativeMenu");
+    const withLike: ColumnConfig[] = [{ id: "like", visible: true }, ...COLUMNS];
+    const onRateMissing = vi.fn();
+    const { container, props } = mount({ columns: withLike, onRateMissing });
+    const missingRow = container.querySelector(".track-row--missing")!;
+    const heart = missingRow.querySelector<HTMLButtonElement>(".col-like button")!;
+    expect(heart.getAttribute("aria-label")).toBe("Like");
+
+    fireEvent.click(heart);
+    expect(onRateMissing).toHaveBeenCalledWith(expect.objectContaining({ title: "Joga" }), "like");
+    // The heart's click is its own: it neither plays nor reaches the row.
+    expect(props.onPlayMissing).not.toHaveBeenCalled();
+
+    fireEvent.contextMenu(heart);
+    expect(showNativeMenu).toHaveBeenCalled();
+    expect(props.onMissingContextMenu).not.toHaveBeenCalled();
+  });
+
+  it("show no heart where the surface didn't wire one", () => {
+    const withLike: ColumnConfig[] = [{ id: "like", visible: true }, ...COLUMNS];
+    const { container } = mount({ columns: withLike });
+    expect(container.querySelectorAll(".track-row--missing .col-like button")).toHaveLength(0);
+    // Library rows keep theirs.
+    expect(container.querySelectorAll(".track-row:not(.track-row--missing) .col-like button")).toHaveLength(2);
+  });
 });

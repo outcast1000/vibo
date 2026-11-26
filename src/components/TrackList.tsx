@@ -86,11 +86,11 @@ export function computeSelection(
 
 /** A track the list shows without a library row behind it — an album page's
  *  provider tracklist entry (or an artist's Top Song) the user doesn't own.
- *  Read-only: it gets the same hover actions as a library row — play,
- *  enqueue, start radio, details — plus download, and the track context
- *  menu, all by metadata (the stream resolvers find it at play time; the
- *  download follows the same resolver order), but is never
- *  selected, dragged, deleted or liked from here. */
+ *  It gets the same hover actions as a library row — play, enqueue, start
+ *  radio, details — the track context menu, and the heart (likes are keyed by
+ *  the song's names, so a song you don't own can be liked or disliked), all
+ *  by metadata (the stream resolvers find it at play time), but is never
+ *  selected, dragged or deleted from here. */
 export interface MissingTrackRow {
   track: QueueTrack;
   /** Drawn before `tracks[before]`; `tracks.length` puts it after the last. */
@@ -140,6 +140,11 @@ interface TrackListProps {
   /** Open the track page by name (no library row to open by id). */
   onLocateMissing?: (track: QueueTrack) => void;
   onMissingContextMenu?: (e: React.MouseEvent, track: QueueTrack) => void;
+  /** The heart on a missing row (by the song's names): `"like"` toggles the
+   *  like, `"dislike"` toggles the dislike — one callback, so a surface can't
+   *  wire half of it (a disliked heart's "click to clear" would then like the
+   *  song). Without it the row shows no heart. */
+  onRateMissing?: (track: QueueTrack, action: "like" | "dislike") => void;
 }
 
 const NO_MISSING: MissingTrackRow[] = [];
@@ -154,6 +159,7 @@ export function TrackList({
   hasMore = false, loadingMore = false, onLoadMore,
   ariaLabel = "Tracks",
   missingRows = NO_MISSING, onPlayMissing, onEnqueueMissing, onStartRadioMissing, onLocateMissing, onMissingContextMenu,
+  onRateMissing,
 }: TrackListProps) {
   const maxPopularity = useMemo(() => {
     const missing = missingRows.map(m => m.popularity ?? 0);
@@ -516,6 +522,7 @@ export function TrackList({
     startRadioMissing: onStartRadioMissing,
     locateMissing: onLocateMissing,
     missingContextMenu: onMissingContextMenu,
+    rateMissing: onRateMissing,
   });
 
   // Which optional actions exist decides what the row renders (hover buttons,
@@ -529,6 +536,7 @@ export function TrackList({
   const hasDislike = !!onToggleDislike;
   const hasStartRadioMissing = !!onStartRadioMissing;
   const hasLocateMissing = !!onLocateMissing;
+  const hasRateMissing = !!onRateMissing;
   const presence = useMemo<TrackRowActionPresence>(() => ({
     play: hasPlay,
     enqueue: hasEnqueue,
@@ -537,7 +545,8 @@ export function TrackList({
     dislike: hasDislike,
     startRadioMissing: hasStartRadioMissing,
     locateMissing: hasLocateMissing,
-  }), [hasPlay, hasEnqueue, hasStartRadio, hasLocate, hasDislike, hasStartRadioMissing, hasLocateMissing]);
+    rateMissing: hasRateMissing,
+  }), [hasPlay, hasEnqueue, hasStartRadio, hasLocate, hasDislike, hasStartRadioMissing, hasLocateMissing, hasRateMissing]);
 
   // Infinite scroll appends pages without bound, so a large library can
   // accumulate thousands of rows. Above a threshold, opt each row into
@@ -634,6 +643,7 @@ interface TrackRowHandlers {
   startRadioMissing?: (track: QueueTrack) => void;
   locateMissing?: (track: QueueTrack) => void;
   missingContextMenu?: (e: React.MouseEvent, track: QueueTrack) => void;
+  rateMissing?: (track: QueueTrack, action: "like" | "dislike") => void;
 }
 
 /** Which optional actions this surface wired up — drives what renders (hover
@@ -646,6 +656,7 @@ interface TrackRowActionPresence {
   dislike: boolean;
   startRadioMissing: boolean;
   locateMissing: boolean;
+  rateMissing: boolean;
 }
 
 interface TrackRowProps {
@@ -798,12 +809,27 @@ interface MissingRowProps {
 }
 
 /** A tracklist entry with no library copy. Same columns as TrackRow so it
- *  lines up, but read-only: no like control, no file facts, no selection —
- *  a `role="option"` that is `aria-disabled`, outside the keyboard cursor. */
+ *  lines up: the heart (by the song's names), but no file facts and no
+ *  selection — a `role="option"` that is `aria-disabled`, outside the
+ *  keyboard cursor. */
 const MissingRow = memo(function MissingRow({ row, isCurrent, visibleColumns, presence, maxPopularity, handlers }: MissingRowProps) {
   const t = row.track;
   function renderCell(col: ColumnConfig) {
     switch (col.id) {
+      case "like":
+        return (
+          <span key="like" className="col-like">
+            {presence.rateMissing && (
+              <LikeDislikeButtons
+                track={t}
+                onToggleLike={() => handlers.current.rateMissing?.(t, "like")}
+                onToggleDislike={() => handlers.current.rateMissing?.(t, "dislike")}
+                variant="inline"
+                size={12}
+              />
+            )}
+          </span>
+        );
       case "num":
         return <span key="num" className="col-num">{row.number ?? ""}</span>;
       case "title":
@@ -839,7 +865,7 @@ const MissingRow = memo(function MissingRow({ row, isCurrent, visibleColumns, pr
         );
       }
       default:
-        // Like, duration, file facts: nothing to show for a track not on disk.
+        // Duration, file facts: nothing to show for a track not on disk.
         return <span key={col.id} className={`col-${col.id}`} />;
     }
   }
