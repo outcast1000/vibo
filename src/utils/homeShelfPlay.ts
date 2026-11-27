@@ -63,3 +63,37 @@ export function resolveShelfPlayAction(
   const it = item as { track: PluginTrack };
   return { kind: "tracks", tracks: [it.track] };
 }
+
+// The right-click menu of a Home track row (App.tsx
+// `handleHomeShelfItemContextMenu`): the shared track menu's target, plus the
+// row's own items above it. A row the library has (`libraryId`, found by its
+// path) is a library track, so the shared menu offers Play / Enqueue, Edit
+// Properties, Open Containing Folder and Delete. A row it doesn't have is a
+// by-name target carrying its path; the shared menu can't play a row with no
+// id, so Play / Enqueue / Play Next come first.
+export type HomeTrackRowItem = "play" | "enqueue" | "play-next";
+
+export interface HomeTrackRowMenu {
+  target: {
+    kind: "track";
+    trackId?: number;
+    path?: string | null;
+    isLocal: boolean;
+    title: string;
+    artistName: string | null;
+    albumTitle: string | null;
+  };
+  leading: HomeTrackRowItem[];
+}
+
+export function homeTrackRowMenu(track: PluginTrack, libraryId: number | null): HomeTrackRowMenu {
+  const base = {
+    kind: "track" as const,
+    title: track.title,
+    artistName: track.artist_name ?? null,
+    albumTitle: track.album_title ?? null,
+    isLocal: !!track.path?.startsWith("file://"),
+  };
+  if (libraryId != null) return { target: { ...base, trackId: libraryId }, leading: [] };
+  return { target: { ...base, path: track.path ?? null }, leading: ["play", "enqueue", "play-next"] };
+}

@@ -20,6 +20,7 @@ import {
   recentAdditions,
   fetchYourLists,
   historyShelfTrack,
+  likedShelfTrack,
   LATEST_ADDITIONS_WINDOW_SECS,
   YOUR_LISTS,
   YOUR_LISTS_SHELF_ID,
@@ -150,6 +151,30 @@ describe("Your lists", () => {
       history_track_id: 1, play_count: 3, rank: 1, display_title: "Song", display_artist: "Band",
       display_album: "LP", display_album_artist: "Various Artists", display_path: "file:///m/s.flac",
     })).toEqual({ title: "Song", artist_name: "Band", album_title: "LP", album_artist_name: "Various Artists", path: "file:///m/s.flac" });
+  });
+
+  it("plays a liked song from its library copy, and one the library lacks by its frozen source", () => {
+    // pick_liked_entities matched the library copy: its path, length, album.
+    expect(likedShelfTrack({
+      name: "Jóga", artist_name: "Björk", album_title: "Homogenic", album_artist_name: "Björk",
+      image_url: null, path: "file:///m/joga.flac", track_id: 7, duration_secs: 305, format: "flac",
+    })).toEqual({
+      title: "Jóga", artist_name: "Björk", album_artist_name: "Björk", album_title: "Homogenic",
+      path: "file:///m/joga.flac", duration_secs: 305, image_url: undefined, kind: "audio",
+    });
+    // A local video drops the snapshot image so its own frame shows.
+    expect(likedShelfTrack({
+      name: "Clip", artist_name: "A", album_title: null, image_url: "/c/x.jpg",
+      path: "file:///m/clip.mkv", track_id: 8, duration_secs: 200, format: "mkv",
+    })).toMatchObject({ kind: "video", image_url: undefined });
+    // Not in the library: the frozen source, no kind claim.
+    const external = likedShelfTrack({
+      name: "Elsewhere", artist_name: "Nobody", album_title: null, image_url: "/c/e.jpg", path: null,
+    });
+    expect(external).toEqual({
+      title: "Elsewhere", artist_name: "Nobody", album_artist_name: undefined, album_title: undefined,
+      path: undefined, duration_secs: undefined, image_url: "/c/e.jpg",
+    });
   });
 
   const spec = (id: string, load: YourListSpec["load"]): YourListSpec => ({ id, name: id, load });

@@ -476,11 +476,19 @@ pub struct LikedEntityInfo {
     pub artist_name: Option<String>,
     pub album_title: Option<String>,
     pub image_url: Option<String>,
-    /// The liked track's scheme-prefixed path, frozen into the like metadata as
-    /// `source` at like-time. Lets consumers resolve the exact library row (and
-    /// thus a live video frame) instead of relying on the stale `image_url`
-    /// snapshot. `None` for artist/album likes and path-less external tracks.
+    /// A track like's path: the library copy's own (`PATH_EXPR`) when the
+    /// library has the song, else the `source` frozen into the like metadata
+    /// at like-time (which may be a plugin scheme, a moved file, or missing —
+    /// a Last.fm import names none). `None` for artist/album likes and
+    /// path-less external tracks.
     pub path: Option<String>,
+    /// The album's own album artist, from the library copy's album.
+    pub album_artist_name: Option<String>,
+    /// The library copy's row id, length and format — `None` when the library
+    /// doesn't have the song (and always for artist/album likes).
+    pub track_id: Option<i64>,
+    pub duration_secs: Option<f64>,
+    pub format: Option<String>,
 }
 
 /// One row of the durable `entity_likes` table, dumped verbatim for the

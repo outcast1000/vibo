@@ -430,17 +430,25 @@ export function historyShelfTrack(h: HistoryMostPlayed): PluginTrack {
 }
 
 // A liked song (`pick_liked_entities`) as a shelf track. Likes are keyed by
-// name, so a song with no library copy has no path and plays through the
-// stream resolvers. A local video drops the image so its own frame shows.
+// name; the backend points each one the library has at that copy (its path,
+// length, format and album), so it plays the file and is a library track to
+// the menus. A song with no library copy keeps the path frozen at like-time,
+// or none, and plays through the stream resolvers. A local video drops the
+// image so its own frame shows.
 export function likedShelfTrack(r: LikedEntityInfo): PluginTrack {
   const path = r.path ?? undefined;
-  const dropImageUrl = isVideoTrack({ format: null, path }) && isLocalTrack({ path });
+  const format = r.format ?? null;
+  const video = isVideoTrack({ format, path });
+  const dropImageUrl = video && isLocalTrack({ path });
   return {
     title: r.name,
     artist_name: r.artist_name ?? undefined,
+    album_artist_name: r.album_artist_name ?? undefined,
     album_title: r.album_title ?? undefined,
     path,
+    duration_secs: r.duration_secs ?? undefined,
     image_url: dropImageUrl ? undefined : (r.image_url ?? undefined),
+    ...(r.track_id != null ? { kind: video ? "video" as const : "audio" as const } : {}),
   };
 }
 

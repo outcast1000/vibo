@@ -130,15 +130,15 @@ fn history_album_sql(title_count: usize) -> String {
 /// What the library knows about a history row's song: the album to key its
 /// cover by, and one library copy's own path, so a video gets its frame. History stores neither — both are matched by normalized title+artist.
 #[derive(Debug, Default, Clone)]
-struct HistoryLibraryMatch {
+pub(super) struct HistoryLibraryMatch {
     /// Album title + the album's own album artist, or None when no copy has one.
-    album: Option<(String, Option<String>)>,
+    pub(super) album: Option<(String, Option<String>)>,
     /// Scheme-prefixed path (`PATH_EXPR`) of the preferred library copy.
-    path: Option<String>,
+    pub(super) path: Option<String>,
     /// That same copy's row id, length and format.
-    track_id: Option<i64>,
-    duration_secs: Option<f64>,
-    format: Option<String>,
+    pub(super) track_id: Option<i64>,
+    pub(super) duration_secs: Option<f64>,
+    pub(super) format: Option<String>,
 }
 
 /// Rank offset for a title-only match, so any copy matching title AND artist
@@ -222,7 +222,10 @@ impl HistoryLibraryRow for HistoryMostPlayed {
 /// same order as `find_tracks_by_metadata`; the copy is picked independently
 /// (newest track breaking ties), so an album-less local video still wins the
 /// path while a tagged copy elsewhere still supplies the cover.
-fn resolve_history_library(
+///
+/// Also matches the liked songs the Home shelves list (`pick_liked_entities`),
+/// which are name-keyed for the same reason history is.
+pub(super) fn resolve_history_library(
     conn: &Connection,
     keys: &[(String, String)],
 ) -> SqlResult<HashMap<(String, String), HistoryLibraryMatch>> {

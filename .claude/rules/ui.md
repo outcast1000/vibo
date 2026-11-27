@@ -257,7 +257,7 @@ Gating: every branch waits on a local `settled` flag (a completed `useHome` load
 | `album-cards` | with `libraryId` → navigate to album detail; without → `playTracks(items.tracks, 0, { name })` |
 | `artist-cards` | with `libraryId` → navigate to artist detail; without → no-op |
 | `playlist-cards` | `playTracks(items.tracks, 0, { name, coverUrl, source: "playlist" })` |
-| `track-rows` | `playTracks([track], 0)` (no playlist context) |
+| `track-rows` | `playTracks([track], 0)` (no playlist context). Right-click opens the shared track menu (`homeTrackRowMenu` in `utils/homeShelfPlay.ts`): a row whose path is a library row's (`resolveLibraryIds`) is a library track — Edit Properties, Open Containing Folder, Delete —, any other row a by-name target with Play / Enqueue / Play Next above it. The liked shelves carry the library copy's path (`pick_liked_entities` matches each like to it like the history rows), so a liked song you own is a library row here and plays its file |
 
 Both the card body-click and its play button route through the one handler (`App.tsx` `handleHomeShelfItemPlay`) via the pure `resolveShelfPlayAction`, so radio seeds and lazy plugin cards behave the same either way.
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveShelfPlayAction } from "../utils/homeShelfPlay";
+import { resolveShelfPlayAction, homeTrackRowMenu } from "../utils/homeShelfPlay";
 import type { HomeShelfItem } from "../types/plugin";
 
 describe("resolveShelfPlayAction", () => {
@@ -110,5 +110,31 @@ describe("resolveShelfPlayAction", () => {
     const track = { title: "Song", artist_name: "A" };
     const item = { track } as HomeShelfItem;
     expect(resolveShelfPlayAction("track-rows", item)).toEqual({ kind: "tracks", tracks: [track] });
+  });
+});
+
+// A native menu has no DOM, so what a Home track row's menu is built from is
+// asserted here.
+describe("homeTrackRowMenu", () => {
+  const song = { title: "Jóga", artist_name: "Björk", album_title: "Homogenic", path: "file:///m/joga.flac" };
+
+  it("is a library track menu when the library has the row", () => {
+    expect(homeTrackRowMenu(song, 7)).toEqual({
+      target: { kind: "track", trackId: 7, title: "Jóga", artistName: "Björk", albumTitle: "Homogenic", isLocal: true },
+      leading: [],
+    });
+  });
+
+  it("is a by-name menu with its own play items when the library doesn't have it", () => {
+    expect(homeTrackRowMenu({ title: "Elsewhere", artist_name: "Nobody" }, null)).toEqual({
+      target: { kind: "track", path: null, title: "Elsewhere", artistName: "Nobody", albumTitle: null, isLocal: false },
+      leading: ["play", "enqueue", "play-next"],
+    });
+  });
+
+  it("keeps a local path the library doesn't own, for Open Containing Folder", () => {
+    const menu = homeTrackRowMenu({ title: "Dropped", path: "file:///tmp/x.mp3" }, null);
+    expect(menu.target).toMatchObject({ isLocal: true, path: "file:///tmp/x.mp3" });
+    expect(menu.target.trackId).toBeUndefined();
   });
 });

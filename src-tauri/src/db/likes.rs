@@ -242,7 +242,14 @@ impl Database {
                 // trackLikePayload); surface it as `path` so track-rows shelves
                 // can resolve the live row/video-frame by exact path.
                 path: str_field("source"),
+                album_artist_name: None,
+                track_id: None,
+                duration_secs: None,
+                format: None,
             });
+        }
+        if kind == "track" {
+            stamp_liked_tracks_from_library(&conn, &mut out)?;
         }
         Ok(out)
     }
@@ -427,6 +434,39 @@ impl Database {
             |r| r.get(0),
         ).optional().map(|opt| opt.flatten())
     }
+}
+
+/// Point each liked track at its library copy, matched by folded title +
+/// artist exactly as the history rows are (`resolve_history_library`: local
+/// copy first, an artist-less like matching a video by title alone). The
+/// `source` frozen into a like is often no use for playing it — missing for an
+/// imported like, a plugin scheme for a song liked while streaming and since
+/// added to the library, a stale path after a move — and a shelf entry built
+/// from it played through the stream resolvers and was "not in library" to
+/// the track menu. A like with no library copy keeps its frozen source.
+fn stamp_liked_tracks_from_library(conn: &Connection, rows: &mut [LikedEntityInfo]) -> SqlResult<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let keys: Vec<(String, String)> = rows
+        .iter()
+        .map(|r| (norm_segment(Some(&r.name)), norm_segment(r.artist_name.as_deref())))
+        .collect();
+    let matches = super::history::resolve_history_library(conn, &keys)?;
+    for (r, key) in rows.iter_mut().zip(keys) {
+        let Some(m) = matches.get(&key) else { continue };
+        if let Some(path) = &m.path {
+            r.path = Some(path.clone());
+            r.track_id = m.track_id;
+            r.duration_secs = m.duration_secs;
+            r.format = m.format.clone();
+        }
+        if let Some((album, album_artist)) = &m.album {
+            r.album_title = Some(album.clone());
+            r.album_artist_name = album_artist.clone();
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

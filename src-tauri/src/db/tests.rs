@@ -991,6 +991,45 @@ fn test_history_rows_carry_the_library_copys_path() {
     assert_eq!(g.display_path, None);
 }
 
+/// A liked song the library has is listed as that library copy — its own
+/// path, id, length and album — whatever `source` the like froze (none for an
+/// imported like, a plugin scheme for one liked while streaming). Without it
+/// the Home liked shelves queued a metadata-only entry: played through the
+/// stream resolvers, "not in library" to the track menu.
+#[test]
+fn test_liked_tracks_resolve_to_their_library_copy() {
+    let db = test_db();
+    let artist = db.get_or_create_artist("Björk").unwrap();
+    let album = db.get_or_create_album("Homogenic", Some(artist), None).unwrap();
+    let id = insert_track(&db, "joga.flac", "Jóga", Some(artist), Some(album));
+    // Liked by name (an import), spelled differently.
+    db.set_entity_like("track", &likes::build_entity_key("track", "JOGA", Some("bjork")), 1,
+        Some(r#"{"name":"JOGA","title":"JOGA","artist_name":"bjork"}"#), 100).unwrap();
+    // Liked while streaming: the frozen source is a plugin scheme.
+    let hunter = insert_track(&db, "hunter.mp3", "Hunter", Some(artist), None);
+    db.set_entity_like("track", &likes::build_entity_key("track", "Hunter", Some("Björk")), 1,
+        Some(r#"{"name":"Hunter","artist_name":"Björk","source":"ytdlp://abc"}"#), 101).unwrap();
+    // Not in the library: the frozen source stays.
+    db.set_entity_like("track", &likes::build_entity_key("track", "Elsewhere", Some("Nobody")), 1,
+        Some(r#"{"name":"Elsewhere","artist_name":"Nobody","source":"spotify:track:1"}"#), 102).unwrap();
+
+    let rows = db.pick_liked_entities("track", "recent", 10).unwrap();
+    let joga = rows.iter().find(|r| r.name == "JOGA").unwrap();
+    assert_eq!(joga.path.as_deref(), Some("file:///test/joga.flac"));
+    assert_eq!(joga.track_id, Some(id));
+    assert_eq!(joga.duration_secs, Some(180.0));
+    assert_eq!(joga.album_title.as_deref(), Some("Homogenic"));
+    assert_eq!(joga.album_artist_name.as_deref(), Some("Björk"));
+
+    let h = rows.iter().find(|r| r.name == "Hunter").unwrap();
+    assert_eq!(h.path.as_deref(), Some("file:///test/hunter.mp3"));
+    assert_eq!(h.track_id, Some(hunter));
+
+    let e = rows.iter().find(|r| r.name == "Elsewhere").unwrap();
+    assert_eq!(e.path.as_deref(), Some("spotify:track:1"));
+    assert_eq!(e.track_id, None);
+}
+
 /// A play recorded with no artist (common for videos) matches a library
 /// VIDEO by title alone — the clip tagged after it was watched still finds it
 /// — but never an audio track: "Intro" with no artist must not become some

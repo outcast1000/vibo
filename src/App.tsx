@@ -34,7 +34,7 @@ import { useLatestPlay, type LatestPlayDeps } from "./hooks/useLatestPlay";
 import { resolveImageSrc, stripImageVersion } from "./utils/resolveImageUrl";
 import { pickEntityImagePath, resolveTrackImage } from "./utils/trackImage";
 import { buildTagSuggestionPool } from "./utils/tagSuggestions";
-import { resolveShelfPlayAction } from "./utils/homeShelfPlay";
+import { resolveShelfPlayAction, homeTrackRowMenu, type HomeTrackRowItem } from "./utils/homeShelfPlay";
 import { builtinQualityOptions } from "./utils/builtinDownloadQualities";
 import { buildPluginOverflowItems } from "./utils/heroOverflow";
 import { applyReduceMotionAttr } from "./utils/reducedMotion";
@@ -3314,9 +3314,29 @@ function App() {
       showNativeMenu(e.clientX, e.clientY, specs).catch((err) => console.error("Failed to show the Latest play card menu:", err));
       return;
     }
-    // TODO(home): wire the other cards into the context menu builder once a
-    // metadata-only target adapter exists; play / queue work via left click.
-  }, [goToCard]);
+    // A track row gets the shared track menu — as a library track when the
+    // library has it (found by path; the liked shelves carry the library
+    // copy's), else by name with Play / Enqueue / Play Next above it
+    // (`homeTrackRowMenu`). Other cards play or open on a click and have no
+    // menu yet.
+    if (shelf.displayKind === "track-rows") {
+      const track = (item as { track?: PluginTrack }).track;
+      if (!track?.title) return;
+      const { clientX: x, clientY: y } = e;
+      void (async () => {
+        const [libraryId] = track.path ? await resolveLibraryIds([{ path: track.path }]) : [null];
+        const menu = homeTrackRowMenu(track, libraryId);
+        // A fresh queue entry per action, so each gets its own key.
+        const entry = () => pluginTrackToQueueTrack(track);
+        const items: Record<HomeTrackRowItem, MenuItemSpec> = {
+          "play": { kind: "item", text: "Play", action: () => queueHook.playTracks([entry()], 0) },
+          "enqueue": { kind: "item", text: "Enqueue", action: () => queueHook.enqueueTracks([entry()]) },
+          "play-next": { kind: "item", text: "Play Next", action: () => queueHook.playNextInQueue(entry()) },
+        };
+        await buildAndShowNativeMenu({ x, y, target: menu.target, leading: menu.leading.map((k) => items[k]) });
+      })();
+    }
+  }, [goToCard, buildAndShowNativeMenu, queueHook]);
 
   // Disable default browser context menu globally
   useEffect(() => {

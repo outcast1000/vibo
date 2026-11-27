@@ -265,9 +265,15 @@ export interface LikedEntityInfo {
   artist_name: string | null;
   album_title: string | null;
   image_url: string | null;
-  // Scheme-prefixed path frozen at like-time (from the track's `source`), or
-  // null for artist/album likes and path-less external tracks.
+  // A track like's path: the library copy's own when the library has the song,
+  // else the `source` frozen at like-time (a plugin scheme, a moved file, or
+  // null — an imported like names none). Null for artist/album likes.
   path: string | null;
+  // From the library copy (null when the library doesn't have the song).
+  album_artist_name?: string | null;
+  track_id?: number | null;
+  duration_secs?: number | null;
+  format?: string | null;
 }
 
 export interface HistoryArtistStats {
