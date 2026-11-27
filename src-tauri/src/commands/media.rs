@@ -1190,6 +1190,46 @@ pub async fn save_local_lyrics(
     .await
 }
 
+/// Edit Properties' "Clear lyrics": remove every local copy of one library
+/// track's lyrics — its tag lyrics and its sidecar / `Lyrics/` folder files
+/// (to the Trash) — and record that it has none (`set_track_lyrics`, which
+/// also drops the stale cached rows). Only this track's own file is touched,
+/// never other library copies of the song. Answers how many sources were
+/// removed. Local (`file://`) tracks only; the frontend clears the cache alone
+/// for a track with no local file.
+///
+/// `async` + `run_blocking`: tag writes and trash moves, possibly on a network
+/// mount.
+#[tauri::command]
+pub async fn clear_local_lyrics(state: State<'_, AppState>, track_id: i64) -> Result<usize, String> {
+    let db = state.db.clone();
+    run_blocking(move || -> Result<_, String> {
+        let track = db.get_track_by_id(track_id).map_err(|e| e.to_string())?;
+        let bare = track
+            .path
+            .strip_prefix("file://")
+            .ok_or_else(|| "Only a local file's lyrics can be cleared".to_string())?;
+        let audio = std::path::PathBuf::from(bare);
+        if !crate::scanner::is_media_file(&audio) {
+            return Err(format!("{} isn't a music or video file", audio.display()));
+        }
+        let cleared = crate::local_lyrics::clear_local_lyrics(
+            &audio,
+            crate::models::is_network_path(bare),
+            &crate::local_lyrics::displace_lyrics_file,
+        );
+        // What the files say now, whether or not every source went.
+        let now = crate::local_lyrics::probe_local_lyrics(&audio);
+        if let Err(e) = db.set_track_lyrics(track_id, now.as_ref().map(|l| (l.text.as_str(), l.source))) {
+            log::warn!("Cleared lyrics for {} but couldn't record it: {}", audio.display(), e);
+        }
+        let removed = cleared?;
+        log::info!("Cleared lyrics for {} ({} source(s))", audio.display(), removed);
+        Ok(removed)
+    })
+    .await
+}
+
 /// Read embedded tags for a batch of local files — one result per input path, in
 /// order, `None` for anything unreadable (missing file, or a container lofty
 /// can't parse).

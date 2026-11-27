@@ -13,8 +13,11 @@ import { useCommunityTagsForTracks, type InvokeInfoFetch } from "../hooks/useCom
 import { appendCommunityTags } from "../utils/tagSuggestions";
 import { writeFileMetadata, type FileMetadataEdit } from "../utils/tagOps";
 import { useTagOpsDeps } from "../contexts/TagOpsContext";
-import { CORE_LOCAL_LYRICS_PROVIDER, describeInfoFailures, fetchInfoValue } from "../utils/infoFetchChain";
-import { saveSongLyrics } from "../utils/localLyrics";
+import type { InfoTypeRow, InfoValueRow } from "../utils/infoFetchChain";
+import { clearSongLyrics, readLocalLyrics, saveSongLyrics } from "../utils/localLyrics";
+import { buildEntityKey } from "../types/informationTypes";
+import { showNativeMenu, type MenuItemSpec } from "../nativeMenu";
+import type { ProviderChoice } from "../contextMenu/providerMenus";
 import { detectLyricsKind } from "../utils/lyricsEditor";
 import { isLocalTrack } from "../queueEntry";
 import { formatDuration, formatDateTime, formatFileSize } from "../utils";
@@ -44,7 +47,6 @@ interface BulkEditModalProps {
   tagOptions: string[];
   /** Fetches Last.fm community tags (suggestions) and the song's lyrics. */
   invokeInfoFetch?: InvokeInfoFetch;
-  pluginNames?: Map<string, string>;
   /** Whether plugins finished loading — re-fetches community tags once ready. */
   pluginsLoaded?: boolean;
   /** The one edited track is the one playing — the Lyrics tab's Sync needs it. */
@@ -54,6 +56,12 @@ interface BulkEditModalProps {
   seek?: (secs: number) => void;
   /** Play/pause for the Lyrics tab's Sync — the dialog covers the player bar. */
   transport?: LyricsEditorTransport;
+  /** The switched-on lyrics providers, in the user's order — the Lyrics tab's
+   *  Get lyrics menu. Nothing is asked of them until the user picks one. */
+  lyricsProviders?: ProviderChoice[];
+  /** The track's web-search items from plugins (e.g. Web Search's Google /
+   *  Genius, opened in the browser) — the Lyrics tab's Search the web menu. */
+  searchMenuFor?: (track: Track) => MenuItemSpec[];
   onClose: () => void;
   onSave: (result: BulkEditResult) => void;
   /** Reveal the track's file — useContextMenuActions.showTrackInFolder, the
@@ -134,8 +142,6 @@ function DirtyDot() {
 const IS_MAC = typeof navigator !== "undefined" && navigator.platform.includes("Mac");
 const SAVE_SHORTCUT = IS_MAC ? "⌘S" : "Ctrl+S";
 
-/** After this long the lyrics wait says how long it has been. */
-const LYRICS_SLOW_MS = 3000;
 
 const NUMBER_INPUT_PROPS = { type: "number", autoComplete: "off", autoCorrect: "off", spellCheck: false, style: { width: 120 } } as const;
 
@@ -154,8 +160,8 @@ function sharedValue(tracks: Track[], pick: (t: Track) => string | number | null
 }
 
 export default function BulkEditModal({
-  tracks, artistOptions, albumOptions, tagOptions, invokeInfoFetch, pluginNames, pluginsLoaded,
-  live = false, seek, transport, onClose, onSave, onShowInFolder,
+  tracks, artistOptions, albumOptions, tagOptions, invokeInfoFetch, pluginsLoaded,
+  live = false, seek, transport, lyricsProviders, searchMenuFor, onClose, onSave, onShowInFolder,
 }: BulkEditModalProps) {
   const count = tracks.length;
   const single = count === 1 ? tracks[0] : null;
@@ -220,55 +226,136 @@ export default function BulkEditModal({
     artistName: single.artist_name ?? undefined, albumTitle: single.album_title ?? undefined,
     path: single.path ?? undefined, durationSecs: single.duration_secs ?? undefined,
   } : null, [single]);
+  // What the song has now: its files' lyrics, else a copy Vibo already holds.
+  // Nothing is asked of a provider until the user picks one (Get lyrics).
   const [lyricsInitial, setLyricsInitial] = useState<string | null>(null);
-  const [lyricsFromFile, setLyricsFromFile] = useState(false);
+  const [lyricsOrigin, setLyricsOrigin] = useState<LyricsOrigin>("none");
   const [lyricsText, setLyricsText] = useState("");
+  // The text the editor opens on. A new version remounts it — a provider's
+  // answer, Clear and Revert replace the whole text.
+  const [editorSeed, setEditorSeed] = useState({ text: "", version: 0 });
   // Reading the current lyrics failed: no editor, since an empty one would
   // look like "this song has none" and saving it would replace what the file
   // holds.
   const [lyricsLoadError, setLyricsLoadError] = useState<string | null>(null);
   const [lyricsRequested, setLyricsRequested] = useState(false);
-  // Some web source couldn't be asked while the editor still opened.
-  const [lyricsLoadWarning, setLyricsLoadWarning] = useState<string | null>(null);
-  const lyricsDirty = lyricsInitial != null && lyricsText.trim() !== "" && lyricsText !== lyricsInitial;
-  // Emptying the editor saves nothing (there is no "remove lyrics" write) —
-  // said, so a disabled Save isn't a mystery.
-  const lyricsEmptied = lyricsInitial != null && lyricsInitial.trim() !== "" && lyricsText.trim() === "";
+  // Get lyrics: the provider being asked, and what came of the last ask.
+  const [lyricsFetching, setLyricsFetching] = useState<string | null>(null);
+  const [lyricsFetchNote, setLyricsFetchNote] = useState<{ kind: "info" | "warning"; text: string } | null>(null);
+  // The provider whose answer is in the editor, with the text it gave — Save
+  // credits it (origin "provider") while the text is still exactly that.
+  const [lyricsFetched, setLyricsFetched] = useState<{ provider: ProviderChoice; text: string } | null>(null);
+  // An answer that arrived over the user's own edits: held until they say
+  // whether it replaces them.
+  const [pendingAnswer, setPendingAnswer] = useState<{ provider: ProviderChoice; text: string } | null>(null);
+  // Only the Clear lyrics button clears. An editor emptied by hand saves
+  // nothing, so a stray select-all + delete can't strip the file.
+  const [clearRequested, setClearRequested] = useState(false);
+  const fetchGenRef = useRef(0);
+  const lyricsHasText = lyricsText.trim() !== "";
+  const lyricsClearing = clearRequested && !lyricsHasText && (lyricsInitial ?? "").trim() !== "";
+  const lyricsDirty = lyricsInitial != null && (lyricsClearing || (lyricsHasText && lyricsText !== lyricsInitial));
+  // Emptied by hand: said, so a disabled Save isn't a mystery.
+  const lyricsEmptiedByHand = !clearRequested && !lyricsHasText && (lyricsInitial ?? "").trim() !== "";
+  // The user changed the editor since it last opened on a text.
+  const lyricsEditedSinceSeed = lyricsText !== editorSeed.text;
+
+  function seedEditor(text: string) {
+    setLyricsText(text);
+    setEditorSeed((s) => ({ text, version: s.version + 1 }));
+  }
+
+  function onLyricsTextChange(text: string) {
+    setLyricsText(text);
+    if (text.trim() !== "") setClearRequested(false);
+  }
+
+  function applyAnswer(answer: { provider: ProviderChoice; text: string }) {
+    seedEditor(answer.text);
+    setLyricsFetched(answer);
+    setClearRequested(false);
+    setPendingAnswer(null);
+  }
 
   async function loadLyrics(entity: InfoEntity) {
     setLyricsLoadError(null);
-    setLyricsLoadWarning(null);
-    if (!invokeInfoFetch) {
-      setLyricsLoadError("The lyrics providers aren't loaded yet.");
-      return;
-    }
     try {
-      const out = await fetchInfoValue({ typeId: "lyrics", entity, invokeInfoFetch, pluginNames });
-      const failures = out.failures ?? [];
-      const filesFailed = failures.find((f) => f.providerId === CORE_LOCAL_LYRICS_PROVIDER);
-      // No editor when the song's own files couldn't be read — whatever a
-      // later source said, they may hold lyrics an empty editor's save would
-      // replace — or when the walk failed without saying who. A web source
-      // failing beside readable files is a warning.
-      if (filesFailed || (out.status === "error" && failures.length === 0)) {
-        setLyricsLoadError(filesFailed
-          ? `reading the song's files failed${filesFailed.message ? ` (${filesFailed.message})` : ""}.`
-          : "the lyrics lookup failed.");
-        return;
-      }
-      const failed = describeInfoFailures(failures);
-      setLyricsLoadWarning(!failed ? null
-        : out.status === "ok" && out.answeredBy ? `${failed}. These are from ${out.answeredBy.name}.`
-          : `${failed}. No other source had lyrics for this song.`);
-      const data = out.status === "ok" ? out.value as LyricsData | null : null;
-      const text = data?.text ?? "";
-      setLyricsFromFile(!!data?.local);
-      setLyricsText(text);
+      const local = await readLocalLyrics(entity, entity.path) as LyricsData | null;
+      const cached = local?.text ? null : await readCachedLyrics(entity);
+      const text = local?.text ?? cached ?? "";
+      setLyricsOrigin(local?.text ? "file" : cached ? "cache" : "none");
       setLyricsInitial(text);
+      seedEditor(text);
     } catch (e) {
       console.error("Failed to load lyrics:", e);
       setLyricsLoadError(e instanceof Error ? e.message : String(e));
     }
+  }
+
+  /** Ask one provider for this song's lyrics and put its answer in the
+   *  editor — nothing is written until Save. */
+  async function getLyricsFrom(provider: ProviderChoice) {
+    if (!lyricsEntity || !invokeInfoFetch) return;
+    const gen = ++fetchGenRef.current;
+    setLyricsFetching(provider.name);
+    setLyricsFetchNote(null);
+    setPendingAnswer(null);
+    try {
+      const out = await invokeInfoFetch(provider.key, "lyrics", lyricsEntity);
+      if (gen !== fetchGenRef.current) return;
+      const text = out.status === "ok" ? (out.value as unknown as LyricsData | null)?.text ?? "" : "";
+      if (text.trim()) {
+        // The editor is locked while asking, so this reads the edits as they
+        // stood when the user asked.
+        if (lyricsEditedSinceSeed) setPendingAnswer({ provider, text });
+        else applyAnswer({ provider, text });
+      } else if (out.status === "error") {
+        setLyricsFetchNote({ kind: "warning", text: `${provider.name} couldn't answer${out.message ? `: ${out.message}` : "."}` });
+      } else {
+        setLyricsFetchNote({ kind: "info", text: `${provider.name} has no lyrics for this song.` });
+      }
+    } catch (e) {
+      console.error(`Failed to get lyrics from ${provider.name}:`, e);
+      if (gen === fetchGenRef.current) {
+        setLyricsFetchNote({ kind: "warning", text: `${provider.name} couldn't answer: ${e instanceof Error ? e.message : String(e)}` });
+      }
+    } finally {
+      if (gen === fetchGenRef.current) setLyricsFetching(null);
+    }
+  }
+
+  function openGetLyricsMenu(e: React.MouseEvent<HTMLButtonElement>) {
+    const providers = lyricsProviders ?? [];
+    if (providers.length === 1) { void getLyricsFrom(providers[0]); return; }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const specs: MenuItemSpec[] = providers.map((p) => ({ kind: "item", text: p.name, action: () => { void getLyricsFrom(p); } }));
+    showNativeMenu(rect.left, rect.bottom, specs).catch((err) => console.error("Failed to show the lyrics providers menu:", err));
+  }
+
+  function openSearchWebMenu(e: React.MouseEvent<HTMLButtonElement>) {
+    if (!single || !searchMenuFor) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    showNativeMenu(rect.left, rect.bottom, searchMenuFor(single)).catch((err) => console.error("Failed to show the web search menu:", err));
+  }
+
+  function resetLyricsAsk() {
+    fetchGenRef.current++;
+    setLyricsFetching(null);
+    setLyricsFetchNote(null);
+    setLyricsFetched(null);
+    setPendingAnswer(null);
+  }
+
+  function clearLyrics() {
+    resetLyricsAsk();
+    setClearRequested(true);
+    seedEditor("");
+  }
+
+  function revertLyrics() {
+    resetLyricsAsk();
+    setClearRequested(false);
+    seedEditor(lyricsInitial ?? "");
   }
 
   // --- File (one track): loaded the first time the tab opens ---
@@ -366,7 +453,18 @@ export default function BulkEditModal({
           albumTitle: album.dirty ? album.value || undefined : lyricsEntity.albumTitle,
         };
         try {
-          await saveSongLyrics(entity, lyricsText.replace(/\s+$/, ""), detectLyricsKind(lyricsText), "edit");
+          if (lyricsClearing) {
+            // Under the names the lyrics were read by and the ones the
+            // track has now — open pages keyed by either re-read.
+            await clearSongLyrics([lyricsEntity, entity], single && isLocalTrack(single) ? single.id ?? null : null);
+          } else {
+            const text = lyricsText.replace(/\s+$/, "");
+            // A provider's answer saved as it came is the provider's, not the
+            // user's edit — plugins (Community) tell the two apart.
+            const fromProvider = lyricsFetched && lyricsText === lyricsFetched.text;
+            await saveSongLyrics(entity, text, detectLyricsKind(text),
+              fromProvider ? "provider" : "edit", fromProvider ? { provider: lyricsFetched.provider.key } : undefined);
+          }
         } catch (e) {
           console.error("Failed to save lyrics:", e);
           setMetadataSaved(result);
@@ -403,7 +501,9 @@ export default function BulkEditModal({
     ] : []),
   ];
 
-  const fileName = fileNameOf(single?.path);
+  // A local file is named by its file name; anything else (a server or plugin
+  // track, whose path ends in an opaque id) by the collection it comes from.
+  const fileName = single && isLocalTrack(single) ? fileNameOf(single.path) : single?.collection_name ?? null;
 
   // Tabs: arrow keys move between them (and open the one they land on).
   const tabRefs = useRef(new Map<Tab, HTMLButtonElement>());
@@ -446,7 +546,7 @@ export default function BulkEditModal({
               queue's "Edit info…" is a different dialog that never writes files. */}
           <h3 className="ds-modal-title">Edit Properties</h3>
           {single ? (
-            <p className="bulk-edit-subtitle" title={single.path ?? undefined}>
+            <p className="bulk-edit-subtitle" title={isLocalTrack(single) ? single.path ?? undefined : undefined}>
               {[single.title, single.artist_name].filter(Boolean).join(" · ")}
               {fileName && <span className="bulk-edit-filename">{fileName}</span>}
             </p>
@@ -596,21 +696,80 @@ export default function BulkEditModal({
                   )}
                 </div>
               ) : lyricsInitial == null ? (
-                <LyricsWait />
+                <p className="bulk-edit-hint"><span className="ds-spinner ds-spinner--sm" /> Reading the track's lyrics…</p>
               ) : (
                 <>
+                  <div className="bulk-edit-lyrics-toolbar">
+                    <button
+                      type="button"
+                      className="ds-btn ds-btn--secondary ds-btn--sm"
+                      onClick={openGetLyricsMenu}
+                      disabled={!lyricsProviders?.length || !invokeInfoFetch || lyricsFetching != null}
+                      title={lyricsProviders?.length
+                        ? "Ask a lyrics provider for this song — nothing is saved until you Save"
+                        : "No lyrics provider is switched on (Settings → Providers)"}
+                    >
+                      {lyricsProviders?.length === 1 ? `Get lyrics from ${lyricsProviders[0].name}` : "Get lyrics ▾"}
+                    </button>
+                    {searchMenuFor && searchMenuFor(single).length > 0 && (
+                      <button type="button" className="ds-btn ds-btn--secondary ds-btn--sm" onClick={openSearchWebMenu}
+                        title="What your plugins offer for this track — Web Search, for one, opens Google or Genius in your browser">
+                        Plugin actions ▾
+                      </button>
+                    )}
+                    <span className="bulk-edit-lyrics-toolbar-spacer" />
+                    {lyricsDirty && (
+                      <button type="button" className="ds-btn ds-btn--ghost ds-btn--sm" onClick={revertLyrics} title="Back to the lyrics the track has now">
+                        Revert
+                      </button>
+                    )}
+                    {/* Only when there is something to clear: a greyed-out
+                        destructive button on an empty song is just noise. */}
+                    {!lyricsClearing && (lyricsHasText || (lyricsInitial ?? "").trim() !== "") && (
+                      <button type="button" className="ds-btn ds-btn--ghost ds-btn--sm" onClick={clearLyrics}
+                        title="Remove the lyrics — applied when you save">
+                        Clear lyrics
+                      </button>
+                    )}
+                  </div>
                   <p className="bulk-edit-hint">
-                    {lyricsSourceHint(isLocalTrack(single), lyricsFromFile, lyricsInitial.trim() !== "")}
+                    {lyricsClearing
+                      ? lyricsClearHint(isLocalTrack(single))
+                      : lyricsSourceHint(isLocalTrack(single), lyricsOrigin, lyricsFetched?.provider.name ?? null, lyricsHasText)}
                   </p>
-                  {lyricsLoadWarning && <p className="bulk-edit-hint bulk-edit-hint--warning">{lyricsLoadWarning}</p>}
-                  {lyricsError && <p className="bulk-edit-hint bulk-edit-hint--error">Couldn't save the lyrics: {lyricsError}</p>}
-                  {lyricsEmptied && (
+                  {lyricsEmptiedByHand && (
                     <p className="bulk-edit-hint bulk-edit-hint--warning">
-                      Lyrics can't be removed here — an empty editor saves nothing. Revert, or write the lyrics you want instead.
+                      An empty editor saves nothing. To remove the lyrics, use Clear lyrics.
                     </p>
                   )}
+                  {lyricsFetching && (
+                    <p className="bulk-edit-hint"><span className="ds-spinner ds-spinner--sm" /> Asking {lyricsFetching}…</p>
+                  )}
+                  {pendingAnswer && (
+                    <div className="bulk-edit-hint bulk-edit-hint--warning bulk-edit-lyrics-confirm">
+                      <span>{pendingAnswer.provider.name} found lyrics. Replace your edits with them?</span>
+                      <button type="button" className="ds-btn ds-btn--secondary ds-btn--sm" onClick={() => applyAnswer(pendingAnswer)}>Replace</button>
+                      <button type="button" className="ds-btn ds-btn--ghost ds-btn--sm" onClick={() => setPendingAnswer(null)}>Keep my edits</button>
+                    </div>
+                  )}
+                  {lyricsFetchNote && (
+                    <p className={`bulk-edit-hint${lyricsFetchNote.kind === "warning" ? " bulk-edit-hint--warning" : ""}`}>{lyricsFetchNote.text}</p>
+                  )}
+                  {lyricsError && <p className="bulk-edit-hint bulk-edit-hint--error">Couldn't save the lyrics: {lyricsError}</p>}
                   {metadataSaved && errors.length === 0 && <p className="bulk-edit-hint">Details and tags are saved.</p>}
-                  <LyricsEditor initialText={lyricsInitial} live={live} seek={seek} transport={live ? transport : undefined} onTextChange={setLyricsText} />
+                  {/* Locked while a provider is asked, so its answer can't land
+                      over keystrokes typed in the meantime. */}
+                  <fieldset className="bulk-edit-fieldset bulk-edit-lyrics-editor" disabled={lyricsFetching != null}>
+                    <LyricsEditor
+                      key={editorSeed.version}
+                      initialText={editorSeed.text}
+                      baselineText={lyricsInitial}
+                      live={live}
+                      seek={seek}
+                      transport={live ? transport : undefined}
+                      onTextChange={onLyricsTextChange}
+                    />
+                  </fieldset>
                 </>
               )}
             </div>
@@ -669,32 +828,48 @@ export default function BulkEditModal({
   );
 }
 
-/** Where the lyrics in the editor came from, and where Save puts them. Text
- *  that didn't come from the files was found by a lyrics provider online. */
-function lyricsSourceHint(local: boolean, fromFile: boolean, hasText: boolean): string {
-  if (!local) return "This track has no local file, so the lyrics are kept in Vibo.";
-  if (fromFile) return "From the track's own files. Saving writes them back there.";
-  if (hasText) return "Found online — not in the track's file yet. Saving writes them into it.";
-  return "No lyrics yet. Saving writes them into the track's file.";
+/** Where the song's current lyrics were read from when the tab opened. */
+type LyricsOrigin = "file" | "cache" | "none";
+
+/** Where the lyrics in the editor came from, and where Save puts them. */
+function lyricsSourceHint(local: boolean, origin: LyricsOrigin, fetchedFrom: string | null, hasText: boolean): string {
+  const dest = local ? "Saving writes them into the track's file." : "This track has no local file, so Save keeps them in Vibo.";
+  if (fetchedFrom) return `From ${fetchedFrom} — not saved yet. ${dest}`;
+  if (!hasText) return `No lyrics. Get them from a provider or write them here. ${dest}`;
+  if (origin === "file") return "From the track's own files. Saving writes them back there.";
+  if (origin === "cache") return `Found online earlier — not in the track's file. ${dest}`;
+  return dest;
 }
 
-/** The wait for the lyrics chain, which may ask web providers one by one —
- *  after a moment it says how long, so a slow provider doesn't read as a hang. */
-function LyricsWait() {
-  const [elapsed, setElapsed] = useState(0);
-  useEffect(() => {
-    const started = Date.now();
-    const id = window.setInterval(() => setElapsed(Date.now() - started), 1000);
-    return () => window.clearInterval(id);
-  }, []);
-  return (
-    <p className="bulk-edit-hint">
-      <span className="ds-spinner ds-spinner--sm" />
-      {elapsed < LYRICS_SLOW_MS
-        ? "Loading lyrics…"
-        : `Asking the lyrics providers… ${Math.round(elapsed / 1000)}s`}
-    </p>
-  );
+function lyricsClearHint(local: boolean): string {
+  return local
+    ? "Save removes the lyrics from the track's file (a lyrics file beside it goes to the Trash) and from Vibo."
+    : "Save removes the lyrics Vibo keeps for this song.";
+}
+
+/** The lyrics Vibo already holds for the song from a web provider — read
+ *  from the cache, never fetched. Only switched-on providers count, best
+ *  first in the user's order (what the track page would show); the built-in
+ *  `core:` row is the files' own copy, which `readLocalLyrics` already read,
+ *  so a stale one isn't passed off as online lyrics. */
+async function readCachedLyrics(entity: InfoEntity): Promise<string | null> {
+  const [types, rows] = await Promise.all([
+    invoke<InfoTypeRow[]>("info_get_types_for_entity", { entity: entity.kind }),
+    invoke<InfoValueRow[]>("info_get_values_for_entity", { entityKey: buildEntityKey(entity) }),
+  ]);
+  const providers = types.find(([id]) => id === "lyrics")?.[5] ?? [];
+  for (const [providerKey, integerId] of providers) {
+    if (providerKey.startsWith("core:")) continue;
+    const row = rows.find(([id, typeId, , status]) => id === integerId && typeId === "lyrics" && status === "ok");
+    if (!row) continue;
+    try {
+      const text = (JSON.parse(row[2]) as LyricsData | null)?.text;
+      if (typeof text === "string" && text.trim()) return text;
+    } catch (e) {
+      console.error("Failed to read the cached lyrics:", e);
+    }
+  }
+  return null;
 }
 
 function FileRow({ label, children }: { label: string; children: React.ReactNode }) {

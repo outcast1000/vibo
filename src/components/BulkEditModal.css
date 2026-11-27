@@ -87,6 +87,66 @@
   margin: 0;
 }
 
+/* Lyrics tab: Get lyrics / Search the web on the left, Revert / Clear on the right. */
+/* The Lyrics tab fills the dialog's body: the editor (textarea or sync list)
+   takes the room that is left, instead of leaving it empty below. */
+.bulk-edit-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.bulk-edit-body > * {
+  flex-shrink: 0;
+}
+
+.bulk-edit-lyrics:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  flex: 1 0 auto;
+}
+
+.bulk-edit-lyrics-editor {
+  display: flex;
+  flex-direction: column;
+  flex: 1 0 auto;
+}
+
+.bulk-edit-lyrics-editor .lyrics-editor-panel {
+  flex: 1 0 auto;
+}
+
+.bulk-edit-lyrics-editor .lyrics-editor {
+  flex: 1 0 auto;
+  resize: none;
+}
+
+.bulk-edit-lyrics-editor .lyrics-sync-list {
+  flex: 1 0 auto;
+  max-height: none;
+  height: 0;
+  min-height: 200px;
+}
+
+.bulk-edit-lyrics-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.bulk-edit-lyrics-toolbar-spacer {
+  flex: 1;
+}
+
+/* "X found lyrics. Replace your edits with them?" + its two buttons. */
+.bulk-edit-lyrics-confirm {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 /* Words for screen readers only (the dirty dot). */
 .bulk-edit-sr {
   position: absolute;

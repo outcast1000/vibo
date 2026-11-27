@@ -1,9 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
 import { getPlaybackPosition, usePlaybackPosition } from "../../playback/positionStore";
-import { scrollLineToCenter } from "../../utils/lyrics";
+import { scrollLineToCenter, shiftLrc } from "../../utils/lyrics";
+import { store } from "../../store";
 import {
   clearAllTimes,
+  coerceStampLeadMs,
+  DEFAULT_STAMP_LEAD_MS,
+  STAMP_LEAD_OPTIONS_MS,
+  STAMP_LEAD_STORE_KEY,
+  stampTime,
   detectLyricsKind,
   firstUntimedIndex,
   formatClock,
@@ -154,13 +160,35 @@ export function LyricsEditor({ initialText, live, seek, onSave, onClose, onTextC
     onTextChange?.(next);
   }, [onTextChange]);
 
+  // Reaction lead (see stampTime), one choice for every song, stored.
+  const [leadMs, setLeadMs] = useState(DEFAULT_STAMP_LEAD_MS);
+  useEffect(() => {
+    let cancelled = false;
+    store.get<number>(STAMP_LEAD_STORE_KEY)
+      .then((v) => { if (!cancelled) setLeadMs(coerceStampLeadMs(v)); })
+      .catch((e) => console.error("Failed to read the lyrics sync lead:", e));
+    return () => { cancelled = true; };
+  }, []);
+  const changeLead = (ms: number) => {
+    setLeadMs(ms);
+    store.set(STAMP_LEAD_STORE_KEY, ms).catch((e) => console.error("Failed to save the lyrics sync lead:", e));
+  };
+
   const stamp = useCallback(() => {
     if (!live || activeCursor < 0) return;
-    edit(stampInText(text, activeCursor, getPlaybackPosition()));
+    edit(stampInText(text, activeCursor, stampTime(getPlaybackPosition(), leadMs)));
     setLastStamped(activeCursor);
     const next = nextSyncable(lines, activeCursor);
     if (next >= 0) setCursor(next);
-  }, [live, activeCursor, text, lines, edit]);
+  }, [live, activeCursor, text, lines, edit, leadMs]);
+
+  /** Move every time in the sheet — a sheet that runs early or late as a whole. */
+  const shiftAll = (delta: number) => {
+    if (stats.timed > 0) edit(shiftLrc(text, delta));
+  };
+
+  /** Button clicks hand focus back to the list, so the keys keep working. */
+  const focusList = () => listRef.current?.focus();
 
   const undo = useCallback(() => {
     if (activeCursor < 0) return;
@@ -256,8 +284,10 @@ export function LyricsEditor({ initialText, live, seek, onSave, onClose, onTextC
     if (handled) { e.preventDefault(); e.stopPropagation(); }
   };
 
+  // Embedded, Save is the host's, so "nothing to save" would contradict a
+  // host Save enabled by another edit — the line is left out instead.
   const summary = empty
-    ? "Nothing to save yet"
+    ? (embedded ? null : "Nothing to save yet")
     : kind === "synced"
       ? `Saves as synced · ${stats.timed} of ${stats.lines} lines timed`
       : `Saves as plain text · ${stats.lines} ${stats.lines === 1 ? "line" : "lines"}`;
@@ -276,7 +306,15 @@ export function LyricsEditor({ initialText, live, seek, onSave, onClose, onTextC
       <div className="lyrics-editor-head">
         <div className="ds-tabs ds-tabs--compact ds-tabs--no-border" role="tablist" aria-label="Edit mode">
           <button role="tab" aria-selected={tab === "write"} className={`ds-tab${tab === "write" ? " active" : ""}`} onClick={() => setTab("write")}>Write</button>
-          <button role="tab" aria-selected={tab === "sync"} className={`ds-tab${tab === "sync" ? " active" : ""}`} onClick={() => setTab("sync")}>
+          <button
+            role="tab"
+            aria-selected={tab === "sync"}
+            className={`ds-tab${tab === "sync" ? " active" : ""}`}
+            onClick={() => setTab("sync")}
+            // Nothing to time yet: a tab that only says "go back" is a dead end.
+            disabled={syncable.length === 0 && tab !== "sync"}
+            title={syncable.length === 0 ? "Add the words in Write first, then time them here" : undefined}
+          >
             Sync
             {stats.lines > 0 && <span className="ds-tab-badge">{stats.timed}/{stats.lines}</span>}
           </button>
@@ -305,11 +343,29 @@ export function LyricsEditor({ initialText, live, seek, onSave, onClose, onTextC
           <div className="lyrics-sync-bar">
             {live ? (
               <>
-                <button className="ds-btn ds-btn--sm ds-btn--primary" onClick={stamp} title="Stamp the highlighted line at the current position (Space)">Stamp line</button>
-                <button className="ds-btn ds-btn--sm ds-btn--secondary" onClick={undo} title="Undo the last stamp (Backspace)">Undo</button>
-                <button className={`ds-btn ds-btn--sm ${confirmClear ? "ds-btn--danger" : "ds-btn--ghost"}`} onClick={startOver} disabled={stats.timed === 0}>
+                <button className="ds-btn ds-btn--sm ds-btn--primary" onClick={() => { stamp(); focusList(); }} title="Stamp the highlighted line at the current position (Space)">Stamp line</button>
+                <button className="ds-btn ds-btn--sm ds-btn--secondary" onClick={() => { undo(); focusList(); }} title="Undo the last stamp (Backspace)">Undo</button>
+                <button className={`ds-btn ds-btn--sm ${confirmClear ? "ds-btn--danger" : "ds-btn--ghost"}`} onClick={() => { startOver(); if (confirmClear) focusList(); }} disabled={stats.timed === 0}>
                   {confirmClear ? "Clear all times?" : "Start over"}
                 </button>
+                <span className="lyrics-sync-bar-spacer" />
+                <label className="lyrics-sync-lead" title="Your tap comes a moment after the singing starts; each stamp is moved this much earlier">
+                  Lead
+                  <select
+                    className="ds-select lyrics-sync-lead-select"
+                    value={leadMs}
+                    onChange={(e) => { changeLead(Number(e.target.value)); focusList(); }}
+                  >
+                    {STAMP_LEAD_OPTIONS_MS.map((ms) => <option key={ms} value={ms}>{ms === 0 ? "None" : `${ms / 1000}s`}</option>)}
+                  </select>
+                </label>
+                <span className="lyrics-sync-shift" title="Move every timed line at once (Shift: 1s)">
+                  All
+                  <button className="ds-btn ds-btn--sm ds-btn--ghost" disabled={stats.timed === 0} aria-label="All lines earlier"
+                    onClick={(e) => { shiftAll(-(e.shiftKey ? NUDGE_COARSE_STEP : NUDGE_STEP)); focusList(); }}>−0.1s</button>
+                  <button className="ds-btn ds-btn--sm ds-btn--ghost" disabled={stats.timed === 0} aria-label="All lines later"
+                    onClick={(e) => { shiftAll(e.shiftKey ? NUDGE_COARSE_STEP : NUDGE_STEP); focusList(); }}>+0.1s</button>
+                </span>
               </>
             ) : seek ? (
               <>
@@ -385,7 +441,7 @@ export function LyricsEditor({ initialText, live, seek, onSave, onClose, onTextC
             <span>{saveBlockedReason}</span>
           ) : (
             <>
-              <span>{summary}</span>
+              {summary && <span>{summary}</span>}
               {warnings.map(w => <span key={w} className="lyrics-editor-warning">{w}</span>)}
             </>
           )}

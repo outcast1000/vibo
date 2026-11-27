@@ -405,6 +405,109 @@ pub fn save_and_verify(
     }
 }
 
+/// Remove every local copy of `audio`'s lyrics — the user cleared them in
+/// Edit Properties: the lyrics in each of its tags (both keys, every tag the
+/// file carries), and the sidecar / `Lyrics/` folder `.lrc` / `.txt` files,
+/// which are handed to `displace` (the Trash, in production) rather than
+/// deleted. Then reads the file back: anything the probe still finds is an
+/// error naming it, so a clear never reports success while lyrics remain.
+/// Returns how many sources were removed (0 = there were none).
+///
+/// Every source is tried even when one fails, and the error lists each one
+/// that couldn't go — a failed trash must not leave the rest untouched. A
+/// lyrics file on a network share has no Trash to go to, and a clear never
+/// deletes permanently, so there the whole clear is refused before anything
+/// is touched (`network`: the caller's `models::is_network_path`).
+pub fn clear_local_lyrics(
+    audio: &Path,
+    network: bool,
+    displace: &dyn Fn(&Path) -> Result<(), String>,
+) -> Result<usize, String> {
+    use lofty::config::WriteOptions;
+    use lofty::prelude::*;
+    use lofty::tag::ItemKey;
+
+    if !audio.is_file() {
+        return Err(format!("{} isn't on disk", audio.display()));
+    }
+    let files = lyrics_files_of(audio);
+    if network && !files.is_empty() {
+        let names: Vec<String> = files.iter().map(|f| file_name_of(f)).collect();
+        return Err(format!(
+            "{} is on a network share, which has no Trash, so the lyrics weren't cleared. Remove {} by hand, then clear again",
+            file_name_of(audio),
+            names.join(", "),
+        ));
+    }
+
+    let mut removed = 0;
+    let mut errors = Vec::new();
+    if let Ok(mut tagged) = crate::tag_writer::read_tagged_file(audio) {
+        let types: Vec<_> = tagged.tags().iter().map(|t| t.tag_type()).collect();
+        let mut changed = false;
+        for tag_type in types {
+            let Some(tag) = tagged.tag_mut(tag_type) else { continue };
+            for key in [ItemKey::Lyrics, ItemKey::UnsyncLyrics] {
+                if tag.get_string(key).is_some() {
+                    tag.remove_key(key);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            match tagged.save_to_path(audio, WriteOptions::default()) {
+                Ok(()) => removed += 1,
+                Err(e) => errors.push(format!("couldn't save the tags of {}: {}", file_name_of(audio), e)),
+            }
+        }
+    }
+    for file in &files {
+        match displace(file) {
+            Ok(()) => removed += 1,
+            Err(e) => errors.push(format!("couldn't move {} to the Trash: {}", file_name_of(file), e)),
+        }
+    }
+    if !errors.is_empty() {
+        let mut message = errors.join("; ");
+        if let Some(first) = message.get_mut(0..1) {
+            first.make_ascii_uppercase();
+        }
+        return Err(message);
+    }
+    match probe_local_lyrics(audio) {
+        None => Ok(removed),
+        Some(left) => Err(format!("Couldn't remove the lyrics in {}", describe_source(&left))),
+    }
+}
+
+/// The `.lrc` / `.txt` files holding `audio`'s lyrics: beside it and in its
+/// `Lyrics/` (or `lyrics/`) folder, each listed once — on a case-insensitive
+/// volume both folder spellings name the same folder.
+fn lyrics_files_of(audio: &Path) -> Vec<PathBuf> {
+    let (Some(dir), Some(stem)) = (audio.parent(), audio.file_stem().and_then(|s| s.to_str())) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = Vec::new();
+    let dirs = std::iter::once(dir.to_path_buf())
+        .chain(["Lyrics", "lyrics"].iter().map(|sub| dir.join(sub)).filter(|p| p.is_dir()));
+    for d in dirs {
+        for ext in ["lrc", "txt"] {
+            let file = d.join(format!("{stem}.{ext}"));
+            if !file.is_file() {
+                continue;
+            }
+            // Same file on disk (one folder reached by both spellings):
+            // canonical paths agree, case included.
+            let real = fs::canonicalize(&file).ok();
+            let seen = real.is_some() && files.iter().any(|f| fs::canonicalize(f).ok() == real);
+            if !seen {
+                files.push(file);
+            }
+        }
+    }
+    files
+}
+
 /// Where lyrics live, for a message: "the tags of song.mp3", "song.lrc",
 /// "Lyrics/song.lrc".
 fn describe_source(lyrics: &LocalLyrics) -> String {
@@ -564,6 +667,74 @@ mod tests {
         let found = probe_local_lyrics(&audio).unwrap();
         assert_eq!(found.source, "folder");
         assert_eq!(found.kind, "synced");
+    }
+
+    #[test]
+    fn test_clear_moves_every_lyrics_file_aside_and_leaves_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path().join("song.mp3");
+        fs::write(&audio, b"not really audio").unwrap();
+        fs::write(dir.path().join("song.lrc"), LRC).unwrap();
+        fs::write(dir.path().join("song.txt"), PLAIN).unwrap();
+        fs::write(dir.path().join("other.lrc"), LRC).unwrap();
+        let sub = dir.path().join("Lyrics");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("song.lrc"), LRC).unwrap();
+
+        let displaced = std::cell::RefCell::new(Vec::new());
+        let removed = clear_local_lyrics(&audio, false, &|p: &Path| {
+            displaced.borrow_mut().push(p.file_name().unwrap().to_string_lossy().into_owned());
+            fs::remove_file(p).map_err(|e| e.to_string())
+        })
+        .unwrap();
+
+        assert_eq!(removed, 3);
+        assert_eq!(displaced.borrow().len(), 3);
+        assert_eq!(probe_local_lyrics(&audio), None);
+        assert!(dir.path().join("other.lrc").exists(), "another track's lyrics are left alone");
+    }
+
+    #[test]
+    fn test_clear_with_nothing_to_clear_removes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path().join("song.mp3");
+        fs::write(&audio, b"x").unwrap();
+        let removed = clear_local_lyrics(&audio, false, &|_: &Path| Err("must not be called".to_string())).unwrap();
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn test_clear_tries_every_file_and_names_each_one_that_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path().join("song.mp3");
+        fs::write(&audio, b"x").unwrap();
+        fs::write(dir.path().join("song.lrc"), LRC).unwrap();
+        fs::write(dir.path().join("song.txt"), PLAIN).unwrap();
+
+        let err = clear_local_lyrics(&audio, false, &|p: &Path| {
+            if p.extension().is_some_and(|e| e == "lrc") {
+                Err("in use".to_string())
+            } else {
+                fs::remove_file(p).map_err(|e| e.to_string())
+            }
+        })
+        .unwrap_err();
+
+        assert!(err.contains("song.lrc") && err.contains("in use"), "{err}");
+        assert!(!dir.path().join("song.txt").exists(), "the failure didn't stop the other file");
+    }
+
+    #[test]
+    fn test_clear_on_a_network_share_touches_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path().join("song.mp3");
+        fs::write(&audio, b"x").unwrap();
+        fs::write(dir.path().join("song.lrc"), LRC).unwrap();
+
+        let err = clear_local_lyrics(&audio, true, &|_: &Path| Err("must not be called".to_string())).unwrap_err();
+
+        assert!(err.contains("network share") && err.contains("song.lrc"), "{err}");
+        assert!(dir.path().join("song.lrc").exists());
     }
 
     #[test]

@@ -52,19 +52,60 @@ export async function fetchLocalLyrics(
   entity: Pick<InfoEntity, "kind" | "name" | "artistName" | "albumTitle">,
   path?: string | null,
 ): Promise<Record<string, unknown> | null> {
-  if (entity.kind !== "track" || !entity.name) return null;
   try {
-    const found = await invoke<LocalLyricsRow | null>("get_local_lyrics", {
-      title: entity.name,
-      artistName: entity.artistName || null,
-      albumName: entity.albumTitle || null,
-      path: path ?? null,
-    });
-    return found?.text ? localLyricsValue(found) : null;
+    return await readLocalLyrics(entity, path);
   } catch (e) {
     console.error("Failed to read local lyrics:", e);
     return null;
   }
+}
+
+/** `fetchLocalLyrics`, but a failed read rejects instead of reading as "no
+ *  lyrics" — for the Edit Properties dialog, whose empty editor would
+ *  otherwise invite a save over lyrics it couldn't see. Touches no cache. */
+export async function readLocalLyrics(
+  entity: Pick<InfoEntity, "kind" | "name" | "artistName" | "albumTitle">,
+  path?: string | null,
+): Promise<Record<string, unknown> | null> {
+  if (entity.kind !== "track" || !entity.name) return null;
+  const found = await invoke<LocalLyricsRow | null>("get_local_lyrics", {
+    title: entity.name,
+    artistName: entity.artistName || null,
+    albumName: entity.albumTitle || null,
+    path: path ?? null,
+  });
+  return found?.text ? localLyricsValue(found) : null;
+}
+
+/** Remove a song's lyrics — Edit Properties' Clear lyrics. A local library
+ *  track (`trackId` given) loses them from its own file: the tag lyrics, and
+ *  its `.lrc` / `.txt` files go to the Trash (`clear_local_lyrics`). Every
+ *  cached copy of the song's lyrics is dropped too, whichever provider wrote
+ *  it, and open views re-read — which may find lyrics online again: clearing
+ *  is about the song's files and Vibo's copy, not about the providers. */
+///
+/// `entities` are every name the song's lyrics may be cached under (before
+/// and after a rename saved alongside the clear); each key is dropped and
+/// announced. The cache is cleared even when the file clear fails — Vibo's
+/// copy is gone either way — and the file's error is rethrown after.
+export async function clearSongLyrics(entities: InfoEntity[], trackId: number | null): Promise<void> {
+  let fileError: unknown = null;
+  if (trackId != null) {
+    try {
+      await invoke("clear_local_lyrics", { trackId });
+    } catch (e) {
+      console.error("Failed to clear the lyrics in the track's files:", e);
+      fileError = e;
+    }
+  }
+  const keys = [...new Set(entities.map(buildEntityKey))];
+  for (const entityKey of keys) {
+    // Every provider's row, switched-off ones too — the active provider list
+    // can't reach those, and a leftover row would bring the lyrics back.
+    await invoke("info_delete_type_values", { typeId: "lyrics", entityKey });
+    emitInfoValueChanged(entityKey, "lyrics");
+  }
+  if (fileError) throw fileError;
 }
 
 /** Save a song's lyrics into its files (`save_local_lyrics`) — always, when

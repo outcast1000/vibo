@@ -417,6 +417,17 @@ pub fn info_delete_value(
     state.db.info_delete_value(information_type_id, &entity_key).map_err(|e| e.to_string())
 }
 
+/// Every cached value of `type_id` for an entity, whichever provider wrote
+/// it (`Database::info_delete_type_values`).
+#[tauri::command]
+pub async fn info_delete_type_values(
+    state: State<'_, AppState>,
+    type_id: String,
+    entity_key: String,
+) -> Result<usize, String> {
+    with_db(&state, move |db| db.info_delete_type_values(&type_id, &entity_key)).await
+}
+
 // ── Image / Info provider commands ─────────────────────────────
 
 #[tauri::command]

@@ -13,6 +13,15 @@ pub fn read_clipboard_text() -> Result<String, String> {
     Ok(clipboard.get_text().unwrap_or_default())
 }
 
+/// The text context menu's Copy / Cut. Same reason as `read_clipboard_text`:
+/// a menu action isn't a user gesture, and `navigator.clipboard.writeText`
+/// can refuse outside one.
+#[tauri::command]
+pub fn write_clipboard_text(text: String) -> Result<(), String> {
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    clipboard.set_text(text).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn get_profile_info(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({

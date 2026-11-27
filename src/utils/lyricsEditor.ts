@@ -92,6 +92,26 @@ export function nudgeInText(text: string, index: number, delta: number): string 
   return serializeEditorLines(nudgeLineTime(parseEditorLines(text), index, delta));
 }
 
+/**
+ * Reaction lead: a tap lands as late as the hand that makes it (≈0.2–0.3s
+ * after the line starts), so every stamp is moved this much earlier. Without
+ * it a carefully tapped sheet runs uniformly late. Sync offers the choices;
+ * the pick is stored as `lyricsSyncLeadMs`.
+ */
+export const STAMP_LEAD_OPTIONS_MS = [0, 100, 150, 200, 250, 300, 400, 500] as const;
+export const DEFAULT_STAMP_LEAD_MS = 250;
+export const STAMP_LEAD_STORE_KEY = "lyricsSyncLeadMs";
+
+/** A stored lead, or the default when it isn't one of the choices. */
+export function coerceStampLeadMs(value: unknown): number {
+  return typeof value === "number" && (STAMP_LEAD_OPTIONS_MS as readonly number[]).includes(value) ? value : DEFAULT_STAMP_LEAD_MS;
+}
+
+/** The time a tap at `positionSecs` stamps: earlier by the lead, never below 0. */
+export function stampTime(positionSecs: number, leadMs: number): number {
+  return Math.max(0, positionSecs - leadMs / 1000);
+}
+
 /** Remove every timestamp (Sync's "Start over"), headers included. */
 export function clearAllTimes(text: string): string {
   return serializeEditorLines(

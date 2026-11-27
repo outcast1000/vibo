@@ -144,6 +144,19 @@ impl Database {
         Ok(())
     }
 
+    /// Drop every cached value of one info type for an entity, from every
+    /// provider row — switched off or inactive ones included, which the
+    /// per-provider delete (driven by the *active* provider list) can't
+    /// reach. Edit Properties' Clear lyrics. Returns how many rows went.
+    pub fn info_delete_type_values(&self, type_id: &str, entity_key: &str) -> SqlResult<usize> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM information_values WHERE entity_key = ?2
+             AND information_type_id IN (SELECT id FROM information_types WHERE type_id = ?1)",
+            rusqlite::params![type_id, entity_key],
+        )
+    }
+
 
     // ── Image Providers ─────────────────────────────────────────
 

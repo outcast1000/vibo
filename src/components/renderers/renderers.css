@@ -98,6 +98,10 @@ a.gallery-source:hover { opacity: 0.8; text-decoration: underline; }
 .lyrics-editor::placeholder { color: var(--text-tertiary); }
 
 .lyrics-sync-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lyrics-sync-bar-spacer { flex: 1; }
+.lyrics-sync-lead, .lyrics-sync-shift { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--text-secondary); }
+.lyrics-sync-lead-select { width: auto; padding-top: 2px; padding-bottom: 2px; font-size: var(--fs-xs); }
+.lyrics-sync-shift .ds-btn { padding-left: 6px; padding-right: 6px; }
 .lyrics-sync-transport { display: flex; align-items: center; gap: 6px; }
 .lyrics-transport-btn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: none; border-radius: 50%; background: none; color: var(--text-secondary); cursor: pointer; transition: background-color var(--dur-fast), color var(--dur-fast); }
 .lyrics-transport-btn:hover { background: var(--bg-hover); color: var(--text-primary); }

@@ -10,20 +10,20 @@ import type { Track } from "../types";
  * - the Lyrics tab saves through the lyrics editor's own save
  *   (`saveSongLyrics`), into the song's files.
  */
-const invoke = vi.hoisted(() => vi.fn(async (cmd: string, _args?: unknown): Promise<unknown> => {
+const defaultInvoke = vi.hoisted(() => async (cmd: string, _args?: unknown): Promise<unknown> => {
   if (cmd === "get_tag_counts_for_tracks") return [[1, "Jazz", 1], [2, "Rock", 2]];
   if (cmd === "bulk_update_tracks") return [];
   return null;
-}));
+});
+const invoke = vi.hoisted(() => vi.fn(defaultInvoke));
 vi.mock("@tauri-apps/api/core", () => ({ invoke, convertFileSrc: (p: string) => p }));
 vi.mock("../utils/tauriEvents", () => ({ subscribe: () => () => undefined, safeUnlisten: vi.fn() }));
 const saveSongLyrics = vi.hoisted(() => vi.fn(async () => ({ savedTo: "file" })));
-vi.mock("../utils/localLyrics", () => ({ saveSongLyrics }));
-const fetchInfoValue = vi.hoisted(() => vi.fn(async () => ({ status: "ok", value: { text: "old line", kind: "plain" } })));
-vi.mock("../utils/infoFetchChain", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../utils/infoFetchChain")>()),
-  fetchInfoValue,
-}));
+const clearSongLyrics = vi.hoisted(() => vi.fn(async () => undefined));
+const readLocalLyrics = vi.hoisted(() => vi.fn(async (): Promise<unknown> => ({ text: "old line", kind: "plain", local: true })));
+vi.mock("../utils/localLyrics", () => ({ saveSongLyrics, clearSongLyrics, readLocalLyrics }));
+const showNativeMenu = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock("../nativeMenu", () => ({ showNativeMenu }));
 
 const { default: BulkEditModal } = await import("../components/BulkEditModal");
 
@@ -35,14 +35,21 @@ function track(id: number, title: string): Track {
   };
 }
 
-function renderModal(tracks: Track[], onSave = vi.fn()) {
+const LRCLIB = { key: "lyrics/lrclib", name: "LRCLIB" };
+
+function renderModal(
+  tracks: Track[],
+  onSave = vi.fn(),
+  opts: { invokeInfoFetch?: ReturnType<typeof vi.fn>; lyricsProviders?: Array<{ key: string; name: string }> } = {},
+) {
   render(
     <BulkEditModal
       tracks={tracks}
       artistOptions={[]}
       albumOptions={[]}
       tagOptions={[]}
-      invokeInfoFetch={vi.fn(async () => ({ status: "not_found" })) as never}
+      invokeInfoFetch={(opts.invokeInfoFetch ?? vi.fn(async () => ({ status: "not_found" }))) as never}
+      lyricsProviders={opts.lyricsProviders}
       onClose={vi.fn()}
       onSave={onSave}
     />,
@@ -54,6 +61,8 @@ afterEach(() => {
   cleanup();
   invoke.mockClear();
   saveSongLyrics.mockClear();
+  clearSongLyrics.mockClear();
+  readLocalLyrics.mockClear();
 });
 
 describe("BulkEditModal", () => {
@@ -114,7 +123,7 @@ describe("BulkEditModal", () => {
     await waitFor(() => expect(onSave).toHaveBeenCalled());
     expect(saveSongLyrics).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "track", name: "A", id: 1, path: "file:///m/A.flac" }),
-      "new line", "plain", "edit",
+      "new line", "plain", "edit", undefined,
     );
     // Nothing else changed, so no file metadata write.
     expect(invoke.mock.calls.some(([cmd]) => cmd === "bulk_update_tracks")).toBe(false);
@@ -165,63 +174,150 @@ describe("BulkEditModal", () => {
     window.removeEventListener("keydown", windowKey);
   });
 
+  // The files may hold lyrics an empty editor's save would replace.
   it("a lyrics load that fails offers Try again instead of an empty editor", async () => {
-    fetchInfoValue.mockResolvedValueOnce({ status: "error" } as never);
+    readLocalLyrics.mockRejectedValueOnce(new Error("permission denied"));
     renderModal([track(1, "A")]);
     fireEvent.click(screen.getByRole("tab", { name: "Lyrics" }));
-    expect(await screen.findByText(/Couldn't read the current lyrics/)).toBeTruthy();
+    expect(await screen.findByText(/Couldn't read the current lyrics: permission denied/)).toBeTruthy();
     expect(screen.queryByRole("textbox", { name: "Lyrics" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByRole("textbox", { name: "Lyrics" })).toBeTruthy();
   });
 
-  it("a web source failing opens the editor anyway, naming the source and its reason", async () => {
-    fetchInfoValue.mockResolvedValueOnce({
-      status: "error", value: null,
-      failures: [{ providerId: "genius", name: "Genius", message: "blocked by the network" }],
-    } as never);
-    renderModal([track(1, "A")]);
+  it("opening the Lyrics tab asks no provider — it reads the song's files", async () => {
+    const invokeInfoFetch = vi.fn(async () => ({ status: "ok", value: { text: "web words", kind: "plain" } }));
+    renderModal([track(1, "A")], vi.fn(), { invokeInfoFetch, lyricsProviders: [LRCLIB] });
     fireEvent.click(screen.getByRole("tab", { name: "Lyrics" }));
-    expect(await screen.findByRole("textbox", { name: "Lyrics" })).toBeTruthy();
-    expect(screen.getByText("Genius couldn't answer: blocked by the network. No other source had lyrics for this song.")).toBeTruthy();
+    const area = await screen.findByRole("textbox", { name: "Lyrics" }) as HTMLTextAreaElement;
+    expect(area.value).toBe("old line");
+    expect(readLocalLyrics).toHaveBeenCalled();
+    expect(invokeInfoFetch.mock.calls.some((c) => (c as unknown[])[1] === "lyrics")).toBe(false);
   });
 
-  it("a web source failing before a miss says nothing else had lyrics — never that some came", async () => {
-    fetchInfoValue.mockResolvedValueOnce({
-      status: "not_found", value: null,
-      failures: [{ providerId: "genius", name: "Genius", message: "rate limited" }],
-    } as never);
-    renderModal([track(1, "A")]);
-    fireEvent.click(screen.getByRole("tab", { name: "Lyrics" }));
-    expect(await screen.findByText("Genius couldn't answer: rate limited. No other source had lyrics for this song.")).toBeTruthy();
-  });
-
-  it("names the source the shown lyrics are from", async () => {
-    fetchInfoValue.mockResolvedValueOnce({
-      status: "ok", value: { text: "plain words", kind: "plain" },
-      failures: [{ providerId: "lyrics/lrclib", name: "LRCLIB" }],
-      answeredBy: { providerId: "core:local-lyrics", name: "Local files" },
-    } as never);
-    renderModal([track(1, "A")]);
-    fireEvent.click(screen.getByRole("tab", { name: "Lyrics" }));
-    expect(await screen.findByText("LRCLIB couldn't answer. These are from Local files.")).toBeTruthy();
-  });
-
-  // Whatever a later source answered: the files may hold lyrics an empty
-  // editor's save would replace.
-  for (const status of ["error", "not_found", "ok"] as const) {
-    it(`the song's files failing keeps the editor closed and says why (then ${status})`, async () => {
-      fetchInfoValue.mockResolvedValueOnce({
-        status, value: status === "ok" ? { text: "web words", kind: "plain" } : null,
-        failures: [{ providerId: "core:local-lyrics", name: "Local files", message: "permission denied" }],
-        answeredBy: status === "ok" ? { providerId: "lyrics/lrclib", name: "LRCLIB" } : null,
-      } as never);
-      renderModal([track(1, "A")]);
-      fireEvent.click(screen.getByRole("tab", { name: "Lyrics" }));
-      expect(await screen.findByText(/Couldn't read the current lyrics: reading the song's files failed \(permission denied\)/)).toBeTruthy();
-      expect(screen.queryByRole("textbox", { name: "Lyrics" })).toBeNull();
+  it("with no lyrics in the files, a copy Vibo already holds is shown — still without asking a provider", async () => {
+    readLocalLyrics.mockResolvedValueOnce(null);
+    invoke.mockImplementation(async (cmd: string) => {
+      // A stale row of the files' own provider is not "online" lyrics; the
+      // user's first switched-on provider wins over a later one.
+      if (cmd === "info_get_types_for_entity") {
+        return [["lyrics", "Lyrics", "lyrics", 0, 0, [["core:local-lyrics", 3], ["lyrics/lrclib", 7], ["genius", 9]], ""]];
+      }
+      if (cmd === "info_get_values_for_entity") {
+        return [
+          [3, "lyrics", JSON.stringify({ text: "stale file words", kind: "plain", local: true }), "ok", 0],
+          [9, "lyrics", JSON.stringify({ text: "genius words", kind: "plain" }), "ok", 0],
+          [7, "lyrics", JSON.stringify({ text: "cached words", kind: "plain" }), "ok", 0],
+        ];
+      }
+      if (cmd === "get_tag_counts_for_tracks") return [];
+      return null;
     });
-  }
+    try {
+      const invokeInfoFetch = vi.fn(async () => ({ status: "not_found" }));
+      renderModal([track(1, "A")], vi.fn(), { invokeInfoFetch });
+      fireEvent.click(screen.getByRole("tab", { name: "Lyrics" }));
+      expect(((await screen.findByRole("textbox", { name: "Lyrics" })) as HTMLTextAreaElement).value).toBe("cached words");
+      expect(invokeInfoFetch.mock.calls.some((c) => (c as unknown[])[1] === "lyrics")).toBe(false);
+    } finally {
+      invoke.mockImplementation(defaultInvoke);
+    }
+  });
+
+  it("Get lyrics asks the picked provider, and Save writes its answer", async () => {
+    const invokeInfoFetch = vi.fn(async () => ({ status: "ok", value: { text: "web words", kind: "plain" } }));
+    const onSave = renderModal([track(1, "A")], vi.fn(), { invokeInfoFetch, lyricsProviders: [LRCLIB] });
+    fireEvent.click(screen.getByRole("tab", { name: "Lyrics" }));
+    await screen.findByRole("textbox", { name: "Lyrics" });
+    fireEvent.click(screen.getByRole("button", { name: "Get lyrics from LRCLIB" }));
+    await waitFor(() => expect(((screen.getByRole("textbox", { name: "Lyrics" })) as HTMLTextAreaElement).value).toBe("web words"));
+    expect(invokeInfoFetch).toHaveBeenCalledWith("lyrics/lrclib", "lyrics", expect.objectContaining({ name: "A" }));
+    expect(screen.getByText(/From LRCLIB — not saved yet/)).toBeTruthy();
+    expect(saveSongLyrics).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    // Saved as it came: credited to the provider, not the user's edit.
+    expect(saveSongLyrics).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "A" }), "web words", "plain", "provider", { provider: "lyrics/lrclib" },
+    );
+  });
+
+  it("a provider's answer edited before Save is the user's edit", async () => {
+    const invokeInfoFetch = vi.fn(async () => ({ status: "ok", value: { text: "web words", kind: "plain" } }));
+    const onSave = renderModal([track(1, "A")], vi.fn(), { invokeInfoFetch, lyricsProviders: [LRCLIB] });
+    fireEvent.click(screen.getByRole("tab", { name: "Lyrics" }));
+    await screen.findByRole("textbox", { name: "Lyrics" });
+    fireEvent.click(screen.getByRole("button", { name: "Get lyrics from LRCLIB" }));
+    await waitFor(() => expect(((screen.getByRole("textbox", { name: "Lyrics" })) as HTMLTextAreaElement).value).toBe("web words"));
+    fireEvent.change(screen.getByRole("textbox", { name: "Lyrics" }), { target: { value: "web words, fixed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(saveSongLyrics).toHaveBeenCalledWith(expect.anything(), "web words, fixed", "plain", "edit", undefined);
+  });
+
+  it("an answer arriving over the user's edits waits to be accepted — Keep my edits keeps them", async () => {
+    const invokeInfoFetch = vi.fn(async () => ({ status: "ok", value: { text: "web words", kind: "plain" } }));
+    renderModal([track(1, "A")], vi.fn(), { invokeInfoFetch, lyricsProviders: [LRCLIB] });
+    fireEvent.click(screen.getByRole("tab", { name: "Lyrics" }));
+    const area = await screen.findByRole("textbox", { name: "Lyrics" });
+    fireEvent.change(area, { target: { value: "my own fix" } });
+    fireEvent.click(screen.getByRole("button", { name: "Get lyrics from LRCLIB" }));
+    expect(await screen.findByText("LRCLIB found lyrics. Replace your edits with them?")).toBeTruthy();
+    expect(((screen.getByRole("textbox", { name: "Lyrics" })) as HTMLTextAreaElement).value).toBe("my own fix");
+    fireEvent.click(screen.getByRole("button", { name: "Keep my edits" }));
+    expect(((screen.getByRole("textbox", { name: "Lyrics" })) as HTMLTextAreaElement).value).toBe("my own fix");
+    // Asked again, Replace takes the answer.
+    fireEvent.click(screen.getByRole("button", { name: "Get lyrics from LRCLIB" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Replace" }));
+    expect(((screen.getByRole("textbox", { name: "Lyrics" })) as HTMLTextAreaElement).value).toBe("web words");
+  });
+
+  it("an editor emptied by hand saves nothing — only Clear lyrics clears", async () => {
+    renderModal([track(1, "A")]);
+    fireEvent.click(screen.getByRole("tab", { name: "Lyrics" }));
+    fireEvent.change(await screen.findByRole("textbox", { name: "Lyrics" }), { target: { value: "" } });
+    expect(screen.getByText(/An empty editor saves nothing/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("several providers open a menu of them; a provider with nothing says so and leaves the text", async () => {
+    const invokeInfoFetch = vi.fn(async () => ({ status: "not_found" }));
+    renderModal([track(1, "A")], vi.fn(), { invokeInfoFetch, lyricsProviders: [LRCLIB, { key: "genius", name: "Genius" }] });
+    fireEvent.click(screen.getByRole("tab", { name: "Lyrics" }));
+    await screen.findByRole("textbox", { name: "Lyrics" });
+    fireEvent.click(screen.getByRole("button", { name: "Get lyrics ▾" }));
+    const specs = (showNativeMenu.mock.calls.at(-1) as unknown as [number, number, Array<{ text: string; action: () => void }>])[2];
+    expect(specs.map((s) => s.text)).toEqual(["LRCLIB", "Genius"]);
+    specs[1].action();
+    expect(await screen.findByText("Genius has no lyrics for this song.")).toBeTruthy();
+    expect(invokeInfoFetch).toHaveBeenCalledWith("genius", "lyrics", expect.anything());
+    expect(((screen.getByRole("textbox", { name: "Lyrics" })) as HTMLTextAreaElement).value).toBe("old line");
+  });
+
+  it("Clear lyrics removes them on Save, from the file and Vibo — nothing is saved in their place", async () => {
+    const onSave = renderModal([track(1, "A")]);
+    fireEvent.click(screen.getByRole("tab", { name: "Lyrics" }));
+    await screen.findByRole("textbox", { name: "Lyrics" });
+    fireEvent.click(screen.getByRole("button", { name: "Clear lyrics" }));
+    expect(screen.getByText(/Save removes the lyrics from the track's file/)).toBeTruthy();
+    expect(clearSongLyrics).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(clearSongLyrics).toHaveBeenCalledWith(
+      [expect.objectContaining({ name: "A", id: 1 }), expect.objectContaining({ name: "A", id: 1 })], 1,
+    );
+    expect(saveSongLyrics).not.toHaveBeenCalled();
+  });
+
+  it("Revert after Clear brings the lyrics back and leaves nothing to save", async () => {
+    renderModal([track(1, "A")]);
+    fireEvent.click(screen.getByRole("tab", { name: "Lyrics" }));
+    await screen.findByRole("textbox", { name: "Lyrics" });
+    fireEvent.click(screen.getByRole("button", { name: "Clear lyrics" }));
+    fireEvent.click(screen.getByRole("button", { name: "Revert" }));
+    expect(((screen.getByRole("textbox", { name: "Lyrics" })) as HTMLTextAreaElement).value).toBe("old line");
+    expect((screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement).disabled).toBe(true);
+  });
 
   it("some files failing still reports the change on Close, and nothing is written twice", async () => {
     invoke.mockImplementationOnce(async (cmd: string) => (cmd === "get_tag_counts_for_tracks" ? [] : null));

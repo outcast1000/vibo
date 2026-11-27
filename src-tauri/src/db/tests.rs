@@ -1451,6 +1451,40 @@ fn test_info_get_values_for_entity() {
 }
 
 #[test]
+fn test_info_delete_type_values_reaches_switched_off_providers() {
+    let db = test_db();
+    let bio = |plugin: &str| ("artist_bio".to_string(), "About".to_string(), "artist".to_string(), "rich_text".to_string(),
+        plugin.to_string(), 7776000, 200, 100, String::new());
+    db.info_sync_types(&[
+        bio("lastfm"), bio("wiki"),
+        ("similar_artists".into(), "Similar".into(), "artist".into(), "entity_list".into(),
+         "lastfm".into(), 7776000, 300, 100, String::new()),
+    ]).unwrap();
+    let types = db.info_get_types_for_entity("artist").unwrap();
+    let bio_ids: Vec<i64> = types.iter().find(|t| t.0 == "artist_bio").unwrap().5.iter().map(|p| p.1).collect();
+    let similar_id = types.iter().find(|t| t.0 == "similar_artists").unwrap().5[0].1;
+    for id in &bio_ids {
+        db.info_upsert_value(*id, "artist:Daft Punk", r#"{"summary":"bio"}"#, "ok").unwrap();
+    }
+    db.info_upsert_value(similar_id, "artist:Daft Punk", r#"{"items":[]}"#, "ok").unwrap();
+    db.info_upsert_value(bio_ids[0], "artist:Radiohead", r#"{"summary":"other"}"#, "ok").unwrap();
+    // The wiki provider goes away: its cached row stays, and the active
+    // provider list no longer names it.
+    db.info_sync_types(&[
+        bio("lastfm"),
+        ("similar_artists".into(), "Similar".into(), "artist".into(), "entity_list".into(),
+         "lastfm".into(), 7776000, 300, 100, String::new()),
+    ]).unwrap();
+
+    assert_eq!(db.info_delete_type_values("artist_bio", "artist:Daft Punk").unwrap(), 2);
+    for id in &bio_ids {
+        assert!(db.info_get_value(*id, "artist:Daft Punk").unwrap().is_none());
+    }
+    assert!(db.info_get_value(similar_id, "artist:Daft Punk").unwrap().is_some(), "other types stay");
+    assert!(db.info_get_value(bio_ids[0], "artist:Radiohead").unwrap().is_some(), "other entities stay");
+}
+
+#[test]
 fn test_info_delete_value() {
     let db = test_db();
     db.info_sync_types(&[

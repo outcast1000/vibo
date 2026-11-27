@@ -2,6 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
   parseEditorLines,
   serializeEditorLines,
+  stampTime,
+  coerceStampLeadMs,
+  DEFAULT_STAMP_LEAD_MS,
   formatLrcTime,
   formatClock,
   stampInText,
@@ -128,5 +131,21 @@ describe("checkLyricsForSave", () => {
     expect(() => checkLyricsForSave("a".repeat(200_001))).toThrow(/longer than/);
     expect(() => checkLyricsForSave("[00:01.00]\n[ar:X]")).toThrow(/no lyric lines/);
     expect(() => checkLyricsForSave("[00:05.00]a\n[00:09.00]b\n[00:07.00]c")).toThrow(/line 3 "\[00:07.00\]c"/);
+  });
+});
+
+describe("stamp lead", () => {
+  it("moves a stamp earlier by the lead, never below zero", () => {
+    expect(stampTime(12.5, 250)).toBeCloseTo(12.25);
+    expect(stampTime(12.5, 0)).toBe(12.5);
+    expect(stampTime(0.1, 250)).toBe(0);
+  });
+
+  it("falls back to the default for anything that isn't one of the choices", () => {
+    expect(coerceStampLeadMs(100)).toBe(100);
+    expect(coerceStampLeadMs(0)).toBe(0);
+    expect(coerceStampLeadMs(123)).toBe(DEFAULT_STAMP_LEAD_MS);
+    expect(coerceStampLeadMs("250")).toBe(DEFAULT_STAMP_LEAD_MS);
+    expect(coerceStampLeadMs(undefined)).toBe(DEFAULT_STAMP_LEAD_MS);
   });
 });

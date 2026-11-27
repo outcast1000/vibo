@@ -170,6 +170,7 @@ import { VideoAmbientOverlay } from "./components/VideoAmbientOverlay";
 import { VideoSubtitles } from "./components/VideoSubtitles";
 import { AddServerModal } from "./components/AddServerModal";
 import { showNativeMenu, type MenuItemSpec } from "./nativeMenu";
+import { showTextEditMenu } from "./utils/textEditMenu";
 import { buildPluginNavMenuSpecs } from "./contextMenu/buildPluginNavMenuSpecs";
 import { buildPluginMenuSpecs, mergeHostAction, splitSharedActions } from "./contextMenu/pluginMenuGroups";
 import { buildGetFromProvidersSpec, imageProviderChoices, infoProviderChoices } from "./contextMenu/providerMenus";
@@ -3338,9 +3339,16 @@ function App() {
     }
   }, [goToCard, buildAndShowNativeMenu, queueHook]);
 
-  // Disable default browser context menu globally
+  // The webview's own context menu is off everywhere (it offers Reload and
+  // Inspect). A right-click no component handled gets the native text menu
+  // instead — Cut / Copy / Paste / Select All in a text field, Copy on
+  // selected text (utils/textEditMenu.ts).
   useEffect(() => {
-    const handler = (e: MouseEvent) => { e.preventDefault(); };
+    const handler = (e: MouseEvent) => {
+      const claimed = e.defaultPrevented;
+      e.preventDefault();
+      if (!claimed) showTextEditMenu(e);
+    };
     document.addEventListener("contextmenu", handler);
     return () => document.removeEventListener("contextmenu", handler);
   }, []);
@@ -7103,7 +7111,6 @@ function App() {
           albumOptions={[...new Set(library.albums.map((a) => a.title))]}
           tagOptions={[...new Set(library.tags.map((t) => t.name))]}
           invokeInfoFetch={plugins.invokeInfoFetch}
-          pluginNames={plugins.pluginNames}
           live={editLive}
           seek={editLive
             ? playback.handleSeek
@@ -7118,6 +7125,15 @@ function App() {
                 }
               : undefined}
           transport={editLive ? { playing: playback.playing, onTogglePlay: playback.handlePause, durationSecs: playback.durationSecs } : undefined}
+          lyricsProviders={getMenus.lyrics}
+          // The track's own plugin items (not the shared actions — download,
+          // radio — which have nothing to do with lyrics): Web Search's
+          // Google / Genius links among them.
+          searchMenuFor={(t) => buildPluginMenuSpecs(
+            splitSharedActions(plugins.menuItems.filter((item) => item.targets.includes("track"))).plain,
+            { kind: "track", trackId: t.id ?? undefined, title: t.title, artistName: t.artist_name ?? undefined, albumTitle: t.album_title ?? undefined, isLocal: isLocalTrack(t) },
+            plugins.dispatchContextMenuAction,
+          )}
           onClose={() => contextMenuActions.setBulkEditTracks(null)}
           onShowInFolder={(track) => { void contextMenuActions.showTrackInFolder(track); }}
           onSave={handleBulkEditSaved}

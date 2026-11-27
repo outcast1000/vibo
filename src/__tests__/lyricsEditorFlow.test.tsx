@@ -4,6 +4,12 @@ import { LyricsRenderer } from "../components/renderers/LyricsRenderer";
 import { LyricsEditor } from "../components/renderers/LyricsEditor";
 import { setPlaybackPosition } from "../playback/positionStore";
 
+// The stored reaction lead: none, so stamps here land exactly on the
+// position — the lead has its own tests below.
+const storeGet = vi.hoisted(() => vi.fn(async (): Promise<unknown> => 0));
+const storeSet = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock("../store", () => ({ store: { get: storeGet, set: storeSet } }));
+
 /**
  * The lyrics tab's editing flows: a song with no lyrics offers to add them,
  * the saved kind is read off the text (never a separate choice), a failed
@@ -77,6 +83,7 @@ describe("LyricsRenderer editing", () => {
       fireEvent.click(screen.getByRole("tab", { name: /Sync/ }));
 
       const list = screen.getByRole("listbox", { name: "Lines to sync" });
+      await waitFor(() => expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("0"));
       setPlaybackPosition(3.2);
       fireEvent.keyDown(list, { key: " " });
       setPlaybackPosition(7.5);
@@ -119,7 +126,7 @@ describe("LyricsRenderer editing", () => {
 });
 
 describe("LyricsEditor transport (Edit Properties' Sync)", () => {
-  it("plays, pauses and skips from inside the dialog without stealing Space", () => {
+  it("plays, pauses and skips from inside the dialog without stealing Space", async () => {
     const seek = vi.fn();
     const onTogglePlay = vi.fn();
     const onTextChange = vi.fn();
@@ -151,8 +158,52 @@ describe("LyricsEditor transport (Edit Properties' Sync)", () => {
     expect(seek).toHaveBeenLastCalledWith(3);
 
     // Space still stamps.
+    await waitFor(() => expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("0"));
     fireEvent.keyDown(list, { key: " " });
     expect(onTextChange).toHaveBeenCalledWith("[00:10.00]One\nTwo");
+  });
+
+  it("stamps earlier by the stored lead, and a new lead is stored", async () => {
+    storeGet.mockResolvedValueOnce(250);
+    const onTextChange = vi.fn();
+    setPlaybackPosition(10);
+    render(<LyricsEditor initialText={"One\nTwo"} live transport={{ playing: true, onTogglePlay: vi.fn() }} onTextChange={onTextChange} />);
+    fireEvent.click(screen.getByRole("tab", { name: /Sync/ }));
+    const lead = screen.getByRole("combobox") as HTMLSelectElement;
+    await waitFor(() => expect(lead.value).toBe("250"));
+
+    fireEvent.keyDown(screen.getByRole("listbox", { name: "Lines to sync" }), { key: " " });
+    expect(onTextChange).toHaveBeenLastCalledWith("[00:09.75]One\nTwo");
+
+    fireEvent.change(lead, { target: { value: "0" } });
+    expect(storeSet).toHaveBeenCalledWith("lyricsSyncLeadMs", 0);
+  });
+
+  it("moves every timed line at once", () => {
+    const onTextChange = vi.fn();
+    render(<LyricsEditor initialText={"[00:10.00]One\n[00:20.00]Two\nThree"} live transport={{ playing: true, onTogglePlay: vi.fn() }} onTextChange={onTextChange} />);
+    fireEvent.click(screen.getByRole("tab", { name: /Sync/ }));
+    fireEvent.click(screen.getByRole("button", { name: "All lines later" }));
+    expect(onTextChange).toHaveBeenLastCalledWith("[00:10.10]One\n[00:20.10]Two\nThree");
+    fireEvent.click(screen.getByRole("button", { name: "All lines earlier" }), { shiftKey: true });
+    expect(onTextChange).toHaveBeenLastCalledWith("[00:09.10]One\n[00:19.10]Two\nThree");
+  });
+
+  it("the Stamp button hands focus back to the list, so the keys keep working", () => {
+    setPlaybackPosition(4);
+    render(<LyricsEditor initialText={"One\nTwo"} live transport={{ playing: true, onTogglePlay: vi.fn() }} onTextChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole("tab", { name: /Sync/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Stamp line" }));
+    expect(document.activeElement).toBe(screen.getByRole("listbox", { name: "Lines to sync" }));
+  });
+
+  it("Sync is closed until there are words to time", () => {
+    render(<LyricsEditor initialText="" live={false} onTextChange={vi.fn()} />);
+    expect((screen.getByRole("tab", { name: /Sync/ }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Lyrics"), { target: { value: "One" } });
+    expect((screen.getByRole("tab", { name: /Sync/ }) as HTMLButtonElement).disabled).toBe(false);
+    // Embedded, the dialog owns Save: no "Nothing to save yet" line.
+    expect(screen.queryByText("Nothing to save yet")).toBeNull();
   });
 
   it("offers to start the song when another one is playing", () => {
