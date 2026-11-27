@@ -663,6 +663,46 @@ export interface PluginTreeNode {
   data?: unknown;
 }
 
+/** One dot in a `scatter-map`. `x` / `y` are in the plugin's own units — the
+ *  host fits whatever extent they span to the view. */
+export interface PluginScatterPoint {
+  id: string;
+  x: number;
+  y: number;
+  label: string;
+  /** Second line of the hover tip ("63 tracks · 4,683 plays"). */
+  sublabel?: string;
+  /** 0..1 — dot size (area grows with it). Default 0.3. */
+  size?: number;
+  /** Other size measures by `sizeModes[].id`, each 0..1 ("plays" / "tracks").
+   *  The host switches between them in place; `size` is the fallback. */
+  sizes?: Record<string, number>;
+  /** A `groups[].id`; colours the dot. */
+  group?: string;
+  /** What the dot IS in the library, by name: right-click gets the host's
+   *  artist / album menu, as on a `tree` node. */
+  entity?: { kind: "artist" | "album"; id?: number; name: string; artistName?: string };
+  /** Opaque, echoed back on select. */
+  data?: unknown;
+}
+
+export interface PluginScatterGroup {
+  id: string;
+  label: string;
+  /** A skin CSS variable (`var(--accent)`) or any CSS colour. Omit to take the
+   *  host's categorical palette (`--chart-cat-1`…, in group order). */
+  color?: string;
+}
+
+/** An edge between two points, by id. Drawn for the hovered or selected point;
+ *  a `kind` the view offers in `linkToggles` can also be shown all at once. */
+export interface PluginScatterLink {
+  from: string;
+  to: string;
+  /** Groups links for a `linkToggles` switch ("lastfm"). */
+  kind?: string;
+}
+
 export type PluginViewData =
   | { type: "track-list"; tracks: Track[]; title?: string }
   | { type: "card-grid"; items: CardGridItem[]; columns?: number }
@@ -856,6 +896,30 @@ export type PluginViewData =
       max?: number;
       area?: boolean;
       valueFormat?: "number" | "percent" | "duration";
+    }
+  | {
+      // A zoomable 2D point map (e.g. artists laid out by genre similarity).
+      // The plugin computes the layout; the host draws, zooms, pans, searches
+      // and hit-tests. Click fires `selectAction` with `{ id, data }`; the host
+      // keeps no selection — re-render with `selectedId`.
+      type: "scatter-map";
+      points: PluginScatterPoint[];
+      groups?: PluginScatterGroup[];
+      links?: PluginScatterLink[];
+      selectAction?: string;
+      /** A change the host didn't make (a plugin's "closest" list) also centres the map on it. */
+      selectedId?: string;
+      /** Size switch over the map ("Size by plays" / "by tracks"), host-local;
+       *  the first is the default. Points carry the values in `sizes`. */
+      sizeModes?: { id: string; label: string }[];
+      /** Checkboxes that draw every link of one `kind` faintly ("Show Last.fm links"). Off by default. */
+      linkToggles?: { kind: string; label: string }[];
+      /** Map height in px (default 520, clamped 240–1200). */
+      height?: number;
+      /** Show the host's search box over the map (default true). */
+      searchable?: boolean;
+      emptyText?: string;
+      ariaLabel?: string;
     }
   | {
       type: "toolbar";

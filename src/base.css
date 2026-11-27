@@ -98,6 +98,24 @@
   --placeholder-spotlight: radial-gradient(circle at 50% 40%,
     color-mix(in srgb, var(--bg-secondary), white 14%), var(--bg-secondary) 75%);
 
+  /* Categorical palette for charts that colour by group (the plugin
+     `scatter-map`): one hue per group, in order, repeating past 12. Skins
+     define one accent, not a set of distinct series colours, so these sit
+     here, tuned for dark surfaces, with a darker set for light skins below.
+     Skinnable via customCSS. */
+  --chart-cat-1: #7aa2ff;
+  --chart-cat-2: #ff8a5c;
+  --chart-cat-3: #5fd4a8;
+  --chart-cat-4: #f2c14e;
+  --chart-cat-5: #c792ea;
+  --chart-cat-6: #ff6b8b;
+  --chart-cat-7: #4fc3f7;
+  --chart-cat-8: #a5d66f;
+  --chart-cat-9: #ffab76;
+  --chart-cat-10: #9d8cff;
+  --chart-cat-11: #64d8cb;
+  --chart-cat-12: #e0a3c8;
+
   /* Design tokens (skinnable) */
   --ds-radius: 6px;
   --ds-radius-pill: 20px;
@@ -140,6 +158,18 @@
 [data-skin-type="light"] {
   --overlay-base: 0, 0, 0;
   --overlay-inverse: 255, 255, 255;
+  --chart-cat-1: #2f62d9;
+  --chart-cat-2: #d4572a;
+  --chart-cat-3: #178a63;
+  --chart-cat-4: #a87a00;
+  --chart-cat-5: #8a4bc0;
+  --chart-cat-6: #c8325a;
+  --chart-cat-7: #0a7fb0;
+  --chart-cat-8: #5a8a1f;
+  --chart-cat-9: #b8621f;
+  --chart-cat-10: #5b4bd0;
+  --chart-cat-11: #13867a;
+  --chart-cat-12: #a3447e;
 }
 
 * {

@@ -32,6 +32,7 @@ import { resolveImageUrl } from "../utils/resolveImageUrl";
 import { EntityArtFallback } from "./EntityArtFallback";
 import { PluginTree, type TreeEntityMenuTarget } from "./pluginViews/PluginTree";
 import { PluginSplit } from "./pluginViews/PluginSplit";
+import { PluginScatterMap } from "./pluginViews/PluginScatterMap";
 
 /** Host state and callbacks only some node kinds need, bundled so a new one
  *  doesn't mean another prop threaded through every recursion below. */
@@ -460,6 +461,24 @@ function PluginViewNode(props: PluginViewNodeProps) {
           max={node.max}
           area={node.area}
           valueFormat={node.valueFormat}
+        />
+      );
+    case "scatter-map":
+      return (
+        <PluginScatterMap
+          points={node.points}
+          groups={node.groups}
+          links={node.links}
+          selectAction={node.selectAction}
+          selectedId={node.selectedId}
+          sizeModes={node.sizeModes}
+          linkToggles={node.linkToggles}
+          height={node.height}
+          searchable={node.searchable}
+          emptyText={node.emptyText}
+          ariaLabel={node.ariaLabel}
+          onAction={onAction}
+          onEntityContextMenu={extras?.onEntityContextMenu}
         />
       );
     case "settings-row": {
