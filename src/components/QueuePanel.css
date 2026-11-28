@@ -394,7 +394,28 @@
   content-visibility: visible;
 }
 
-.queue-item.queue-current .queue-item-title {
+.queue-item.queue-current /* The resolve status and the failure note take the same trailing slot as
+   "via X" (never a line of their own — a row must not change height). The
+   full text is in the tooltip; the failure chip opens the details dialog. */
+.queue-item-chip--trying {
+  cursor: default;
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.queue-item-chip--failed {
+  color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 35%, transparent);
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+}
+
+.queue-item-chip--failed:hover,
+.queue-item-chip--failed:focus-visible {
+  border-color: var(--error);
+}
+
+.queue-item-title {
   color: var(--accent);
   font-weight: 600;
 }
@@ -717,52 +738,12 @@
   color: var(--error);
 }
 
-.queue-item-status {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin-top: 2px;
-  min-width: 0;
-}
-
-.queue-resolving-error {
-  color: var(--error);
-  font-size: var(--fs-xs);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.queue-item-status-failed .queue-resolving-error {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.queue-resolving-fail-icon {
-  color: var(--error);
-  flex-shrink: 0;
-}
-
-/* "Trying yt-dlp… · Subsonic: server offline" — the resolver being asked and
-   why the one before it didn't answer, in the failure note's slot. */
-.queue-item-status-text {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--fs-xs);
-}
-
-.queue-item-trying { color: var(--accent); }
-.queue-item-trying-why { color: var(--text-tertiary); }
-
 /* "via Soulseek": the entry played from something other than its own source.
    Amber when its own source couldn't be used (still playing, but not from what
    the row names); neutral for an entry with no source of its own. Opens the
    source dialog. Takes the file-size slot, so it shows at every panel width. */
-.queue-item-via {
+.queue-item-via,
+.queue-item-chip {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -780,9 +761,11 @@
   cursor: pointer;
 }
 
-.queue-item-via svg { flex-shrink: 0; }
+.queue-item-via svg,
+.queue-item-chip svg { flex-shrink: 0; }
 
-.queue-item-via-name {
+.queue-item-via-name,
+.queue-item-chip-text {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -805,22 +788,6 @@
 .queue-item-via--fallback:focus-visible {
   color: var(--warning);
   border-color: var(--warning);
-}
-
-/* The failure note is a button: it opens the details dialog. */
-button.queue-item-status-failed {
-  width: 100%;
-  padding: 0;
-  border: 0;
-  background: none;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-button.queue-item-status-failed:hover .queue-resolving-error,
-button.queue-item-status-failed:focus-visible .queue-resolving-error {
-  text-decoration: underline;
 }
 
 .queue-item-title {

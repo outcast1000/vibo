@@ -201,7 +201,29 @@ const QueueRow = memo(function QueueRow({
                 </>
               )}
             </span>
-            {sourceNote && !resolving && !failure ? (
+            {/* One trailing slot, so a row never changes height: the resolve
+                status, else the failure note, else "via X", else the file size. */}
+            {resolving?.trying ? (
+              <span
+                className="queue-item-chip queue-item-chip--trying"
+                aria-live="polite"
+                title={resolving.error ? `Trying ${resolving.trying}… · ${resolving.error}` : `Trying ${resolving.trying}…`}
+              >
+                <span className="queue-item-chip-text">Trying {resolving.trying}…</span>
+              </span>
+            ) : failure && !resolving ? (
+              <button
+                type="button"
+                className="queue-item-chip queue-item-chip--failed"
+                title={`Couldn't play · ${failure.summary} — show what happened`}
+                onMouseDown={(e) => e.stopPropagation()}
+                onDoubleClick={(e) => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); onShowFailure(t); }}
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                <span className="queue-item-chip-text">Couldn't play · {failure.summary}</span>
+              </button>
+            ) : sourceNote && !resolving ? (
               <button
                 type="button"
                 className={`queue-item-via${sourceNote.reason === "fallback" ? " queue-item-via--fallback" : ""}`}
@@ -221,27 +243,6 @@ const QueueRow = memo(function QueueRow({
               <span className="queue-item-size">{formatFileSize(fileSize)}</span>
             ) : null}
           </div>
-          {resolving?.trying ? (
-            <div className="queue-item-status queue-item-status-trying" aria-live="polite">
-              <span className="queue-item-status-text">
-                <span className="queue-item-trying">Trying {resolving.trying}…</span>
-                {resolving.error && <span className="queue-item-trying-why"> · {resolving.error}</span>}
-              </span>
-            </div>
-          ) : null}
-          {failure && !resolving ? (
-            <button
-              type="button"
-              className="queue-item-status queue-item-status-failed"
-              title="Show what happened"
-              onMouseDown={(e) => e.stopPropagation()}
-              onDoubleClick={(e) => e.stopPropagation()}
-              onClick={(e) => { e.stopPropagation(); onShowFailure(t); }}
-            >
-              <svg className="queue-resolving-fail-icon" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-              <span className="queue-resolving-error">Couldn't play · {failure.summary}</span>
-            </button>
-          ) : null}
         </div>
       </div>
       <div className="row-hover-actions">
